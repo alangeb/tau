@@ -1,0 +1,459 @@
+#!/bin/bash
+# Shared helper functions - sourced by all test files
+# Must source env first
+
+source "$(dirname "${BASH_SOURCE[0]}")/env"
+
+# Logging
+log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
+log_pass() { echo -e "${GREEN}[PASS]${NC} $*"; }
+log_fail() { echo -e "${RED}[FAIL]${NC} $*"; }
+log_skip() { echo -e "${YELLOW}[SKIP]${NC} $*"; }
+log_warn() { echo -e "${CYAN}[WARN]${NC} $*"; }
+
+# Note: Removed set -o errexit to allow assertions to fail gracefully
+# Test failures are now caught by run's subshell wrapper
+
+# Test setup/teardown
+setup_test() {
+    local test_file="$1"
+    local test_name
+    test_name=$(basename "$test_file" .sh | sed 's/^tc_//')
+    
+    # Delete and recreate test output directory
+    local test_dir="$OUTPUT_DIR/$test_name"
+    rm -rf "$test_dir"
+    mkdir -p "$test_dir"
+    
+    # Change into test directory - all test files go here
+    cd "$test_dir"
+    
+    # Initialize status.json
+    local start_time
+    start_time=$(date -Iseconds)
+    cat > "status.json" << EOF
+{
+  "test_name": "$test_name",
+  "group": ${TEST_GROUP:-0},
+  "tags": ["${TEST_TAGS[*]:-unknown}"],
+  "status": "PENDING",
+  "duration": 0,
+  "start_time": "$start_time",
+  "end_time": null,
+  "agent_output": "",
+  "assertions": []
+}
+EOF
+    
+    # Store test_dir for use in test (absolute path)
+    export TEST_OUTPUT_DIR="$(pwd)"
+    
+    # Initialize log file - don't use exec redirection, it persists!
+    local log_file="$test_dir/log.txt"
+    echo "Starting test: $test_name" > "$log_file"
+    echo "Output directory: $test_dir" >> "$log_file"
+    echo "Test group: ${TEST_GROUP:-0}" >> "$log_file"
+    echo "Test tags: ${TEST_TAGS[*]:-none}" >> "$log_file"
+    echo "Timeout: ${TEST_TIMEOUT:-60}s" >> "$log_file"
+    echo "" >> "$log_file"
+
+    # Initialize log files for failure archiving
+    touch "$test_dir/input.log"
+    touch "$test_dir/assertions.log"
+    log_info "Starting test: $test_name"
+}
+
+cleanup_test() {
+    local test_file="$1"
+    local test_name
+    test_name=$(basename "$test_file" .sh | sed 's/^tc_//')
+    
+    local test_dir="$OUTPUT_DIR/$test_name"
+    local log_file="$test_dir/log.txt"
+    local status_file="$test_dir/status.json"
+    
+    local end_time
+
+    # Delete DUT_PATH after test
+    if [[ -f "$DUT_PATH" ]]; then
+        rm -f "$DUT_PATH"
+        log_info "Deleted DUT: $DUT_PATH"
+    fi
+    end_time=$(date -Iseconds)
+    
+    # Update status.json
+    local duration="${TEST_DURATION:-0}"
+    local status="UNKNOWN"
+    if [[ -f "$status_file" ]]; then
+        # Read current status and update
+        local agent_output=""
+        if [[ -v TEST_RESULT ]]; then
+            status="$TEST_RESULT"
+        fi
+        
+        # Update JSON (simple replacement for now)
+        sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"$status\"/" "$status_file"
+        sed -i "s/\"duration\": [0-9.]*/\"duration\": $duration/" "$status_file"
+        sed -i "s/\"end_time\": null/\"end_time\": \"$end_time\"/" "$status_file"
+    fi
+    
+    log_info "Test $test_name completed: $status"
+    log_info "Output files in: $test_dir"
+}
+
+# Test assertions
+expect_equal() {
+    local expected="$1"
+    local actual="$2"
+    local message="$3"
+    local test_name="$4"
+    
+    if [[ "$expected" == "$actual" ]]; then
+        log_pass "$message"
+        return 0
+    else
+        log_fail "$message: expected '$expected', got '$actual'"
+        return 1
+    fi
+}
+
+expect_contains() {
+    local needle="$1"
+    local haystack="$2"
+    local message="$3"
+    local test_name="$4"
+    
+    if [[ "$haystack" == *"$needle"* ]]; then
+        log_pass "$message"
+        if [[ -n "$TEST_OUTPUT_DIR" ]]; then
+            echo '{"type": "expect_contains", "test": "'"$test_name"'", "result": "PASS", "needle": "'"$needle"'", "message": "'"$message"'"}' >> "$TEST_OUTPUT_DIR/assertions.log"
+        fi
+        return 0
+    else
+        log_fail "$message: expected to find '$needle'"
+        if [[ -n "$TEST_OUTPUT_DIR" ]]; then
+            echo '{"type": "expect_contains", "test": "'"$test_name"'", "result": "FAIL", "needle": "'"$needle"'", "found_in": "(haystack length: '"${#haystack}"'), "message": "'"$message"'"}' >> "$TEST_OUTPUT_DIR/assertions.log"
+        fi
+        return 1
+    fi
+}
+
+expect_not_contains() {
+    local needle="$1"
+    local haystack="$2"
+    local message="$3"
+    local test_name="$4"
+    
+    if [[ "$haystack" != *"$needle"* ]]; then
+        log_pass "$message"
+        return 0
+    else
+        log_fail "$message: expected NOT to find '$needle'"
+        return 1
+    fi
+}
+
+expect_file_exists() {
+    local file="$1"
+    local message="$2"
+    local test_name="$3"
+    
+    if [[ -f "$file" ]]; then
+        log_pass "$message"
+        return 0
+    else
+        log_fail "$message: file does not exist"
+        return 1
+    fi
+}
+
+expect_not_file_exists() {
+    local file="$1"
+    local message="$2"
+    local test_name="$3"
+    
+    if [[ ! -f "$file" ]]; then
+        log_pass "$message"
+        return 0
+    else
+        log_fail "$message: file should not exist"
+        return 1
+    fi
+}
+
+expect_file_contains() {
+    local file="$1"
+    local needle="$2"
+    local message="$3"
+    local test_name="$4"
+    
+    if grep -q "$needle" "$file" 2>/dev/null; then
+        log_pass "$message"
+        return 0
+    else
+        log_fail "$message: file does not contain '$needle'"
+        return 1
+    fi
+}
+
+expect_numeric() {
+    local expected="$1"
+    local actual="$2"
+    local op="$3"
+    local message="$4"
+    local test_name="$5"
+    
+    case "$op" in
+        eq)
+            if [[ "$expected" -eq "$actual" ]]; then
+                log_pass "$message"
+                return 0
+            else
+                log_fail "$message: expected $expected, got $actual"
+                return 1
+            fi
+            ;;
+        gt)
+            if [[ "$actual" -gt "$expected" ]]; then
+                log_pass "$message"
+                return 0
+            else
+                log_fail "$message: expected > $expected, got $actual"
+                return 1
+            fi
+            ;;
+        lt)
+            if [[ "$actual" -lt "$expected" ]]; then
+                log_pass "$message"
+                return 0
+            else
+                log_fail "$message: expected < $expected, got $actual"
+                return 1
+            fi
+            ;;
+    esac
+    return 1
+}
+
+expect_numeric_range() {
+    local label="$1"
+    local haystack="$2"
+    local min_value="$3"
+    local message="$4"
+    local test_name="$5"
+    
+    # Extract numeric value (handles commas like "3,844")
+    local value=$(echo "$haystack" | grep -oE "${label}: [0-9,]+" | grep -oE '[0-9,]+' | tr -d ',')
+    
+    # Validate
+    if [[ -n "$value" && "$value" -gt "$min_value" ]]; then
+        log_pass "$message"
+        if [[ -n "$TEST_OUTPUT_DIR" ]]; then
+            echo '{"type": "expect_numeric_range", "test": "'"$test_name"'", "result": "PASS", "label": "'"$label"'", "value": "'"$value"'", "min": "'"$min_value"'", "message": "'"$message"'"}' >> "$TEST_OUTPUT_DIR/assertions.log"
+        fi
+        return 0
+    else
+        log_fail "$message: expected $label > $min_value, got '$value'"
+        if [[ -n "$TEST_OUTPUT_DIR" ]]; then
+            echo '{"type": "expect_numeric_range", "test": "'"$test_name"'", "result": "FAIL", "label": "'"$label"'", "value": "'"$value"'", "min": "'"$min_value"'", "message": "'"$message"'"}' >> "$TEST_OUTPUT_DIR/assertions.log"
+        fi
+        return 1
+    fi
+}
+
+create_test_file() {
+    local file="$1"
+    local content="$2"
+    echo -e "$content" > "$file"
+}
+
+run_tool_capture() {
+    local output_file="$1"
+    local timeout="$2"
+    shift 2
+    
+    # Log inputs to assertions.log for archiving
+    if [[ -n "$TEST_OUTPUT_DIR" ]]; then
+        for arg in "$@"; do
+            echo ""$arg"" >> "$TEST_OUTPUT_DIR/input.log"
+        done
+    fi
+    
+    timeout "$timeout" "$DUT_PATH" "$@" 2>&1 | tee -a "$output_file"
+}
+
+# A2A socket setup helper
+# Usage: setup_a2a_socket <pid> <output_file>
+# Returns: socket path in $A2A_SOCKET, or empty on failure
+setup_a2a_socket() {
+    local pid="$1"
+    local output_file="$2"
+    local max_wait=5
+    local waited=0
+    
+    # Socket path in /tmp (A2A protocol standard location)
+    A2A_SOCKET="/tmp/taua2a-${pid}.sock"
+    
+    # Wait for socket to appear
+    while [[ ! -S "$A2A_SOCKET" ]] && [[ $waited -lt $max_wait ]]; do
+        sleep 1
+        ((waited++)) || true
+    done
+    
+    if [[ ! -S "$A2A_SOCKET" ]]; then
+        log_fail "Socket not created after ${max_wait}s"
+        return 1
+    fi
+    
+    log_info "A2A socket ready: $A2A_SOCKET"
+    return 0
+}
+
+# A2A cleanup helper - kill agent and verify gone
+# Usage: cleanup_a2a_agent <pid>
+cleanup_a2a_agent() {
+    local pid="$1"
+    
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        log_info "Killing agent PID $pid"
+        kill "$pid" 2>/dev/null || true
+        sleep 1
+        
+        # Verify process is gone
+        local max_wait=3
+        local waited=0
+        while kill -0 "$pid" 2>/dev/null && [[ $waited -lt $max_wait ]]; do
+            sleep 1
+            ((waited++)) || true
+        done
+        
+        if kill -0 "$pid" 2>/dev/null; then
+            log_fail "Agent PID $pid still running, sending SIGKILL"
+            kill -9 "$pid" 2>/dev/null || true
+        else
+            log_pass "Agent PID $pid cleaned up"
+        fi
+    else
+        log_info "Agent PID $pid already gone or invalid"
+    fi
+    
+    # Also clean up socket file
+    local socket_path="/tmp/taua2a-${pid}.sock"
+    if [[ -S "$socket_path" ]]; then
+        rm -f "$socket_path"
+        log_info "Removed socket: $socket_path"
+    fi
+}
+
+# ============================================================================
+# Failure Archive Helpers
+# ============================================================================
+
+ensure_logerror_dir() {
+    mkdir -p "$LOGERROR_DIR"
+}
+
+generate_timestamp() {
+    date +"%Y%m%d_%H%M%S"
+}
+
+archive_failure() {
+    local test_name="$1"
+    local test_dir="$2"
+    local agent_output_file="$3"
+    local agent_log_file="${4:-}"
+    local context_file="${5:-}"
+
+    local timestamp
+    timestamp=$(generate_timestamp)
+    
+    ensure_logerror_dir
+    
+    local archive_base="$LOGERROR_DIR/${test_name}_${timestamp}"
+    
+    # meta.json
+    cat > "${archive_base}.meta.json" << EOF
+{
+  "test_name": "$test_name",
+  "group": ${TEST_GROUP:-0},
+  "subgroup": ${TEST_SUBGROUP:-0},
+  "index": ${TEST_INDEX:-0},
+  "tags": ["${TEST_TAGS[*]:-none}"],
+  "timeout": ${TEST_TIMEOUT:-60},
+  "start_time": "$(date -Iseconds)",
+  "duration": ${TEST_DURATION:-0}
+}
+EOF
+
+    # env.json
+    cat > "${archive_base}.env.json" << EOF
+{
+  "TAUBASEURL": "${TAUBASEURL:-}",
+  "TAUMODEL": "${TAUMODEL:-}",
+  "AGENT_PATH": "$AGENT_PATH",
+  "AGENT_NAME": "$AGENT_NAME",
+  "LOGERROR_DIR": "$LOGERROR_DIR",
+  "OUTPUT_DIR": "$OUTPUT_DIR"
+}
+EOF
+
+    # input.json
+    if [[ -f "$test_dir/input.log" ]]; then
+        local inputs_json="["
+        local first=true
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ -n "$line" ]]; then
+                if [[ "$first" == "true" ]]; then
+                    first=false
+                else
+                    inputs_json+=","
+                fi
+                inputs_json+="\"$(echo "$line" | sed 's/"/\\"/g')\""
+            fi
+        done < "$test_dir/input.log"
+        inputs_json+="]"
+        echo "{\"inputs\": $inputs_json}" > "${archive_base}.input.json"
+    else
+        echo '{"inputs": []}' > "${archive_base}.input.json"
+    fi
+
+    # assertions.json
+    if [[ -f "$test_dir/assertions.log" ]]; then
+        cp "$test_dir/assertions.log" "${archive_base}.assertions.json"
+    else
+        echo "[]" > "${archive_base}.assertions.json"
+    fi
+
+    # agent_output.txt
+    if [[ -f "$agent_output_file" ]]; then
+        cp "$agent_output_file" "${archive_base}.agent_output.txt"
+    fi
+
+    # agent_log.txt
+    if [[ -f "$agent_log_file" ]]; then
+        cp "$agent_log_file" "${archive_base}.agent_log.txt"
+    fi
+
+    # context.json
+    if [[ -f "$context_file" ]]; then
+        cp "$context_file" "${archive_base}.context.json"
+    fi
+
+    # files.json - file tree snapshot
+    find "$test_dir" -type f \( -name "*.txt" -o -name "*.json" -o -name "*.py" \) 2>/dev/null | \
+    head -50 | \
+    jq -R -s 'split("\n") | map(select(length > 0))' > "${archive_base}.files.json" 2>/dev/null || \
+    echo "[]" > "${archive_base}.files.json"
+
+    # system.txt
+    cat > "${archive_base}.system.txt" << EOF
+OS: $(uname -a)
+Python: $(/usr/bin/env python3 --version 2>&1)
+Disk: $(df -h . | tail -1)
+Hostname: $(uname -n)
+PWD: $(pwd)
+EOF
+
+    log_info "Failure archived to: $LOGERROR_DIR/${test_name}_${timestamp}.*"
+}

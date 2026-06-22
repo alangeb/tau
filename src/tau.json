@@ -1,0 +1,164 @@
+{
+  "timeout": 180,
+  "agent_name": "default",
+  "debug": false,
+  "malformed": {
+    "silent_retries": 4,
+    "enhanced_retries": 7,
+    "explicit_retries": 10
+  },
+  "loop_detection": {
+    "window_size": 30,
+    "repeat_threshold": 3,
+    "replace_unknown_tools": 2
+  },
+  "nesting": {
+    "depth_threshold": 2
+  },
+  "external_services": {
+    "searxng_url": "http://searxng",
+    "crawl4ai_url": "http://crawl4ai:11235"
+  },
+  "reflection": {
+    "enabled": false,
+    "initial_think": false,
+    "min_interval": 15,
+    "max_interval": 30,
+    "content_threshold_bytes": 200,
+    "reactive_on_loop_warning": true,
+    "reactive_on_error_burst": true
+  },
+  "llm_groups": {
+    "cuda": {
+      "model": "model",
+      "api_base": "http://cuda:8000/v1",
+      "api_key": "",
+      "timeout": 600,
+      "max_context_tokens": 180000,
+      "max_tokens": 12000,
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0,
+      "chat_template_kwargs": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      }
+    },
+    "spark": {
+      "model": "model",
+      "api_base": "http://spark:8000/v1",
+      "api_key": "",
+      "timeout": 1200,
+      "max_context_tokens": 200000,
+      "max_tokens": 12000,
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0,
+      "chat_template_kwargs": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      }
+    },
+    "q27": {
+      "model": "q27",
+      "api_base": "http://spark:8000/v1",
+      "api_key": "",
+      "timeout": 1200,
+      "max_context_tokens": 200000,
+      "max_tokens": 12000,
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0,
+      "chat_template_kwargs": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      }
+    },
+    "q35": {
+      "model": "q35",
+      "api_base": "http://spark:8000/v1",
+      "api_key": "",
+      "timeout": 1200,
+      "max_context_tokens": 200000,
+      "max_tokens": 12000,
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0,
+      "chat_template_kwargs": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      }
+    },
+    "g12": {
+      "model": "g12",
+      "api_base": "http://spark:8000/v1",
+      "api_key": "",
+      "timeout": 1200,
+      "max_context_tokens": 200000,
+      "max_tokens": 12000,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "chat_template_kwargs": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      }
+    },
+    "g26": {
+      "model": "g26",
+      "api_base": "http://spark:8000/v1",
+      "api_key": "",
+      "timeout": 1200,
+      "max_context_tokens": 200000,
+      "max_tokens": 12000,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "chat_template_kwargs": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      }
+    },
+    "g31": {
+      "model": "g31",
+      "api_base": "http://spark:8000/v1",
+      "api_key": "",
+      "timeout": 1200,
+      "max_context_tokens": 200000,
+      "max_tokens": 12000,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "chat_template_kwargs": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      }
+    },
+    "nemo": {
+      "model": "model",
+      "api_base": "http://spark:8000/v1",
+      "api_key": "",
+      "timeout": 600,
+      "max_context_tokens": 400000,
+      "max_tokens": 8192,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "chat_template_kwargs": {
+        "enable_thinking": true,
+        "low_effort": true
+      }
+    }
+  }
+}

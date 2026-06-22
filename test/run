@@ -1,0 +1,248 @@
+#!/bin/bash
+set -euo pipefail
+
+source "$(dirname "${BASH_SOURCE[0]}")/env"
+source "$(dirname "${BASH_SOURCE[0]}")/func"
+
+# Parse arguments
+PREFIXES=()
+VERBOSE=0
+FAIL_ONLY=0
+RETRY=1
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --verbose|-v)
+            VERBOSE=1
+            shift
+            ;;
+        --fail-only)
+            FAIL_ONLY=1
+            shift
+            ;;
+        --no-retry)
+            RETRY=0
+            shift
+            ;;
+        *)
+            PREFIXES+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Retry configuration
+MAX_ATTEMPTS=3
+
+# Clear output directory (keep folder, remove contents)
+if [[ -d "$OUTPUT_DIR" ]]; then
+    find "$OUTPUT_DIR" -mindepth 1 -delete
+fi
+
+# Discover test files
+if [[ ${#PREFIXES[@]} -gt 0 ]]; then
+    # Build list from all prefixes, remove duplicates
+    TEST_FILES=()
+    for prefix in "${PREFIXES[@]}"; do
+        clean_prefix="${prefix#tc_}"
+        TEST_FILES+=( $(ls "$SCRIPT_DIR"/tc_${clean_prefix}*.sh 2>/dev/null || true) )
+    done
+    # Remove duplicates while preserving order
+    TEST_FILES=($(printf '%s\n' "${TEST_FILES[@]}" | awk '!seen[$0]++'))
+else
+    TEST_FILES=( $(ls "$SCRIPT_DIR"/tc_*.sh 2>/dev/null | sort) )
+fi
+
+if [[ ${#TEST_FILES[@]} -eq 0 ]]; then
+    log_error "No test files found matching pattern"
+    exit 1
+fi
+
+# Validation function
+validate_test_file() {
+    local test_file="$1"
+    local required_headers=("@group" "@name" "@tags" "@timeout" "@description")
+    local filename
+    filename=$(basename "$test_file")
+
+    # Check for required headers
+    for header in "${required_headers[@]}"; do
+        if ! grep -q "^# $header:" "$test_file"; then
+            log_error "Missing required header: $header in $test_file"
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+# Helper function to reset test state for retry
+reset_test_state() {
+    local test_name="$1"
+    local test_dir="$OUTPUT_DIR/$test_name"
+    
+    # Clean up test directory for fresh run
+    rm -rf "$test_dir"
+    mkdir -p "$test_dir"
+    
+    # Re-initialize status.json
+    local start_time
+    start_time=$(date -Iseconds)
+    cat > "$test_dir/status.json" << EOF
+{
+  "test_name": "$test_name",
+  "group": ${TEST_GROUP:-0},
+  "tags": ["${TEST_TAGS[*]:-unknown}"],
+  "status": "PENDING",
+  "duration": 0,
+  "start_time": "$start_time",
+  "end_time": null,
+  "agent_output": "",
+  "assertions": []
+}
+EOF
+}
+
+# Initialize counters
+TESTS_RUN=0
+TESTS_PASSED=0
+TESTS_FAILED=0
+TESTS_SKIPPED=0
+FAILED_TESTS=()
+
+# Validate test files before running
+log_info "Validating test files..."
+for test_file in "${TEST_FILES[@]}"; do
+    if ! validate_test_file "$test_file"; then
+        log_fail "Invalid test file: $test_file"
+        exit 1
+    fi
+done
+log_info "All test files validated"
+
+# Run tests
+log_info "Starting test suite with ${#TEST_FILES[@]} tests"
+echo ""
+
+# Save original directory
+ORIGINAL_DIR="$(pwd)"
+
+for test_file in "${TEST_FILES[@]}"; do
+    ((TESTS_RUN++)) || true
+
+    test_name=$(basename "$test_file" .sh | sed 's/^tc_//')
+    
+    # Initialize per-test retry counters
+    TEST_ATTEMPT=0
+    TEST_RESULT="FAIL"
+    TEST_DURATION=0
+
+    # Check if we should retry for this test
+    if [[ $RETRY -eq 1 ]]; then
+        log_info "Running with retry: max $MAX_ATTEMPTS attempts"
+    else
+        log_info "Retry disabled: single attempt only"
+    fi
+
+    # Retry loop
+    for attempt in $(seq 1 $MAX_ATTEMPTS); do
+        TEST_ATTEMPT=$attempt
+        log_info "Running $test_name (attempt $attempt/$MAX_ATTEMPTS)..."
+
+        # For attempts after the first, reset test state
+        if [[ $attempt -gt 1 ]]; then
+            reset_test_state "$test_name"
+        fi
+
+        # Source test file (it will call setup_test and cleanup_test)
+        # Set test result variable before sourcing
+        TEST_RESULT="FAIL"
+        TEST_DURATION=0
+
+        # Change to script directory before sourcing to ensure proper path resolution
+        cd "$SCRIPT_DIR"
+
+        # Run test in subshell to catch unexpected exits (set -e failures)
+        # If test crashes, subshell exits non-zero, caught by || block
+        # Note: Removed set -e to allow assertions to fail gracefully
+        (
+            set -uo pipefail
+            source "$test_file"
+        ) || {
+            log_warn "$test_name: test execution failed unexpectedly"
+            # TEST_RESULT already set to FAIL in parent, continue to next test
+        }
+
+        # Change back to original directory after sourcing
+        cd "$ORIGINAL_DIR"
+
+        # Read test result from status.json (subshell variables don't leak to parent)
+        STATUS_FILE="$OUTPUT_DIR/$test_name/status.json"
+        if [[ -f "$STATUS_FILE" ]]; then
+            TEST_RESULT=$(grep '"status"' "$STATUS_FILE" | sed 's/.*"status": "\([^"]*\)".*/\1/')
+        else
+            TEST_RESULT="FAIL"
+        fi
+
+        # Check result
+        if [[ "$TEST_RESULT" == "PASS" ]]; then
+            ((TESTS_PASSED++)) || true
+            if [[ $TEST_ATTEMPT -gt 1 ]]; then
+                log_pass "$test_name (passed on attempt $TEST_ATTEMPT, ${TEST_DURATION:-0}s)"
+            else
+                log_pass "$test_name (${TEST_DURATION:-0}s)"
+            fi
+            echo "  LOG: $OUTPUT_DIR/$test_name/log.txt"
+            break  # Exit retry loop on success
+        elif [[ "$TEST_RESULT" == "SKIP" ]]; then
+            # Skip is final - don't retry
+            ((TESTS_SKIPPED++)) || true
+            log_skip "$test_name"
+            echo "  LOG: $OUTPUT_DIR/$test_name/log.txt"
+            break  # Exit retry loop on skip
+        else
+            # Test failed, check if we should retry
+            if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
+                log_warn "$test_name: Test failed, retrying... (attempt $((attempt + 1))/$MAX_ATTEMPTS)"
+            fi
+        fi
+    done
+
+    # Record final failure after all retries exhausted
+    if [[ "$TEST_RESULT" != "PASS" && "$TEST_RESULT" != "SKIP" ]]; then
+        ((TESTS_FAILED++)) || true
+        FAILED_TESTS+=("$test_name")
+        if [[ $TEST_ATTEMPT -gt 1 ]]; then
+            log_fail "$test_name (failed after $TEST_ATTEMPT attempts, ${TEST_DURATION:-0}s)"
+        else
+            log_fail "$test_name (${TEST_DURATION:-0}s)"
+        fi
+        echo "  LOG: $OUTPUT_DIR/$test_name/log.txt"
+        echo "  STATUS: $OUTPUT_DIR/$test_name/status.json"
+    fi
+done
+
+# Final report
+echo ""
+echo -e "${BLUE}==============================================${NC}"
+echo -e "${BLUE}Test Suite Completed!${NC}"
+echo -e "${BLUE}==============================================${NC}"
+echo ""
+echo -e "Results: ${GREEN}$TESTS_PASSED passed${NC}, ${RED}$TESTS_FAILED failed${NC}, ${YELLOW}$TESTS_SKIPPED skipped${NC}"
+echo -e "Total: $TESTS_RUN tests"
+echo ""
+
+if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
+    echo -e "${RED}Failed tests:${NC}"
+    for t in "${FAILED_TESTS[@]}"; do
+        echo "  - $t"
+    done
+    echo ""
+fi
+
+# Exit code: 0 if all pass, N if N failures
+if [[ $TESTS_FAILED -eq 0 ]]; then
+    exit 0
+else
+    exit $TESTS_FAILED
+fi

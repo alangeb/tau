@@ -1,0 +1,426 @@
+#!/bin/bash
+# @group: 10
+# @name: a2a_test_suite
+# @tags: fast,a2a
+# @timeout: 120
+# @description: Run multiple A2A test scenarios against one agent instance
+#
+# Test Intent:
+# - Batch of multiple test scenarios via single A2A connection
+# - Each test validates different agent capability
+# - Performance: ~10-15 seconds total (one agent startup, many queries)
+# - Compare to tc_10.0.1: Single query vs batch of many queries
+#
+# Test Flow:
+# 1. START: Launch agent with --keep-alive
+# 2. WAIT: Poll for A2A socket
+# 3. BATCH: Execute multiple test queries (one after another)
+# 4. VALIDATE: Each query checked with expect_* helpers
+# 5. AGGREGATE: Final PASS only if ALL queries passed
+# 6. CLEANUP: Kill agent, remove socket
+#
+# Example query structure (add more as needed):
+# result=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "your query" 2>&1) || true
+# expect_contains "expected_text" "$result" "Validation message" "$TEST_NAME"
+#
+# Key difference from tc_10.0.1:
+# - tc_10.0.1: Single query, exits after first result
+# - tc_10.0.2: Multiple queries, aggregates all results
+#
+# Note: A2A queries work for assistant-flow commands that produce LLM responses
+# Commands like /help, /commands, /toolsjson print directly and don't populate A2A response
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env"
+source "$SCRIPT_DIR/func"
+
+export TEST_GROUP=10
+export TEST_SUBGROUP=0
+export TEST_INDEX=2
+export TEST_TAGS=("fast" "a2a")
+export TEST_TIMEOUT=120
+
+setup_test "$BASH_SOURCE"
+cp "$AGENT_PATH" "$DUT_PATH"
+
+TEST_NAME="tc_10.0.2_a2a_test_suite"
+output_file="./tool_output.txt"
+start_time=$(date +%s.%N)
+
+AGENT_PID=""
+A2A_SOCKET=""
+ALL_PASSED=true
+
+# ============================================================================
+# 1. START: Launch agent with --keep-alive for persistent session
+# ============================================================================
+
+log_info "Starting agent with --keep-alive..."
+python3 "$DUT_PATH" --keep-alive > "$output_file" 2>&1 &
+AGENT_PID=$!
+
+log_info "Agent started with PID: $AGENT_PID"
+
+# Wait for agent to initialize and create A2A socket
+sleep 3
+
+# ============================================================================
+# 2. WAIT: Poll for A2A socket
+# ============================================================================
+
+A2A_SOCKET="/tmp/taua2a-${AGENT_PID}.sock"
+socket_ready=0
+
+for i in $(seq 1 10); do
+    if [[ -S "$A2A_SOCKET" ]]; then
+        log_pass "A2A socket ready after ${i} attempts: $A2A_SOCKET"
+        socket_ready=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [[ $socket_ready -eq 0 ]]; then
+    log_fail "A2A socket not created after 5 seconds"
+    ALL_PASSED=false
+    # Cleanup before exit
+    if [[ -n "$AGENT_PID" ]] && kill -0 "$AGENT_PID" 2>/dev/null; then
+        kill "$AGENT_PID" 2>/dev/null || true
+        sleep 1
+    fi
+    end_time=$(date +%s.%N)
+    TEST_DURATION=$(awk "BEGIN {printf \"%.2f\", $end_time - $start_time}")
+    cleanup_test "$BASH_SOURCE"
+    exit 1
+fi
+
+log_info "A2A socket confirmed: $A2A_SOCKET"
+
+# ============================================================================
+# 3. BATCH: Execute multiple test queries (one after another)
+# ============================================================================
+
+# TEST 1: Basic arithmetic
+log_info "[COMM] How much is 123*2?"
+FULL_RESULT_1=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "When you reply with numbers, always only use the plain numbers (never use punctuation). How much is 123*2?" 2>&1) || true
+result_clean_1=$(echo "$FULL_RESULT_1" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_contains "246" "$result_clean_1" "Arithmetic 123*2=246" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_1"
+    ALL_PASSED=false
+fi
+
+# TEST 2: Context preservation (remember X)
+log_info "[COMM] Remember: test_value=999"
+FULL_RESULT_2=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "We will do some math. For now just simply remember (don't do anything else): test_value=999" 2>&1) || true
+log_info "[COMM] What is test_value I just gave you earlier (just reply with the number)?"
+FULL_RESULT_3=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "What is test_value I just gave you earlier (just reply with the number)?" 2>&1) || true
+result_clean_3=$(echo "$FULL_RESULT_3" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_contains "999" "$result_clean_3" "Context returns test_value=999" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_3"
+    ALL_PASSED=false
+    fi
+    
+    # TEST 4: Update context
+    log_info "[COMM] Update: test_value=777"
+    FULL_RESULT_4=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "I've changed my mind, we need to update, just remember the new value: test_value=777" 2>&1) || true
+    result_clean_4=$(echo "$FULL_RESULT_4" | sed 's/[[0-9;]*m//g')
+    log_info "[RESULT] Update command response: '$result_clean_4'"
+    # Note: We don't expect acknowledgment in response, but verify it is remembered later in TEST 5
+    # TEST 5: Final recall
+    log_info "[COMM] What is test_value now?"
+    FULL_RESULT_5=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "What is test_value now?" 2>&1) || true
+    result_clean_5=$(echo "$FULL_RESULT_5" | sed 's/\x1b\[[0-9;]*m//g')
+    if ! expect_contains "777" "$result_clean_5" "Context returns updated test_value=777" "$TEST_NAME"; then
+        log_fail "[INPUT] Full result: $FULL_RESULT_5"
+        ALL_PASSED=false
+    fi
+
+# TEST 6: Calculation using context (777 + 222 = 999)
+log_info "[COMM] Change test_value to 555, calculate test_value + 222 and return the result, answer only the number"
+FULL_RESULT_6=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "Change test_value to 555, calculate test_value + 222 and return the result, answer only the number" 2>&1) || true
+result_clean_6=$(echo "$FULL_RESULT_6" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_contains "777" "$result_clean_6" "Calculation: test_value + 222 = 777" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_6"
+    ALL_PASSED=false
+fi
+
+# TEST 7: Undo
+log_info "[COMM] /undo"
+FULL_RESULT_7=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/undo" 2>&1) || true
+result_clean_7=$(echo "$FULL_RESULT_7" | sed 's/\x1b\[[0-9;]*m//g')
+
+# TEST 8: After undo, verify reverted value
+log_info "[COMM] What is test_value after undo?"
+FULL_RESULT_8=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "What is test_value now?" 2>&1) || true
+result_clean_8=$(echo "$FULL_RESULT_8" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_contains "777" "$result_clean_8" "Undo restores test_value=777" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_8"
+    ALL_PASSED=false
+fi
+
+# ============================================================================
+# TEST 9: Dynamically create custom command and verify in /help
+# ============================================================================
+# Create testcustomcommand.md file in the agent's commands directory
+COMMS_DIR="$CODE_DIR/commands"
+cat > "$COMMS_DIR/testcustomcommand.md" << 'EOF'
+---
+name: testcustomcommand
+signature: testcustomcommand <arg1> <arg2>
+description: Math pattern - remember X and Y values
+---
+
+Later we will working on some math. You don't need todo anything for now, just remember X=2*$1 and Y=2*$2 (just remember)
+EOF
+
+# Test that /help shows the new command
+log_info "[COMM] /help"
+FULL_RESULT_9=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/help" 2>&1) || true
+result_clean_9=$(echo "$FULL_RESULT_9" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_contains "/testcustomcommand" "$result_clean_9" "/help shows /testcustomcommand" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_9"
+    ALL_PASSED=false
+fi
+
+# ============================================================================
+# TEST 10: Execute custom command and verify memory
+# ============================================================================
+# First execute the custom command
+log_info "[COMM] /testcustomcommand 1111 3333"
+FULL_RESULT_10A=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/testcustomcommand 1111 3333" 2>&1) || true
+result_clean_10A=$(echo "$FULL_RESULT_10A" | sed 's/\x1b\[[0-9;]*m//g')
+
+# Now ask about X value
+log_info "[COMM] do you remember the value of X? just answer with the value, no punctuation or anything"
+FULL_RESULT_10B=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "do you remember the value of X? just answer with the value, no punctuation or anything" 2>&1) || true
+result_clean_10B=$(echo "$FULL_RESULT_10B" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_contains "2222" "$result_clean_10B" "Custom command sets X=2222" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_10B"
+    ALL_PASSED=false
+fi
+
+# ============================================================================
+# TEST 11-13: Calculate X+Y value (using remembered variables from custom command)
+# ============================================================================
+# The custom command set X=2*1111=2222 and Y=2*3333=6666 earlier (messages 14-15).
+# We'll compute X+Y directly by asking the agent to recall the values and calculate.
+log_info "[COMM] Remember the magic number is 434343"
+FULL_RESULT_11=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "Remember the magic number is 434343" 2>&1) || true
+result_clean_11=$(echo "$FULL_RESULT_11" | sed 's/\x1b\[[0-9;]*m//g')
+
+log_info "[COMM] /undo"
+FULL_RESULT_11=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/undo" 2>&1) || true
+
+log_info "[COMM] What is the magic number? If you know, answer just the number, no punctuation (don't try to find out, you either know it, or you don't - if you don't know it just say so)"
+FULL_RESULT_12=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "What is the magic number? If you know, answer just the number, no punctuation (don't try to find out, you either know it, or you don't - if you don't know it just say so)" 2>&1) || true
+result_clean_12=$(echo "$FULL_RESULT_12" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_not_contains "434343" "$result_clean_12" "434343" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_12"
+    ALL_PASSED=false
+fi
+
+# ============================================================================
+# TEST 14: Check /commands output
+# ============================================================================
+log_info "[COMM] /commands"
+FULL_RESULT_14A=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/commands" 2>&1) || true
+result_clean_14A=$(echo "$FULL_RESULT_14A" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_contains "/testcustomcommand" "$result_clean_14A" "/commands contains /testcustomcommand" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_14A"
+    ALL_PASSED=false
+fi
+if ! expect_contains "/recap" "$result_clean_14A" "/commands contains /recap" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_14A"
+    ALL_PASSED=false
+fi
+if ! expect_contains "AVAILABLE COMMANDS" "$result_clean_14A" "/commands contains AVAILABLE COMMANDS" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_14A"
+    ALL_PASSED=false
+fi
+
+# ============================================================================
+# TEST 15: Delete custom command and verify it's gone from /commands
+# ============================================================================
+rm "$COMMS_DIR/testcustomcommand.md"
+
+log_info "[COMM] /commands (after deletion)"
+FULL_RESULT_15=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/commands" 2>&1) || true
+result_clean_15=$(echo "$FULL_RESULT_15" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_not_contains "/testcustomcommand" "$result_clean_15" "/commands does not contain /testcustomcommand" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_15"
+    ALL_PASSED=false
+fi
+if ! expect_contains "/recap" "$result_clean_15" "/commands contains /recap" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_15"
+    ALL_PASSED=false
+fi
+if ! expect_contains "AVAILABLE COMMANDS" "$result_clean_15" "/commands contains AVAILABLE COMMANDS" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_15"
+    ALL_PASSED=false
+fi
+
+# TEST 19: /exec with file creation
+# ============================================================================
+# First ensure test.txt does not exist (using shell rm since no delete tool)
+log_info "[COMM] rm -f /tmp/test.txt"
+rm -f /tmp/test.txt
+
+# Create the file
+log_info "[COMM] /exec write_file file_path=/tmp/test.txt content=hello_world"
+FULL_RESULT_19B=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/exec write_file file_path=/tmp/test.txt content=hello_world" 2>&1) || true
+result_clean_19B=$(echo "$FULL_RESULT_19B" | sed 's/\x1b\[[0-9;]*m//g')
+
+# Verify file exists and has correct content
+if [[ -f "/tmp/test.txt" ]]; then
+    log_pass "File /tmp/test.txt created" "$TEST_NAME"
+else
+    log_fail "File /tmp/test.txt not created" "$TEST_NAME"
+    ALL_PASSED=false
+fi
+
+FILE_CONTENT=$(cat /tmp/test.txt 2>/dev/null || true)
+if [[ "$FILE_CONTENT" == "hello_world" ]]; then
+    log_pass "File content is 'hello_world'" "$TEST_NAME"
+else
+    log_fail "File content incorrect, got: $FILE_CONTENT" "$TEST_NAME"
+    ALL_PASSED=false
+fi
+
+# ============================================================================
+# TEST 20: /subagent vs /fork context isolation
+# ============================================================================
+# Set X value in main agent
+log_info "[COMM] Let X be 123456, remember this, we use it later"
+FULL_RESULT_20A=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "Let X be 123456, remember this, we use it later" 2>&1) || true
+result_clean_20A=$(echo "$FULL_RESULT_20A" | sed 's/\x1b\[[0-9;]*m//g')
+
+# Subagent should NOT know about X (isolated context)
+log_info "[COMM] /subagent What do you know about the value of X"
+FULL_RESULT_20B=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/subagent What do you know about the value of X (don't investigate, just answer the question, if you don't know just say so)" 2>&1) || true
+result_clean_20B=$(echo "$FULL_RESULT_20B" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_not_contains "123456" "$result_clean_20B" "/subagent does not know X (isolated)" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_20B"
+    ALL_PASSED=false
+fi
+
+# Fork should know about X (inherits full context)
+log_info "[COMM] /fork What do you know about the value of X"
+FULL_RESULT_20C=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/fork What do you know about the value of X (don't investigate, just answer the question, if you don't know just say so)" 2>&1) || true
+result_clean_20C=$(echo "$FULL_RESULT_20C" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_contains "123456" "$result_clean_20C" "/fork knows X (context inherited)" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_20C"
+    ALL_PASSED=false
+fi
+
+# ============================================================================
+# TEST 21: /compress reduces context size
+# ============================================================================
+# Get initial context size
+log_info "[COMM] /status"
+FULL_RESULT_21A=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/status" 2>&1) || true
+result_clean_21A=$(echo "$FULL_RESULT_21A" | sed 's/\x1b\[[0-9;]*m//g')
+
+# Parse context bytes (format: "Context: 19 msgs | ~5,729 tokens (17,837 bytes)")
+INITIAL_BYTES=""
+if [[ "$result_clean_21A" =~ Context:[[:space:]]+[0-9]+[[:space:]]+msgs[[:space:]]*\|[[:space:]]*~?[0-9,]+[[:space:]]+tokens[[:space:]]+\(([0-9,]+)[[:space:]]+bytes\) ]]; then
+    INITIAL_BYTES="${BASH_REMATCH[1]}"
+    INITIAL_BYTES=${INITIAL_BYTES//,/}  # Remove commas
+    log_info "Initial context bytes: $INITIAL_BYTES"
+else
+    log_fail "Could not parse initial context bytes" "$TEST_NAME"
+    ALL_PASSED=false
+fi
+
+# Compress context
+log_info "[COMM] /compress"
+FULL_RESULT_21B=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/compress" 2>&1) || true
+result_clean_21B=$(echo "$FULL_RESULT_21B" | sed 's/\x1b\[[0-9;]*m//g')
+
+# Get context size after compression
+log_info "[COMM] /status (after compression)"
+FULL_RESULT_21C=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/status" 2>&1) || true
+result_clean_21C=$(echo "$FULL_RESULT_21C" | sed 's/\x1b\[[0-9;]*m//g')
+
+# Parse context bytes after compression
+FINAL_BYTES=""
+if [[ "$result_clean_21C" =~ Context:[[:space:]]+[0-9]+[[:space:]]+msgs[[:space:]]*\|[[:space:]]*~?[0-9,]+[[:space:]]+tokens[[:space:]]+\(([0-9,]+)[[:space:]]+bytes\) ]]; then
+    FINAL_BYTES="${BASH_REMATCH[1]}"
+    FINAL_BYTES=${FINAL_BYTES//,/}  # Remove commas
+    log_info "Final context bytes: $FINAL_BYTES"
+else
+    log_fail "Could not parse final context bytes" "$TEST_NAME"
+    ALL_PASSED=false
+fi
+
+# Verify compression reduced context size
+if [[ -n "$INITIAL_BYTES" && -n "$FINAL_BYTES" ]]; then
+    if [[ "$FINAL_BYTES" -lt "$INITIAL_BYTES" ]]; then
+        log_pass "Context compressed: $INITIAL_BYTES -> $FINAL_BYTES bytes" "$TEST_NAME"
+    else
+        log_fail "Context did not reduce: $INITIAL_BYTES -> $FINAL_BYTES bytes" "$TEST_NAME"
+        ALL_PASSED=false
+    fi
+fi
+
+    # Verify X is still remembered after compression
+    log_info "[COMM] Do you still remember value of X?"
+    
+    FULL_RESULT_21D=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "Do you still remember value of X?" 2>&1) || true
+    
+    result_clean_21D=$(echo "$FULL_RESULT_21D" | sed 's/[[0-9;]*m//g')
+    
+    log_info "[RESULT] Response to X remembrance question after compression: '$result_clean_21D'"
+    
+    if ! expect_contains "123456" "$result_clean_21D" "X remembered after compression" "$TEST_NAME"; then
+        
+        log_fail "[INPUT] Full result: $FULL_RESULT_21D"
+    
+    ALL_PASSED=false
+
+fi
+
+# ============================================================================
+# TEST 22: /clear erases context
+# ============================================================================
+log_info "[COMM] /clear"
+FULL_RESULT_22A=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/clear" 2>&1) || true
+result_clean_22A=$(echo "$FULL_RESULT_22A" | sed 's/\x1b\[[0-9;]*m//g')
+
+# Verify X is no longer remembered
+log_info "[COMM] What do you know about the value of X?"
+FULL_RESULT_22B=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "What do you know about the value of X?" 2>&1) || true
+result_clean_22B=$(echo "$FULL_RESULT_22B" | sed 's/\x1b\[[0-9;]*m//g')
+if ! expect_not_contains "123456" "$result_clean_22B" "/clear erases context, X forgotten" "$TEST_NAME"; then
+    log_fail "[INPUT] Full result: $FULL_RESULT_22B"
+    ALL_PASSED=false
+fi
+
+# ============================================================================
+# 4. VALIDATE & AGGREGATE: Check results and aggregate
+# ============================================================================
+
+if [[ "$ALL_PASSED" == "true" ]]; then
+    log_pass "All A2A test queries passed"
+    TEST_RESULT="PASS"
+else
+    log_fail "One or more A2A test queries failed"
+    TEST_RESULT="FAIL"
+fi
+
+# ============================================================================
+# 5. CLEANUP: Kill agent and remove socket
+# ============================================================================
+
+cleanup_a2a_agent "$AGENT_PID"
+
+end_time=$(date +%s.%N)
+TEST_DURATION=$(awk "BEGIN {printf \"%.2f\", $end_time - $start_time}")
+
+cleanup_test "$BASH_SOURCE"
+
+# Archive failure if needed
+if [[ "$TEST_RESULT" == "FAIL" ]]; then
+    archive_failure "$TEST_NAME" "$TEST_OUTPUT_DIR" "$output_file" "" ""
+fi

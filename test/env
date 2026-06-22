@@ -1,0 +1,30 @@
+#!/bin/bash
+# Global configuration - sourced by all test files
+
+export BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export CODE_DIR="$BASE_DIR/src"
+export AGENT_NAME="tau.py"
+export DUT_NAME="tau-dut.py"
+export AGENT_PATH="$CODE_DIR/tau.py"
+export DUT_PATH="$CODE_DIR/tau-dut.py"
+
+export TOOL_TIMEOUT=120
+export TEST_TIMEOUT=30
+export LOG_DIR="$BASE_DIR/.test_logs"
+export RESULTS_DIR="$BASE_DIR/.test_results"
+export OUTPUT_DIR="$SCRIPT_DIR/output"
+
+# Redirect agent log files away from the real log directory.
+export TAU_LOG_DIR="$HOME/.local/tau/logtest"
+
+# Permanent failure archive
+export LOGERROR_DIR="$HOME/.local/tau/logerror"
+
+# Colors (force enabled for consistent output)
+export RED='\033[0;31m'
+export GREEN='\033[0;32m'
+export YELLOW='\033[0;33m'
+export BLUE='\033[0;34m'
+export CYAN='\033[0;36m'
+export NC='\033[0m'

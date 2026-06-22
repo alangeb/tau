@@ -1,0 +1,15 @@
+__pycache__
+.mypy_cache
+# src
+src/.**
+src/tau-dut.py
+# test framework
+test/output/**
+# subconscious
+subconscious/**
+dream.log
+# task automation
+tasks/*/**
+tasks/log/
+# log files
+logfile
