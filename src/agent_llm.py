@@ -771,6 +771,11 @@ def llm_postparse(
     if not isinstance(content, str):
         return content, reasoning, tool_calls
 
+    _pp_t0 = time.perf_counter()
+    _pp_input_bytes = len(content.encode("utf-8", errors="replace"))
+    if isinstance(reasoning, str):
+        _pp_input_bytes += len(reasoning.encode("utf-8", errors="replace"))
+
     # Move enclosed thoughts from content into reasoning
     while True:
         content, reasoning, moved = _extract_enclosed_thought(content, reasoning)
@@ -783,6 +788,18 @@ def llm_postparse(
     # Extract tool calls from reasoning (if present)
     if isinstance(reasoning, str):
         reasoning = _extract_all_tool_calls(reasoning, tool_calls, valid_tool_names=valid_tool_names)
+
+    _pp_elapsed = time.perf_counter() - _pp_t0
+
+    # Threshold warnings — one-liner console + audit log (automatic via audit=True)
+    if _pp_elapsed > 10.0:
+        error(
+            f"SLOW postparse: {_pp_elapsed:.1f}s | input={_pp_input_bytes}B"
+        )
+    elif _pp_elapsed > 1.0:
+        warning(
+            f"SLOW postparse: {_pp_elapsed:.1f}s | input={_pp_input_bytes}B"
+        )
 
     return content, reasoning, tool_calls
 
