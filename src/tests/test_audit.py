@@ -17,7 +17,7 @@ def test_parse_audit_file_empty(tmp_path: Path):
 def test_parse_audit_file_basic(tmp_path: Path):
     """Test parsing a basic audit file with one record."""
     f = tmp_path / "test.audit"
-    f.write_text("[2026-06-23T17:49:14+00:00] USER nesting=0\n  | hello world\n")
+    f.write_text("[2026-06-23T19:54:52+00:00] USER nesting=0\n  | hello world\n")
 
     records = list(parse_audit_file(f))
     assert len(records) == 1
@@ -31,10 +31,10 @@ def test_parse_audit_file_nested(tmp_path: Path):
     """Test parsing audit file with nested records."""
     f = tmp_path / "test.audit"
     f.write_text(
-        "[2026-06-23T17:49:14+00:00] FORK_START task=\"test\" nesting=0\n"
-        "[2026-06-23T17:49:14+00:00] USER nesting=1\n"
+        "[2026-06-23T19:54:52+00:00] FORK_START task=\"test\" nesting=0\n"
+        "[2026-06-23T19:54:52+00:00] USER nesting=1\n"
         "  | nested message\n"
-        "[2026-06-23T17:49:14+00:00] FORK_END duration_s=1.0 nesting=0\n"
+        "[2026-06-23T19:54:52+00:00] FORK_END duration_s=1.0 nesting=0\n"
     )
 
     records = list(parse_audit_file(f))
@@ -50,7 +50,7 @@ def test_parse_audit_file_nested(tmp_path: Path):
 def test_parse_audit_file_old_format(tmp_path: Path):
     """Test parsing old audit file without nesting field."""
     f = tmp_path / "test.audit"
-    f.write_text("[2026-06-23T17:49:14+00:00] USER\n  | hello\n")
+    f.write_text("[2026-06-23T19:54:52+00:00] USER\n  | hello\n")
 
     records = list(parse_audit_file(f))
     assert len(records) == 1
@@ -63,7 +63,7 @@ def test_parse_audit_file_with_fields(tmp_path: Path):
     """Test parsing audit file with fields."""
     f = tmp_path / "test.audit"
     f.write_text(
-        "[2026-06-23T17:49:14+00:00] TOOL_CALL id=call_1 final_name=fetch fixes=none nesting=0\n"
+        "[2026-06-23T19:54:52+00:00] TOOL_CALL id=call_1 final_name=fetch fixes=none nesting=0\n"
         "  | final_args:\n"
         '  |   {"url": "https://example.com"}\n'
     )
@@ -81,7 +81,7 @@ def test_parse_audit_file_quoted_values(tmp_path: Path):
     """Test parsing audit file with quoted values."""
     f = tmp_path / "test.audit"
     f.write_text(
-        "[2026-06-23T17:49:14+00:00] FORK_START task='test task with spaces' nesting=0\n"
+        "[2026-06-23T19:54:52+00:00] FORK_START task='test task with spaces' nesting=0\n"
     )
 
     records = list(parse_audit_file(f))
