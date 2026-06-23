@@ -48,7 +48,7 @@
       }
     },
     "spark": {
-      "model": "model",
+      "model": "vllm-q27-fp8",
       "api_base": "http://spark:8000/v1",
       "api_key": "",
       "timeout": 1200,

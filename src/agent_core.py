@@ -53,8 +53,9 @@ from __future__ import annotations
 import json
 import os
 import queue
-import subprocess
+import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -114,6 +115,32 @@ from tools import TOOLS
 
 if TYPE_CHECKING:
     from agent_session import AuditWriter
+
+
+# ── Safe template substitution ─────────────────────────────────────────────
+
+_SAFE_PLACEHOLDER_RE = re.compile(r'\{(\w+)\}')
+
+
+def _safe_format_template(template: str, **kwargs: str) -> str:
+    """Replace {placeholder} with values, leaving everything else untouched.
+
+    Only replaces placeholders whose names are in *kwargs*.  Unknown
+    placeholders are left as-is (no crash, no code execution).  Literal
+    ``{{`` and ``}}`` are passed through unchanged because the regex
+    only matches single-brace ``{word}`` patterns.
+
+    This replaces the previous ``str.format()`` call which could execute
+    arbitrary Python expressions (e.g. ``{__import__('os').system('cmd')}``).
+    """
+    values = {k: str(v) for k, v in kwargs.items()}
+
+    def _replace(m: re.Match) -> str:
+        name = m.group(1)
+        return values.get(name, m.group(0))  # Leave unknown as-is
+
+    return _SAFE_PLACEHOLDER_RE.sub(_replace, template)
+
 
 __all__ = [
     "ToolFilter",
@@ -304,19 +331,14 @@ class TauErgon(CommandHandlersMixin):
         if agent_path.exists():
             try:
                 raw = agent_path.read_text().strip()
-                system_prompt = raw.format(
-                    log_file=self._session.audit_file,
-                    audit_file=self._session.audit_file,
-                    context_file=self._session.context_file,
+                system_prompt = _safe_format_template(
+                    raw,
+                    log_file=str(self._session.audit_file),
+                    audit_file=str(self._session.audit_file),
+                    context_file=str(self._session.context_file),
                 )
             except OSError as exc:
                 print(f"WARNING: Could not read AGENT.md: {exc}", file=sys.stderr)
-            except KeyError as exc:
-                print(
-                    f"WARNING: AGENT.md contains unescaped '{{' (missing placeholder: "
-                    f"{exc}). Falling back to default system prompt.",
-                    file=sys.stderr,
-                )
         self.context.set_system(system_prompt)
 
         # Command / tool registration
@@ -828,6 +850,10 @@ class TauErgon(CommandHandlersMixin):
                 continue
 
             except Exception as e:  # pylint: disable=W0718
+                if isinstance(e, (MemoryError, RecursionError)):
+                    error(f"[FATAL] {type(e).__name__}: {e}")
+                    raise  # No recovery possible — process state is undefined
+
                 traceback.print_exc()
 
                 error_detail = f"{type(e).__name__}: {e}"
