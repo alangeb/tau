@@ -1,17 +1,20 @@
 ---
 name: command_template
-description: Template for creating custom commands (.md and .py formats). Markdown commands use placeholder substitution; Python commands have full agent access. (also load: skill_template, tool_template, readme_template, reference, tauskillmaintenance, caveman, _taudoc)
+description: Create custom commands — markdown prompt templates and Python run() functions. Create command, command format, slash command, custom command, /command (also load: skill_template, tool_template, caveman, _taudoc)
 category: development
+keywords: command, create command, slash command, custom command, prompt template, run function
 ---
 
 # Command Template
+
+## When
+"create command", "command format", "new command", "command template", "write command", "slash command"
 
 ## Two Types
 - **Markdown (.md)**: Prompt templates with `$1`, `$2`, `$*` placeholders
 - **Python (.py)**: Full agent access via `run(agent, args)`
 
 ## Markdown Format
-
 ```markdown
 ---
 description: Brief description
@@ -41,7 +44,6 @@ Content starting with `/` triggers another command: `/fork Critique $1`
 6. **Remove redundancy** — every line must carry unique info
 
 ## Python Format
-
 ```python
 name = "command_name"
 description = "Brief description"
@@ -74,6 +76,11 @@ aliases_arg = {"file": ["f", "path"]}
 - **Markdown**: Simple prompts, multi-step sequences
 - **Python**: Complex logic, tools, context manipulation, subagents
 
+## Helper
+```bash
+python3 skills/command_template/command_gen.py  # command_template helper
+```
+
 ## Related Skills
 - `skill_template` — creating skills (sibling concept)
 - `tool_template` — creating tools (sibling concept)
@@ -82,3 +89,4 @@ aliases_arg = {"file": ["f", "path"]}
 - `shell_scripting` — shell-based commands
 - `reference` — quick reference for common commands
 - `tauskillmaintenance` — audit command quality
+- `readme_template` — README structure

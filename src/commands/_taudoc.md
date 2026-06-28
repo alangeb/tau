@@ -47,4 +47,4 @@ cd src && pytest tests/test_context_synthetic_bridge.py tests/test_recover_inval
 - **NEVER** create docs outside `designs/`
 - **NEVER** remove old entries from `designs/DECISIONS.md`
 - **ALWAYS** use paths relative to `src/`
-- **ALWAYS** verify cross-links before committing
+- **ALWAYS** verify cross-links are correct

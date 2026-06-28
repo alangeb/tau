@@ -1,12 +1,13 @@
-"""Command handlers and registry for TauErgon.
+"""Built-in command decorator, registry, and handlers for TauErgon.
 
 Contains:
-- @_command decorator and registry (single source of truth for built-in commands)
+- @_command decorator and _COMMAND_REGISTRY (single source of truth for built-in commands)
+- Query functions: get_command_info, get_builtin_cmd_names, get_primary_command_info,
+  get_subcommands, _get_cmd_name_to_method
+- BUILTIN_CMD_NAMES (lazy-initialized frozenset via _LazyFrozenset)
 - CommandHandlersMixin with all /command handler methods
 
 The registry is populated by @_command decorators at class-body execution time.
-Query functions (get_command_info, get_builtin_cmd_names, etc.) provide access
-to the registry data.
 """
 
 from __future__ import annotations
@@ -15,38 +16,6 @@ import json
 import time
 from pathlib import Path
 from typing import Any, Optional
-
-from agent_console import (
-    assistant_message_display,
-    compress_fail, compress_success,
-    context_cleared_success, context_dump_with_json,
-    fork_display, fork_error, fork_usage,
-    show_agent_card, show_commands, show_help, show_tools, show_tools_json,
-    subagent_error, subagent_output_footer, subagent_output_header,
-    subagent_start_display, subagent_usage,
-    warning,
-    agent_status,
-)
-from agent_console_primitives import blank_line, echo, status
-from agent_lifecycle import AgentLifecycle
-from agent_models import InputMessage
-from agent_subagent import invoke_fork_sync, invoke_subagent_sync
-
-__all__ = [
-    # Registry decorator
-    "_command",
-    # Registry queries
-    "BUILTIN_CMD_NAMES",
-    "get_builtin_cmd_names",
-    "get_command_info",
-    "get_all_command_info",
-    "get_primary_command_info",
-    "get_subcommands",
-    # Internal registry access
-    "_get_cmd_name_to_method",
-    # Mixin
-    "CommandHandlersMixin",
-]
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 # Maps handler method name → (primary_name, aliases_tuple, description, subcommands_tuple).
@@ -105,6 +74,36 @@ def _get_cmd_name_to_method() -> dict[str, str]:
     return _CMD_NAME_TO_METHOD
 
 
+# ── Lazy frozenset ────────────────────────────────────────────────────────────
+# Behaves like a frozenset but computes its value on first access.
+# This avoids the fragile module-level __getattr__ pattern that depended on
+# import ordering (BUILTIN_CMD_NAMES must not be computed before CommandHandlersMixin
+# is defined, since that's when @_command decorators populate _COMMAND_REGISTRY).
+
+
+class _LazyFrozenset:
+    """Frozenset-like object that computes its value lazily on first access.
+
+    Only implements ``in`` and ``repr`` — the operations actually used by callers.
+    """
+    __slots__ = ("_factory", "_value")
+
+    def __init__(self, factory):
+        self._factory = factory
+        self._value = None
+
+    def _ensure(self) -> frozenset[str]:
+        if self._value is None:
+            self._value = frozenset(self._factory())
+        return self._value
+
+    def __contains__(self, item: object) -> bool:
+        return item in self._ensure()
+
+    def __repr__(self) -> str:
+        return repr(self._ensure())
+
+
 # ── BUILTIN_CMD_NAMES derivation ─────────────────────────────────────────────
 # Returns a frozenset of all registered command names.  Used by console modules
 # to detect user commands that shadow built-in slash commands.
@@ -115,19 +114,10 @@ def get_builtin_cmd_names() -> frozenset[str]:
     return frozenset(_get_cmd_name_to_method().keys())
 
 
-# Module-level frozenset — computed lazily on first access via __getattr__.
+# Module-level frozenset — computed lazily on first access via _LazyFrozenset.
 # Exported here (command registry) rather than in agent_models.py to avoid
 # a cross-layer dependency: data models should not depend on command registry.
-BUILTIN_CMD_NAMES: frozenset[str]  # type: ignore[valid-type]
-
-
-def __getattr__(name: str) -> frozenset[str]:
-    """Lazy-init BUILTIN_CMD_NAMES on first access (self-installs into globals)."""
-    if name == "BUILTIN_CMD_NAMES":
-        val = get_builtin_cmd_names()
-        globals()[name] = val  # Self-install — __getattr__ fires exactly ONCE
-        return val
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+BUILTIN_CMD_NAMES: frozenset[str] = _LazyFrozenset(get_builtin_cmd_names)  # type: ignore[assignment]
 
 
 # ── Command info lookup ──────────────────────────────────────────────────────
@@ -143,27 +133,6 @@ def get_command_info(cmd_name: str) -> tuple[str, tuple[str, ...], str, tuple[st
     if entry is None:
         return None
     return entry
-
-
-# ── Cached all-command info ──────────────────────────────────────────────────
-# Lazy-init cache matching the pattern of _CMD_NAME_TO_METHOD.
-_ALL_CMD_INFO: dict[str, tuple[str, tuple[str, ...], str, tuple[str, ...]]] | None = None
-
-
-def get_all_command_info() -> dict[str, tuple[str, tuple[str, ...], str, tuple[str, ...]]]:
-    """Return all command info: command_name → (primary, aliases, description, subcommands).
-
-    Cached on first call — the registry is static after import time.
-    Keys include both primary names and aliases (for lookup by any name).
-    """
-    global _ALL_CMD_INFO
-    if _ALL_CMD_INFO is None:
-        _ALL_CMD_INFO = {}
-        for method_name, (primary, aliases, desc, subcmds) in _COMMAND_REGISTRY.items():
-            _ALL_CMD_INFO[primary] = (primary, aliases, desc, subcmds)
-            for alias in aliases:
-                _ALL_CMD_INFO[alias] = (primary, aliases, desc, subcmds)
-    return _ALL_CMD_INFO
 
 
 # ── Primary-only iteration cache ─────────────────────────────────────────────
@@ -193,6 +162,42 @@ def get_subcommands(cmd_name: str) -> tuple[str, ...]:
     if info is None:
         return ()
     return info[3]
+
+
+# ── External imports (only needed by handler methods) ────────────────────────
+
+from agent_console import (
+    agent_status,
+    assistant_message_display,
+    blank_line,
+    compress_fail, compress_success,
+    context_cleared_success, context_dump_with_json,
+    echo,
+    fork_display, fork_error, fork_usage,
+    show_agent_card, show_commands, show_help, show_tools, show_tools_json,
+    status,
+    subagent_error, subagent_output_footer, subagent_output_header,
+    subagent_start_display, subagent_usage,
+    warning,
+)
+from agent_lifecycle import AgentLifecycle
+from agent_models import InputMessage
+from agent_subagent import invoke_fork_sync, invoke_subagent_sync
+
+__all__ = [
+    # Registry decorator
+    "_command",
+    # Registry queries
+    "BUILTIN_CMD_NAMES",
+    "get_builtin_cmd_names",
+    "get_command_info",
+    "get_primary_command_info",
+    "get_subcommands",
+    # Internal registry access
+    "_get_cmd_name_to_method",
+    # Mixin
+    "CommandHandlersMixin",
+]
 
 
 # ── Command Handlers ────────────────────────────────────────────────────────
@@ -281,7 +286,16 @@ class CommandHandlersMixin:
                 status("Heartbeat: OFF")
             return
 
-        if sub == "on":
+        if sub in ("on", "status"):
+            if sub == "status":
+                if self._heartbeat.enabled:
+                    status(
+                        f"Heartbeat: ON (interval {self._heartbeat.interval_seconds}s, "
+                        f"idle {int(time.time() - self._heartbeat.last_activity_time)}s)"
+                    )
+                else:
+                    status("Heartbeat: OFF")
+                return
             if self._heartbeat.interval_seconds is None:
                 self._heartbeat.interval_seconds = 600
             self._heartbeat.enabled = True
@@ -658,7 +672,12 @@ class CommandHandlersMixin:
                 if len(parts) > 1:
                     file_arg = parts[1]
             else:
-                file_arg = parts[0]
+                # Treat unknown tokens as file path only if they look like a path
+                if parts[0].endswith(".audit") or "/" in parts[0] or parts[0].startswith("~"):
+                    file_arg = parts[0]
+                else:
+                    warning(f"Invalid mode '{parts[0]}'. Valid modes: short, long, full")
+                    return
 
         # Resolve audit file path
         if file_arg:

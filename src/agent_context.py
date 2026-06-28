@@ -14,8 +14,15 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 if TYPE_CHECKING:
     from agent_core import TauErgon
 
-from agent_console import context_append_warning, context_validation_warning
-from agent_console_primitives import _role_color
+from agent_console import _role_color, context_append_warning, context_validation_warning
+from agent_llm import DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS
+from agent_message_utils import (
+    _sanitize_content,
+    _sanitize_text,
+    get_last_real_user_prompt,
+    is_synthetic_message,
+    make_synthetic_user,
+)
 from agent_models import Colors
 
 # --- Module-level helpers ---
@@ -24,14 +31,6 @@ from agent_models import Colors
 # when preparing a fork's context. Kept concise to save tokens.
 _PENDING_TOOL_MARKER = "[PENDING: deferred; resolves after fork. Do not assume result.]"
 _FORK_TOOL_MARKER = "[FORK: You are the fork. THIS IS SYNCHRONOUS — you block until complete, then return your result directly. There is NO background execution, NO 'reporting back later'. You are the fork. Task: {task}]"
-
-# ── Synthetic message protocol ──────────────────────────────────────────────────
-# All system-injected messages use this prefix so they can be reliably detected
-# and excluded from user-boundary calculations (undo, get_last_real_user_prompt).
-# Format: [SYSTEM-SYNTHETIC: <category>] <content>
-# Categories: end_turn_reminder, escalation, reflection, turn_started,
-#             turn_closed, command, recovery
-_SYNTHETIC_PREFIX = "[SYSTEM-SYNTHETIC: "
 
 __all__ = ["TauContext", "ContextMessage", "TauContextInstance",
            "get_last_real_user_prompt", "is_synthetic_message",
@@ -140,7 +139,7 @@ class TauContext:
             category: The synthetic message category (e.g., 'end_turn_reminder').
             content: The message content (without prefix).
         """
-        self._append(make_synthetic_user(category, content))
+        self._append(make_synthetic_user(category, _sanitize_text(content)))
 
     def undo(self) -> None:
         """Undo the last conversation turn by removing messages from the last user message onward.
@@ -557,13 +556,20 @@ class TauContext:
         """Estimate the total token count for the context.
 
         Uses character-based heuristic: ~3 chars per token, 15 tokens structural
-        overhead per message.
+        overhead per message.  Multimodal image_url blocks are estimated at
+        1120 tokens each (upper-bound for Gemma 4).
         """
         total = 0
         for msg in self._messages:
             content = msg.get("content", "")
             if isinstance(content, str):
                 total += len(content) // 3
+            elif isinstance(content, list):
+                for part in content:
+                    if part.get("type") == "text":
+                        total += len(part.get("text", "")) // 3
+                    elif part.get("type") == "image_url":
+                        total += 1120
             reasoning = msg.get("reasoning", "")
             if isinstance(reasoning, str):
                 total += len(reasoning) // 3
@@ -627,7 +633,7 @@ class TauContext:
             raise ValueError(
                 "Cannot set system message - system message already exists"
             )
-        self._append({"role": "system", "content": content})
+        self._append({"role": "system", "content": _sanitize_text(content)})
 
     def append_user(self, content: str | list) -> None:
         """Append a user message to the context.
@@ -665,7 +671,7 @@ class TauContext:
                 f"Invalid context state: cannot append user after role '{last_role}'.",
             )
 
-        self._append({"role": "user", "content": content})
+        self._append({"role": "user", "content": _sanitize_content(content)})
 
     def append_assistant(
         self,
@@ -700,11 +706,11 @@ class TauContext:
             # Invalid predecessor — insert bridge to maintain alternation
             self.append_synthetic_user("continuation", "Continuing conversation.")
 
-        msg: dict[str, Any] = {"role": "assistant", "content": content}
+        msg: dict[str, Any] = {"role": "assistant", "content": _sanitize_content(content) if content is not None else None}
         if tool_calls is not None:
             msg["tool_calls"] = tool_calls
         if reasoning is not None:
-            msg["reasoning"] = reasoning
+            msg["reasoning"] = _sanitize_text(reasoning)
         self._append(msg)
 
     def append_tool(self, content: str | None, tool_call_id: str) -> None:
@@ -785,7 +791,7 @@ class TauContext:
                 "role": "tool",
                 "tool_call_id": tool_call_id,
                 "name": func_name,
-                "content": content,
+                "content": _sanitize_content(content or ""),
             }
         )
 
@@ -955,8 +961,16 @@ class TauContext:
         self._messages = merged
 
     @staticmethod
-    def _merge_content(a: object, b: object) -> str:
-        """Merge two content values into a single string."""
+    def _merge_content(a: object, b: object) -> str | list:
+        """Merge two content values.  For multimodal list content, concatenate
+        the content-block lists so image_url blocks are preserved.  Falls back
+        to string concatenation when both sides are plain strings."""
+        if isinstance(a, list) and isinstance(b, list):
+            return a + b
+        if isinstance(a, list):
+            return a + [{"type": "text", "text": str(b)}]
+        if isinstance(b, list):
+            return [{"type": "text", "text": str(a)}] + b
         return str(a) + "\n" + str(b)
 
     def close_turn(self, reason: str) -> None:
@@ -1068,8 +1082,16 @@ class TauContext:
 
     def set_messages(self, msgs: list[dict]) -> None:
         """Replace all messages in the context."""
-        self._messages = list(msgs)
+        self._messages = [self._sanitize_message(m) for m in msgs]
         self._validate_on_mutation()
+    def _sanitize_message(self, msg: dict) -> dict:
+        """Sanitize a single message — strips lone UTF-16 surrogates."""
+        sanitized = dict(msg)
+        if msg.get("content") is not None:
+            sanitized["content"] = _sanitize_content(msg["content"])
+        if msg.get("reasoning") is not None:
+            sanitized["reasoning"] = _sanitize_text(msg["reasoning"])
+        return sanitized
 
     def copy(self) -> "TauContext":
         """Create a shallow copy of the context (messages only, not fork metadata)."""
@@ -1101,6 +1123,9 @@ class TauContext:
         target_percentage: float,
         agent: "TauErgon",
         tools: list | None = None,
+        last_known_tokens: int | None = None,
+        max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     ) -> bool:
         """Compress the context to reduce token usage to a target percentage.
 
@@ -1119,6 +1144,9 @@ class TauContext:
                 resolved,
                 log_file=agent._session.audit_file,
                 audit_writer=agent._session.audit_writer,
+                last_known_tokens=last_known_tokens,
+                max_context_tokens=max_context_tokens,
+                max_output_tokens=max_output_tokens,
             )
             self.set_messages(compressed_messages)
             return summary is not None
@@ -1133,10 +1161,19 @@ class TauContext:
         return self._messages.copy()
 
     def get_last_assistant(self) -> str | None:
-        """Return the content of the last assistant message, or None."""
+        """Return the text content of the last assistant message, or None.
+
+        Assistant messages are always plain strings (the LLM never returns
+        multimodal list content), but we handle the list case defensively.
+        """
         for msg in reversed(self._messages):
             if msg.get("role") == "assistant":
-                return msg.get("content")
+                content = msg.get("content")
+                if isinstance(content, list):
+                    return " ".join(
+                        p.get("text", "") for p in content if p.get("type") == "text"
+                    )
+                return content
         return None
 
     def get_system(self) -> str | None:
@@ -1190,7 +1227,15 @@ class TauContext:
 
         for i, msg in enumerate(self._messages):
             role = msg.get("role", "unknown")
-            content_str = str(msg.get("content") or "")
+            content = msg.get("content") or ""
+            if isinstance(content, list):
+                image_count = sum(1 for p in content if p.get("type") == "image_url")
+                text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
+                content_str = f"[{image_count} image(s), {len(text_parts)} text block(s)]"
+                if text_parts:
+                    content_str += ": " + text_parts[0][:80]
+            else:
+                content_str = str(content)
             if len(content_str) > 100:
                 content_str = content_str[:100] + "..."
             tool_calls = msg.get("tool_calls")
@@ -1307,7 +1352,14 @@ class TauContext:
             content = msg.get("content")
             if content is None:
                 content = ""
-            content_str = str(content)
+            if isinstance(content, list):
+                image_count = sum(1 for p in content if p.get("type") == "image_url")
+                text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
+                content_str = f"[{image_count} image(s), {len(text_parts)} text block(s)]"
+                if text_parts:
+                    content_str += ": " + text_parts[0][:80]
+            else:
+                content_str = str(content)
 
             # Format message number: right-aligned, 3 characters minimum
             num_str = f"{idx + 1:>{width}}"
@@ -1383,71 +1435,3 @@ class TauContext:
         lines.append(f"\n{'─' * 60}")
         lines.append(f"{white}END TRACE{reset}")
         return "\n".join(lines)
-
-
-# ── Context-aware user-prompt helpers ────────────────────────────────────────
-
-def is_synthetic_message(msg: dict) -> bool:
-    """Check if any message (user or assistant) is synthetic.
-
-    Args:
-        msg: A message dictionary to check.
-
-    Returns:
-        True if the message was system-injected, False otherwise.
-    """
-    content = msg.get("content", "")
-    if isinstance(content, str):
-        return content.startswith(_SYNTHETIC_PREFIX)
-    if isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                if part.get("text", "").startswith(_SYNTHETIC_PREFIX):
-                    return True
-    return False
-
-
-def make_synthetic_user(category: str, content: str) -> dict:
-    """Create a synthetic user message with the standard marker.
-
-    Args:
-        category: The synthetic message category (e.g., 'end_turn_reminder').
-        content: The message content (without prefix).
-
-    Returns:
-        A message dict ready to append to context.
-    """
-    return {
-        "role": "user",
-        "content": f"{_SYNTHETIC_PREFIX}{category}] {content}",
-    }
-
-
-def _extract_text_content(msg: dict) -> str:
-    """Extract text content from a message, handling multimodal content."""
-    content = msg.get("content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [c.get("text", "") for c in content if c.get("type") == "text"]
-        return " ".join(parts)
-    return ""
-
-
-def get_last_real_user_prompt(context_messages: list[dict]) -> str:
-    """Find the last genuine user message in context (excluding synthetic messages).
-
-    Scans the context backwards for the last user message that was NOT
-    auto-generated by loop escalation or recovery. Returns the full content
-    without truncation.
-
-    Args:
-        context_messages: List of context messages to search.
-
-    Returns:
-        str: The last real user prompt, or a fallback message if not found.
-    """
-    for msg in reversed(context_messages):
-        if msg.get("role") == "user" and not is_synthetic_message(msg):
-            return _extract_text_content(msg)
-    return "(no real user prompt found)"

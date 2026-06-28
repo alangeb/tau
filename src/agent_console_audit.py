@@ -188,7 +188,7 @@ _COLOR_MAP: dict[str, str] = {
 
 def _abbreviated_timestamp(ts: str) -> str:
     """Extract HH:MM:SS from ISO timestamp."""
-    # ts = "2026-06-23T19:54:52+00:00"
+    # ts = "2026-06-28T15:08:01+00:00"
     parts = ts.split("T")
     if len(parts) == 2:
         time_part = parts[1].split(".")[0]
@@ -263,7 +263,7 @@ def _format_content_short(record: AuditRecord) -> str:
     # Handle FORMAT A (pseudo-label) — no label prefix
     pseudo = record.record_type.lower()
     if pseudo in blocks:
-        text = " ".join(_strip_ansi(l) for l in blocks[pseudo])
+        text = " ".join(_strip_ansi(line) for line in blocks[pseudo])
         parts.append(text)
 
     # Handle FORMAT B labeled blocks
@@ -273,7 +273,7 @@ def _format_content_short(record: AuditRecord) -> str:
         # For ASSISTANT records, skip 'reasoning' block (handled by [AREA])
         if record.record_type == "ASSISTANT" and label == "reasoning":
             continue
-        text = " ".join(_strip_ansi(l) for l in lines)
+        text = " ".join(_strip_ansi(line) for line in lines)
         if text:
             # Strip label prefix for cleaner output
             parts.append(text)
@@ -337,7 +337,7 @@ def _format_tool_error(record: AuditRecord) -> str:
     error_type = record.fields.get("error_type", "?")
     msg = ""
     if "error_message" in record.content_blocks:
-        msg = " ".join(_strip_ansi(l) for l in record.content_blocks["error_message"])
+        msg = " ".join(_strip_ansi(line) for line in record.content_blocks["error_message"])
     if msg:
         return f"{tool_name} error_type={error_type} '{msg}'"
     return f"{tool_name} error_type={error_type}"
@@ -411,7 +411,7 @@ def _render_reasoning(record: AuditRecord, ts: str, prefix: str, use_color: bool
             else:
                 print(area_line)
     else:
-        reasoning_text = " ".join(_strip_ansi(l) for l in reasoning)
+        reasoning_text = " ".join(_strip_ansi(line) for line in reasoning)
         area_line = f"{ts} [AREA] {prefix}{reasoning_text}"
         if use_color:
             print(f"{Colors.REASONING}{area_line}{Colors.RESET}")

@@ -1,7 +1,8 @@
 ---
 name: ast-grep
-description: AST code search/rewrite. Enhanced grep for complex search or search&replace tasks (also load: code-review-workflow, search-replace, bug_investigation, review)
+description: AST code search/rewrite. Enhanced grep for complex search or search&replace tasks. AST search, pattern matching, code transformation (also load: code-review-workflow, search-replace, bug_investigation, review)
 category: development
+keywords: AST search, pattern matching, code transformation, structural search, code rewrite, complex search replace
 ---
 
 # ast-grep
@@ -13,7 +14,6 @@ category: development
 ```bash
 ast-grep -p '$A.context' agent_core.py
 ast-grep -p '$FUNC(' tools/
-ast-grep -p 'bash' tools/
 ast-grep -p 'class TauErgon' .
 ```
 
@@ -23,17 +23,7 @@ ast-grep -p '$A && $A()' --rewrite '$A?.()' -U src/
 ast-grep -p '$A || $A()' --rewrite '$A ?? $A' -U src/
 ```
 
-## Rule Template
-```yaml
-id: rule-name
-message: Description
-severity: warning
-language: Python
-rule:
-  pattern: Your pattern
-```
-
-## Limitations
+## Limitations (CRITICAL)
 - **Thread targets NOT detected**: `threading.Thread(target=fn)` → verify with `grep -rn "target=fn"`
 - **Callbacks NOT detected**: `obj.on_event = fn` → verify with `grep -rn "= fn"`
 - **Higher-order functions NOT detected**: `map(fn, data)` → verify with `grep -rn "map(\|filter(\|reduce("`
@@ -47,7 +37,14 @@ grep -rn "= function_name" . | grep -v "def"
 ```
 Triple-check before deleting: AST says unused → grep confirms → manual review confirms not callback/thread target.
 
+## Helper
+```bash
+python3 skills/ast-grep/patterns.py  # ast grep helper
+```
+
 ## Related Skills
 - `code-review-workflow` — complete review pipeline
 - `review` — detailed code review process
 - `bug_investigation` — root cause analysis
+
+- `search-replace` — Find and replace patterns across files

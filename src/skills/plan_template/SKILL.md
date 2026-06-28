@@ -1,7 +1,8 @@
 ---
 name: plan_template
-description: Plan file structure, workflow, state management (also load: code-review-workflow, idea, context_management)
+description: Task planning — plan files, checklists, phased execution, state tracking. Plan tasks, checklist, todo, phased work, task tracking, plan file, step-by-step (also load: code-review-workflow, idea, think)
 category: planning
+keywords: plan, checklist, todo, phased, task tracking, step-by-step, state, execution
 ---
 
 # Plan File Structure
@@ -54,7 +55,14 @@ grep -n "\[ \]" PLAN.md   # Pending
 grep -n "\[x\]" PLAN.md   # Completed
 ```
 
+## Helper
+
+```bash
+python3 skills/plan_template/plan_gen.py  # plan_template helper
+```
 ## Related Skills
 - `code-review-workflow` — plan code review phases
 - `bug_investigation` — plan investigation steps
 - `context_management` — delegate planned tasks
+- `think` — Deep reasoning tool
+- `idea` — Capture ideas for features

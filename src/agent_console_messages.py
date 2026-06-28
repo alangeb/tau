@@ -28,8 +28,11 @@ class _ConsoleMessage:
 
     With registry entries:
         unknown_command_error = _msg("error", "Unknown command: /{cmd_name}")
+
+    The optional *audit_level* parameter allows the audit log level to differ
+    from the display level (e.g., display as error but log as warning).
     """
-    __slots__ = ("_level", "_template", "_audit", "_writer")
+    __slots__ = ("_level", "_template", "_audit", "_audit_level", "_writer")
 
     def __init__(
         self,
@@ -37,11 +40,13 @@ class _ConsoleMessage:
         template: str,
         *,
         audit: bool = False,
+        audit_level: str | None = None,
         writer: Callable[[str], None] | None = None,
     ) -> None:
         self._level = level
         self._template = template
         self._audit = audit
+        self._audit_level = audit_level
         self._writer = writer
 
     def __call__(self, *args, **kwargs) -> None:
@@ -59,7 +64,7 @@ class _ConsoleMessage:
         else:
             display_info(msg)
         if self._audit:
-            _log_audit(self._level, msg)
+            _log_audit(self._audit_level or self._level, msg)
 
 
 def _msg(
@@ -67,10 +72,19 @@ def _msg(
     template: str,
     *,
     audit: bool = False,
+    audit_level: str | None = None,
     writer: Callable[[str], None] | None = None,
 ) -> _ConsoleMessage:
-    """Create a console message template."""
-    return _ConsoleMessage(level, template, audit=audit, writer=writer)
+    """Create a console message template.
+
+    Args:
+        level: Display level ("error", "warning", "success", "info").
+        template: Message template string with {} placeholders.
+        audit: If True, also log to audit.
+        audit_level: Override audit log level (defaults to *level*).
+        writer: Custom writer function (bypasses standard display).
+    """
+    return _ConsoleMessage(level, template, audit=audit, audit_level=audit_level, writer=writer)
 
 
 # ── Message Definitions ──────────────────────────────────────────────────────
@@ -132,7 +146,7 @@ fork_error = _msg("error", "Fork error: {}")
 
 # A2A/agent
 agents_json = _msg("info", "{}")
-agent_card_json = _msg("info", "{}")
+agent_card_json = _msg("info", "{}", writer=lambda t: sys.stdout.write(t + "\n"))
 agent_status_message = _msg("warning", "{}")
 a2a_cli_error = _msg("error", "{}")
 a2a_started_message = _msg("info", "[A2A server started: {}]")
@@ -145,6 +159,8 @@ compress_fail = _msg("error", "[COMPRESS] Compression failed.")
 # Context display
 context_cleared_success = _msg("info", "Context cleared.")
 context_restored = _msg("info", "[Context restored: {} messages from {}]")
+context_restore_failure = _msg("error", "[Context file empty/malformed: {}]", audit=True, audit_level="warning")
+no_context_file_found = _msg("error", "[No context file found for this session]", audit=True, audit_level="warning")
 
 # Tool display
 tool_result = _msg("info", "{}")
@@ -161,8 +177,6 @@ exec_usage = _msg("info", "Usage: /exec toolname arg1=val1 arg2=val2 ...")
 # ── __all__ exports ──────────────────────────────────────────────────────────
 
 __all__ = [
-    # Registry
-    "_ConsoleMessage", "_msg",
     # Error display
     "error", "warning", "invalid_mode_error",
     "unknown_command_error", "unknown_tool_error", "no_run_function_error",
@@ -186,6 +200,7 @@ __all__ = [
     "compress_success", "compress_fail",
     # Context display
     "context_cleared_success", "context_restored",
+    "context_restore_failure", "no_context_file_found",
     # Tool display
     "tool_result", "no_tools_message", "shell_tool_not_available",
     "shell_command_usage", "tools_loaded_message", "tool_blocked",

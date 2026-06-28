@@ -15,9 +15,12 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from agent_command_registry import prepare_command_prompt
-from agent_console import error, warning
-from agent_console_primitives import blank_line, status
+from agent_commands import CommandManager
+from agent_command_registry import (
+    strip_frontmatter,
+    substitute_dynamic_placeholders,
+)
+from agent_console import blank_line, error, status, warning
 from agent_subagent import invoke_fork_sync
 
 if TYPE_CHECKING:
@@ -201,11 +204,17 @@ class HeartbeatManager:
         if idle_seconds < self.interval_seconds:
             return None
 
-        prompt = prepare_command_prompt("heartbeat")
-        if not prompt:
-            error("Heartbeat command file not found or empty")
+        raw = CommandManager._get_registry().load_content("heartbeat")
+        if raw is None:
+            error("Heartbeat command file not found")
             self.touch_activity()  # prevent rapid re-trigger on failure
             return None
+        prompt = strip_frontmatter(raw)
+        if not prompt:
+            error("Heartbeat command file empty after stripping frontmatter")
+            self.touch_activity()
+            return None
+        prompt = substitute_dynamic_placeholders(prompt)
 
         status(f"[HEARTBEAT] Idle {int(idle_seconds)}s, forking check-in...")
         blank_line()

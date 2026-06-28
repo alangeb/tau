@@ -71,6 +71,7 @@ from agent_console import (
     context_restore_failure,
     context_validation_display,
     context_recovery_display,
+    echo,
     error,
     exec_tool_fail,
     exec_usage,
@@ -78,6 +79,7 @@ from agent_console import (
     no_run_function_error,
     print_agent_exit_summary,
     print_context_status,
+    reasoning,
     restart_fallback_failure,
     restart_failure,
     restart_flow,
@@ -87,24 +89,20 @@ from agent_console import (
     unknown_tool_error,
     warning,
 )
-from agent_console_primitives import (
-    blank_line,
-    echo,
-    reasoning,
-    verbose,
-)
+from agent_audit_bridge import log_console_warning
 from agent_command_handlers import CommandHandlersMixin, _command
-from agent_command_registry import discover_commands, find_command_conflicts
+from agent_command_registry import CommandSource
 from agent_commands import CommandManager
 from agent_config import Config
-from agent_context import TauContext, get_last_real_user_prompt
+from agent_context import TauContext
 from agent_endofturn_validate import ValidationErrorType, is_valid_end_of_turn
 from agent_heartbeat import HeartbeatManager
 from agent_init import resolve_agent_init
 from agent_input import InputHandler
 from agent_lifecycle import AgentLifecycle
-from agent_llm import LLMCallConfig, SimpleOpenAIClient, _invoke_llm_with_retry
+from agent_llm import DEFAULT_MAX_OUTPUT_TOKENS, LLMCallConfig, SimpleOpenAIClient, _invoke_llm_with_retry
 from agent_loop_detect import LoopDetector
+from agent_message_utils import get_last_real_user_prompt
 from agent_loop_escalation import LoopEscalationManager
 from agent_models import AgentStatus, InputMessage
 from agent_reflection import ReflectionScheduler
@@ -114,7 +112,7 @@ from agent_tool_filter import ToolFilter
 from tools import TOOLS
 
 if TYPE_CHECKING:
-    from agent_session import AuditWriter
+    from agent_audit_writer import AuditWriter
 
 
 # ── Safe template substitution ─────────────────────────────────────────────
@@ -319,6 +317,21 @@ class TauErgon(CommandHandlersMixin):
         # Reset at the start of each invoke_with_tools_loop() call.
         self._recovery_active: bool = False
 
+        # ── Vision / image queue ────────────────────────────────────────────
+        # Queued images from `see` tool calls. Populated during tool batch
+        # execution; drained after batch completes (post-batch injection).
+        # Each entry: (data_uri, mime_type, description, tool_call_id)
+        self._queued_images: list[tuple[str, str, str, str]] = []
+        # Vision capability cache: None = unknown, True = supports vision,
+        # False = confirmed no vision (after error recovery).
+        # Prevents repeated vision errors on non-vision models.
+        self._vision_supported: bool | None = None
+
+        # Tool call IDs from the last image injection batch. Used for
+        # vision error recovery to mark the corresponding tool results
+        # as errors. Cleared after successful LLM call or recovery.
+        self._last_injected_tool_call_ids: list[str] = []
+
         # Audit writer initialization
         self._session.init_audit_writer()
 
@@ -365,9 +378,7 @@ class TauErgon(CommandHandlersMixin):
         self._keep_alive = False
 
         # Check for .py/.md command conflicts at startup
-        from agent_command_registry import find_command_conflicts
-
-        conflicts = find_command_conflicts()
+        conflicts = CommandManager._get_registry().find_conflicts()
         if conflicts:
             for name in conflicts:
                 warning(
@@ -390,11 +401,119 @@ class TauErgon(CommandHandlersMixin):
         This method is called during initialization to guarantee skill tools
         are available for use.
         """
-        for tool_name in ("skill",):
-            if tool_name in TOOLS and tool_name not in self.available_tool_names:
-                self.available_tool_names.append(tool_name)
+        if "skill" in TOOLS:
+            if "skill" not in self.available_tool_names:
+                self.available_tool_names.append("skill")
 
-    def _get_available_commands(self) -> dict[str, dict]:
+    # ── Vision / image queue management ──────────────────────────────────────
+
+    def _inject_queued_images(self) -> None:
+        """Inject all queued images as a single multimodal user message.
+
+        Maintains clean OpenAI alternation:
+          tool_results → synthetic_assistant → user(images)
+
+        The synthetic assistant bridge is required because `append_user` after
+        tool results triggers a validation warning. The bridge preserves the
+        tool→assistant→user alternation pattern.
+        """
+        if not self._queued_images:
+            return
+
+        # Build multimodal content blocks: all images first, then combined text
+        # Gemma 4 requires images BEFORE text; Qwen3.6 is flexible
+        content_blocks: list[dict] = []
+        descriptions: list[str] = []
+
+        for data_uri, mime_type, description, _tool_call_id in self._queued_images:
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": data_uri},
+            })
+            if description:
+                descriptions.append(description)
+
+        # Add combined description text if any images had descriptions
+        if descriptions:
+            content_blocks.append({
+                "type": "text",
+                "text": "\n".join(descriptions),
+            })
+
+        # 1. Append synthetic assistant bridge (maintains alternation)
+        self.context.append_assistant(
+            "[Images loaded from see tool — continuing.]",
+        )
+
+        # 2. Append user message with all images
+        self.context.append_user(content_blocks)
+
+        # 3. Track tool_call_ids for potential recovery, then clear queue
+        self._last_injected_tool_call_ids = [
+            entry[3] for entry in self._queued_images
+        ]
+        self._queued_images.clear()
+
+    def _recover_from_vision_error(self) -> bool:
+        """Recover from a vision-incompatible model error.
+
+        Steps:
+        1. Pop the user message containing images
+        2. Pop the synthetic assistant bridge
+        3. Mark see tool results as errors in-context
+        4. Cache vision capability as False
+
+        Returns True if recovery was performed, False if context didn't match
+        expected pattern (recovery not possible).
+        """
+        msgs = self.context._messages
+        if len(msgs) < 2:
+            return False
+
+        last = msgs[-1]
+        second_last = msgs[-2]
+
+        # Verify last message is a user message with image blocks
+        if last.get("role") != "user":
+            return False
+        content = last.get("content", [])
+        if not isinstance(content, list):
+            return False
+        has_images = any(b.get("type") == "image_url" for b in content)
+        if not has_images:
+            return False
+
+        # Verify second-to-last is our synthetic assistant bridge
+        if second_last.get("role") != "assistant":
+            return False
+        assistant_content = second_last.get("content", "")
+        if "[Images loaded from see tool" not in str(assistant_content):
+            return False
+
+        # Collect tool_call_ids before popping (needed for marking errors)
+        queued_ids = list(self._last_injected_tool_call_ids)
+
+        # Pop both messages
+        self.context._messages.pop()  # user (images)
+        self.context._messages.pop()  # assistant (bridge)
+
+        # Mark see tool results as errors in the context
+        # Find tool results matching the queued tool_call_ids and modify in-place
+        for msg in self.context._messages:
+            if msg.get("role") == "tool":
+                tool_call_id = msg.get("tool_call_id", "")
+                if tool_call_id in queued_ids:
+                    msg["content"] = (
+                        "Error: This model does not support vision. "
+                        "Do not call see again."
+                    )
+
+        # Cache vision capability and clear tracking
+        self._vision_supported = False
+        self._last_injected_tool_call_ids.clear()
+        return True
+
+    def _get_available_commands(self) -> dict[str, "CommandInfo"]:
         """Discover and return available commands dynamically.
 
         Queries the command discovery system to retrieve all available commands
@@ -402,10 +521,9 @@ class TauErgon(CommandHandlersMixin):
         Results are not cached to ensure fresh command list on each call.
 
         Returns:
-            dict: Mapping of command names to their command metadata dictionaries.
-                Each command dict contains keys like 'name', 'description', etc.
+            dict: Mapping of command names to CommandInfo objects.
         """
-        return {c["name"]: c for c in discover_commands()}
+        return {cmd.name: cmd for cmd in CommandManager._get_registry().discover(CommandSource.MD)}
 
     def _handle_command(
         self, cmd_name: str, cmd_full: str, msg: Optional[InputMessage] = None
@@ -644,6 +762,9 @@ class TauErgon(CommandHandlersMixin):
                     compress_tools=all_tools,
                     compress_extra_kwargs=extra_kwargs,
                     compress_audit_writer=self._session.audit_writer,
+                    agent=self,
+                    max_context_tokens=self.max_context_tokens,
+                    max_output_tokens=self.max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
                 )
                 resp, compressed = _invoke_llm_with_retry(
                     self.client,
@@ -655,6 +776,10 @@ class TauErgon(CommandHandlersMixin):
                     config=config,
                     valid_tool_names=set(self.available_tool_names),
                 )
+                # LLM call succeeded — clear vision recovery tracking.
+                # Images are now safely in context; no recovery needed.
+                self._last_injected_tool_call_ids.clear()
+
                 response_text = resp.text
                 reasoning_content = resp.reasoning
                 call_stats = resp.stats
@@ -751,6 +876,11 @@ class TauErgon(CommandHandlersMixin):
 
                     outer_recovery_counter = 0
                     execute_tool_batch(tool_calls, self, reasoning=reasoning_content, audit_writer=self._session.audit_writer)
+
+                    # ── Post-batch image injection ──────────────────────────
+                    # Inject all queued images as a single multimodal user message.
+                    # Maintains clean alternation: tool_results → synthetic_assistant → user(images)
+                    self._inject_queued_images()
 
                     # Count this as a tool-loop step
                     self.reflection_scheduler.tick()
@@ -894,11 +1024,6 @@ class TauErgon(CommandHandlersMixin):
         self._recovery_active = True
 
         # Build the reminder with context about what ENDTURN will resolve to
-        preview = ""
-        if self.last_substantive_response:
-            preview_text = self.last_substantive_response[:40].rstrip()
-            preview = f' Your last response started with: "{preview_text}..." '
-
         reminder = (
             "You must call the end_turn tool to end your turn. "
             "If your answer is already above, pass 'ENDTURN' as the message. "

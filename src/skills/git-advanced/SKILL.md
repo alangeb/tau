@@ -1,52 +1,53 @@
 ---
 name: git-advanced
-description: Analyze git history, bisect bugs, cherry-pick commits, revert changes, manage stashes. Advanced git operations. (also load: git, code-review-workflow)
+description: Advanced git — bisect, cherry-pick, revert, log analysis, history. Git bisect, git log, git history, git stash, cherry-pick, revert, blame (also load: git, bug_investigation, tau_audit)
 category: development
+keywords: git, bisect, cherry-pick, revert, log, history, blame, stash, advanced
 ---
 
 # Git Advanced
 
 ## When
-"git log analysis", "git bisect", "git stash", "cherry-pick", "git revert", "git blame"
+"git log analysis", "git bisect", "git stash", "cherry-pick", "git revert", "git blame", "git history", "bisect", "cherry-pick"
+
+## Tau Worktree Bisect
+```bash
+# Bisect in worktree (NEVER switch branches)
+git bisect start
+git bisect bad
+git bisect good <commit>
+# Resolve in worktree, NEVER --theirs/--ours blindly
+git bisect reset
+```
 
 ## Log Analysis
 ```bash
-git log --oneline -20                    # Recent commits
-git log --stat --since="1 week ago"     # Changes by date
-git log --author="name" --oneline        # Author history
-git log -S"search_string" --oneline     # Find when string was added
+git log --oneline -20
+git log --stat --since="1 week ago"
+git log --author="name" --oneline
+git log -S"search_string" --oneline
 ```
 
-## Bisect
+## Cherry-Pick (Tau-Specific)
 ```bash
-git bisect start                       # Begin bisect
-git bisect bad                         # Mark current as bad
-git bisect good v1.0                  # Mark known good
-# Git auto-checks midpoints
-git bisect reset                       # End bisect
+# Cherry-pick into worktree
+git cherry-pick <commit>
+# Range
+git cherry-pick <start>..<end>
+# Abort if conflict
+git cherry-pick --abort
 ```
 
-## Stash
+## Rules
+- NEVER merge `tau-bot-tool-development` into master — different architecture
+- ALWAYS cherry-pick selectively with sanity-sh verification
+- Worktree LOCKED to one branch — NEVER switch
+
+## Helper
+
 ```bash
-git stash save "WIP: description"     # Save changes
-git stash list                        # List stashes
-git stash apply                       # Restore changes
-git stash drop                        # Remove stash
+python3 skills/git-advanced/git_ops.py  # git advanced helper
 ```
-
-## Cherry-Pick
-```bash
-git cherry-pick <commit>              # Apply single commit
-git cherry-pick <start>..<end>        # Apply range
-git cherry-pick --abort              # Cancel cherry-pick
-```
-
-## Revert
-```bash
-git revert <commit>                   # Create reverse commit
-git revert --no-commit <commit>      # Revert without commit
-```
-
 ## Related Skills
 - `git` — basic worktree operations
 - `code-review-workflow` — review changes before committing

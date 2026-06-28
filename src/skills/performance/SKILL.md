@@ -1,46 +1,47 @@
 ---
 name: performance
-description: Performance profiling, benchmarking, optimization patterns (also load: bug_investigation, code-review-workflow)
+description: Performance — context window optimization, token counting, tool call latency. Profile, benchmark, optimize, slow, speed, bottleneck, make faster (also load: bug_investigation, tau_audit, context_management)
 category: development
+keywords: performance, profile, benchmark, optimize, slow, speed, bottleneck, context, token, latency
 ---
 
 # Performance
 
 ## When
-"slow code", "performance issue", "profile", "benchmark", "optimize"
+"slow code", "performance issue", "profile", "benchmark", "optimize", "bottleneck", "make it faster"
 
-## Profiling
-```python
-# cProfile for function-level profiling
-python3 -m cProfile -s cumtime script.py
+## Tau-Specific Patterns
 
-# Time specific sections
-import time
-start = time.perf_counter()
-# ... code ...
-print(f"Duration: {time.perf_counter() - start:.3f}s")
+### Context Window Optimization
+- 200K token limit
+- >80% usage — compress or delegate
+- >90% usage — critical, delegate immediately
+- Fork = expensive (full context clone)
+- Subagent = cheap (minimal context)
+
+### Tool Call Latency
+```bash
+grep -oP 'duration_ms=\K[\d]+' <audit_file> | sort -n | tail -10
 ```
 
-## Benchmarking
-```python
-import timeit
-timeit.timeit('function()', globals=globals(), number=1000)
+### Token Counting
+```bash
+grep "content_len=" <audit_file> | grep -oP 'content_len=\K\d+'
 ```
-
-## Common Patterns
-- **Bottleneck detection**: Profile → identify slow functions → optimize
-- **Memory profiling**: `tracemalloc` for memory allocation tracking
-- **I/O optimization**: Buffering, batching, async I/O
-- **Algorithm optimization**: Better data structures, caching
 
 ## Checklist
-- [ ] Profiled to identify bottlenecks
-- [ ] Measured before/after optimization
-- [ ] No regression in functionality
-- [ ] Documented performance characteristics
+- [ ] Profiled — identified bottlenecks
+- [ ] Measured before/after
+- [ ] No regression
+- [ ] Documented performance
 
+## Helper
+
+```bash
+python3 skills/performance/profile_helper.py  # performance helper
+```
 ## Related Skills
 - `bug_investigation` — investigate performance issues
 - `code-review-workflow` — review code for performance
-- `python_best_practices` — follow performance best practices
+- `context_management` — context capacity optimization
 - `shell_scripting` — system-level performance monitoring

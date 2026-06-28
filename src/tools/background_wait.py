@@ -28,8 +28,11 @@ metadata = ToolMetadata(
         "PREFERRED over `bash sleep N` for ANY background task monitoring. "
         "Set max_seconds very high (e.g., 600-1800) so the task can run to completion. "
         "Use a SHORT idle_seconds (e.g., 15-30) to detect hangs quickly. "
-        "ALWAYS provide multiple keywords covering success, failure, and error patterns "
+        "CRITICAL: Always provide multiple keywords covering success, failure, AND error patterns "
         "(e.g., 'error|warning|complete|done|FAILED|SUCCESS|PASSED|Traceback|Exception'). "
+        "NEVER rely on a single keyword — if the process outputs an unexpected word "
+        "(e.g., 'error: file not found' instead of 'complete'), you will miss it and wait until timeout. "
+        "Multiple keywords ensure you catch ANY outcome: success, failure, or unexpected errors. "
         "Returns immediately when: (1) any keyword matches output, "
         "(2) output has been idle for idle_seconds (likely hung), "
         "(3) max_seconds elapsed (hard timeout), or (4) session died. "
@@ -54,7 +57,14 @@ class Args:
     )
     keywords: str = field(
         default="",
-        metadata={"description": "Regex pattern to match against output (optional). Examples: 'error|warning', 'complete|done', 'FAILED|SUCCESS'"}
+        metadata={
+            "description": (
+                "Regex pattern to match against output. "
+                "ALWAYS use multiple keywords covering success, failure, and error patterns "
+                "(e.g., 'error|warning|complete|done|FAILED|SUCCESS|PASSED|Traceback|Exception'). "
+                "Single keywords are dangerous — unexpected output will be missed."
+            )
+        }
     )
     tail_lines: int = field(
         default=30,

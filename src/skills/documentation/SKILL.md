@@ -1,15 +1,16 @@
 ---
 name: documentation
-description: Inline code documentation, docstrings, changelog generation, release notes (also load: _taudoc, readme_template, code-review-workflow)
+description: Documentation patterns — docstrings, changelog format. Write docs, documentation, changelog, release notes, docstrings (also load: _taudoc, readme_template)
 category: documentation
+keywords: documentation, docstring, changelog, release notes, write docs
 ---
 
 # Documentation
 
 ## When
-"write docstring", "document code", "changelog", "release notes", "inline docs"
+"write docstring", "document code", "changelog", "release notes", "write docs", "docstrings"
 
-## Docstring Formats
+## Docstring Format (Google style)
 ```python
 def function(arg1, arg2):
     """Brief description.
@@ -19,33 +20,44 @@ def function(arg1, arg2):
         arg2: Description
 
     Returns:
-        Description of return value
+        Description
 
     Raises:
         ExceptionType: When condition
     """
-    pass
 ```
 
-## Changelog
+## Changelog Format
 ```markdown
 ## [Version] - YYYY-MM-DD
 
 ### Added
-- Feature description
+- Feature
 
 ### Changed
-- Change description
+- Change
 
 ### Fixed
-- Bug fix description
+- Bug fix
 
 ### Removed
-- Deprecated feature
+- Deprecated
 ```
 
+## Rules
+- Docstrings on all public functions/classes
+- Brief one-line summary first
+- Args/Returns/Raises for non-trivial functions
+- Changelog: semantic sections only
+
+## Helper
+
+```bash
+python3 skills/documentation/doc_helper.py  # documentation helper
+```
 ## Related Skills
 - `_taudoc` — project documentation structure
 - `readme_template` — README documentation
 - `code-review-workflow` — review documentation quality
-- `skill_template` — document skills
+
+- `skill_template` — Create new skill or modify existing skills. Create skill

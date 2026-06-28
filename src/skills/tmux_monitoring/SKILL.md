@@ -1,13 +1,14 @@
 ---
 name: tmux_monitoring
-description: Best practices for monitoring tmux sessions in background tasks (also load: background, test-suite-monitor)
+description: Monitor tmux sessions — polling intervals, completion detection, anti-patterns. Tmux, session monitoring, terminal multiplexer, monitor sessions, terminal (also load: background)
 category: development
+keywords: tmux, monitor, session, polling, background, terminal, completion, detect
 ---
 
 # Tmux Monitoring
 
 ## When
-"monitor tmux", "poll background", "check session status", "background monitoring", "session polling"
+"monitor tmux", "poll background", "check session status", "background monitoring", "session polling", "monitor sessions", "terminal"
 
 ## Timing
 | Task Duration | Poll Interval |
@@ -45,6 +46,11 @@ while true; do
 done
 ```
 
+## Helper
+
+```bash
+source skills/tmux_monitoring/monitor_helpers.sh
+```
 ## Related Skills
 - `background` — tmux session management
 - `test-suite-monitor` — complete test monitoring workflow

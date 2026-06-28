@@ -2,7 +2,6 @@
 """Caveman style helper - text analysis and style checking."""
 
 import re
-from typing import Optional
 
 
 def check_style(text: str) -> dict:

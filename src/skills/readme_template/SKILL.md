@@ -1,7 +1,8 @@
 ---
 name: readme_template
-description: Template and structure for README.md files (also load: project-onboard, skill_template, command_template, documentation)
+description: README structure — tool/command/skill documentation patterns. Readme, documentation template, project readme (also load: project-onboard, skill_template, command_template)
 category: documentation
+keywords: readme, documentation, template, project, structure, sections
 ---
 
 # README.md Structure
@@ -9,7 +10,7 @@ category: documentation
 ## When
 "write readme", "readme structure", "document project", "update readme", "readme template"
 
-## Sections (in order)
+## Tau README Sections (in order)
 1. **Table of Contents** — Links to all major sections
 2. **Overview** — What it is, key features, goals
 3. **Core Concepts** — Architecture principles, design decisions
@@ -27,7 +28,14 @@ category: documentation
 - Update TOC when sections change
 - Consistent formatting, clear examples, actionable content
 
+## Helper
+
+```bash
+python3 skills/readme_template/readme_gen.py  # readme_template helper
+```
 ## Related Skills
 - `project-onboard` — gather project info for README
 - `skill_template` — document skills in README
 - `command_template` — document commands in README
+
+- `documentation` — Documentation patterns

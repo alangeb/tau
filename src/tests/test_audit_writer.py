@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_session import AuditWriter
+from agent_audit_writer import AuditWriter
 
 
 @pytest.fixture

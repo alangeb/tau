@@ -40,9 +40,15 @@ def parse_frontmatter(text: str) -> dict[str, str]:
 
 
 def extract_also_loads(text: str) -> list[str]:
-    """Extract skill names from '(also load: ...)' patterns in description."""
+    """Extract skill names from '(also load: ...)' patterns in frontmatter description only.
+
+    Only extracts from the frontmatter description field to avoid false positives
+    from code examples and checklist items in the body.
+    """
+    fm = parse_frontmatter(text)
+    desc = fm.get("description", "")
     # Match '(also load: skill1, skill2, ...)'
-    matches = re.findall(r"\(also load:\s*([^)]+)\)", text)
+    matches = re.findall(r"\(also load:\s*([^)]+)\)", desc)
     skills: list[str] = []
     for match in matches:
         # Split on comma or ' and '
@@ -71,6 +77,10 @@ def main() -> int:
             skill_path_map[stem] = fpath
 
     # ── Validate runtime skills ───────────────────────────────────────────
+    # Infrastructure skills (prefixed with _) are valid cross-reference targets
+    # but excluded from runtime skill discovery (discover_skills skips _ prefix)
+    _INFRA_SKILLS = {"_taudoc", "_tauskillmaintenance"}
+
     referenced_skills: set[str] = set()  # Track which skills are referenced
     for stem in sorted(runtime_skills):
         fpath = skill_path_map[stem]
@@ -93,16 +103,14 @@ def main() -> int:
                 f"{WARNING_THRESHOLD}). Consider expanding or consolidating."
             )
 
-        # Cross-reference integrity
+        # Cross-reference integrity — infrastructure skills (_prefix) are valid targets
         for ref in extract_also_loads(content):
-            if ref not in runtime_skills:
+            if ref not in runtime_skills and ref not in _INFRA_SKILLS:
                 errors.append(f"{stem}: references non-existent skill '{ref}'")
             else:
                 referenced_skills.add(ref)
 
     # ── Orphan detection (skills not referenced by any other skill) ────────
-    # _taudoc and _tauskillmaintenance are infrastructure skills — expected orphans
-    _INFRA_SKILLS = {"_taudoc", "_tauskillmaintenance"}
     for stem in sorted(runtime_skills):
         if stem in _INFRA_SKILLS:
             continue

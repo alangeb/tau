@@ -1,13 +1,14 @@
 ---
 name: error-recovery
-description: Handle tool errors, API failures, session recovery, context overflow (also load: bug_investigation, tau_audit, context_management)
+description: Handle tool errors, API failures, session recovery, context overflow. Error handling, crash recovery, failure, retry, recover from crash, session recovery (also load: bug_investigation, tau_audit, background)
 category: resilience
+keywords: error, recovery, crash, failure, retry, API failure, context overflow, session, handle
 ---
 
 # Error Recovery
 
 ## When
-"tool error", "API failure", "session crashed", "context full", "recover session"
+"tool error", "API failure", "session crashed", "context full", "recover session", "handle errors", "recover from crash", "retry failed"
 
 ## Error Types
 | Type | Pattern | Recovery |
@@ -30,8 +31,16 @@ category: resilience
 - [ ] Retry with correction
 - [ ] Verify recovery success
 
+## Helpers
+
+```bash
+python3 skills/error-recovery/error_helper.py  # Automated error analysis
+source skills/error-recovery/error_helper.sh    # bg_status, bg_cleanup
+```
 ## Related Skills
 - `bug_investigation` — systematic error analysis
 - `tau_audit` — analyze error patterns in logs
 - `context_management` — handle context overflow
 - `background` — recover background sessions
+
+- `info` — Agent status and diagnostics

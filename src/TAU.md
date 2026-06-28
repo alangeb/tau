@@ -103,11 +103,11 @@ All session artifacts live in `LOG_DIR` (default: `~/.local/tau/`):
 
 | Pattern | Purpose | Example |
 |---------|---------|---------|
-| `agent_*.py` | Core agent modules | `agent_core.py`, `agent_llm.py` |
+| `agent_*.py` | Core agent modules | `agent_core.py`, `agent_llm.py` (facade) |
 | `tc_*.sh` | Test files | `tc_1.0.1_basic.sh` |
 | `TASK_##.md` | Task files | `TASK_01.md` |
 | `skills/*/SKILL.md` | Skill files | `skills/tau_testsuite/SKILL.md` |
-| `*.md`/`*.py` in `commands/` | Command files | `delegate.py`, `pyprep.md` |
+| `*.md`/`*.py` in `commands/` | Command files | `delegate.py`, `health.py`, `plan.py`, `ralph.py`, `pyprep.md` |
 
 ### Agent Behavior (from AGENT.md)
 

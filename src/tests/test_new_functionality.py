@@ -286,7 +286,7 @@ class TestToolCallFieldStripping:
                 },
             ],
         }
-        # Simulate the stripping logic from agent_llm.py
+        # Simulate the stripping logic from agent_llm_validation.py
         for tc in msg.get("tool_calls") or []:
             if isinstance(tc, dict):
                 for key in list(tc.keys()):

@@ -184,10 +184,10 @@ from agent_console import (
     interrupted_message,
     no_context_file_found,
     print_agent_exit_summary,
+    status,
     tools_loaded_message,
     user_message_display,
 )
-from agent_console_primitives import status
 from agent_version import get_version_info
 
 # Force line-buffered stdout so output appears immediately (not blocked until 8KB fills)
@@ -371,7 +371,11 @@ def main():
                 ]:
                     msgs = [m for m in agent.context if m.get("role") == role]
                     if msgs:
-                        display_fn(msgs[-1].get("content", ""))
+                        raw = msgs[-1].get("content", "")
+                        if isinstance(raw, list):
+                            text_parts = [p.get("text", "") for p in raw if p.get("type") == "text"]
+                            raw = " ".join(text_parts) if text_parts else "[image]"
+                        display_fn(raw)
             else:
                 context_restore_failure(target_ctx)
         else:

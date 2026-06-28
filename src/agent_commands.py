@@ -16,11 +16,8 @@ from typing import TYPE_CHECKING
 from agent_command_handlers import _get_cmd_name_to_method, get_command_info
 from agent_command_registry import (
     CommandInfo,
+    CommandRegistry,
     CommandSource,
-    get_command,
-    get_py_command,
-    load_command_content,
-    load_py_command,
     parse_multi_prompt,
     strip_frontmatter,
 )
@@ -65,6 +62,18 @@ class CommandManager:
     _handlers_loaded: bool = False
     _handlers_lock: threading.Lock = threading.Lock()
 
+    # ── Command registry ───────────────────────────────────────────────────
+    # Single shared CommandRegistry instance — avoids repeated filesystem scans
+    # and module reloads across calls within the same process.
+    _registry: CommandRegistry | None = None
+
+    @classmethod
+    def _get_registry(cls) -> CommandRegistry:
+        """Return the shared CommandRegistry, creating it lazily."""
+        if cls._registry is None:
+            cls._registry = CommandRegistry()
+        return cls._registry
+
     @classmethod
     def _ensure_handlers_loaded(cls) -> None:
         """Ensure builtin command handlers are loaded into the registry."""
@@ -84,15 +93,16 @@ class CommandManager:
         """
         CommandManager._ensure_handlers_loaded()
         matches: list[CommandInfo] = []
+        registry = CommandManager._get_registry()
 
         # 1. .py commands (highest priority — can override builtins)
-        py_cmd = get_py_command(cmd_name)
+        py_cmd = registry.get(cmd_name, CommandSource.PY)
         if py_cmd is not None:
             matches.append(CommandInfo(
                 name=cmd_name,
                 source=CommandSource.PY,
-                description=py_cmd.get("description", ""),
-                file_path=py_cmd.get("file_path", ""),
+                description=py_cmd.description or "",
+                file_path=py_cmd.file_path,
             ))
 
         # 2. Builtin commands
@@ -108,13 +118,13 @@ class CommandManager:
             ))
 
         # 3. .md commands (lowest priority)
-        md_cmd = get_command(cmd_name)
+        md_cmd = registry.get(cmd_name, CommandSource.MD)
         if md_cmd is not None:
             matches.append(CommandInfo(
                 name=cmd_name,
                 source=CommandSource.MD,
-                description=md_cmd.get("description", ""),
-                file_path=md_cmd.get("file_path", ""),
+                description=md_cmd.description or "",
+                file_path=md_cmd.file_path,
             ))
 
         return matches
@@ -146,7 +156,6 @@ class CommandManager:
             return False
 
         # Pre-check for conflict: .py + .md both exist
-        has_py = any(i.is_py for i in infos)
         has_md = any(i.is_md for i in infos)
 
         for info in infos:
@@ -173,10 +182,7 @@ class CommandManager:
     @staticmethod
     def _show_help(cmd_name: str, cmd_full: str, agent: TauErgon) -> None:
         """Show help for a command (builtin or external)."""
-        from agent_command_registry import get_py_command_subcommands
-        from agent_command_handlers import get_command_info
-        from agent_console import show_command_help
-        from agent_console_primitives import echo
+        from agent_console import echo, show_command_help
 
         # Check builtin commands first
         info = get_command_info(cmd_name)
@@ -187,15 +193,16 @@ class CommandManager:
                 return
 
         # Check external Python commands — prefer help_text over generic subcommand hint
-        py_cmd = get_py_command(cmd_name)
+        registry = CommandManager._get_registry()
+        py_cmd = registry.get(cmd_name, CommandSource.PY)
         if py_cmd is not None:
-            help_text = py_cmd.get("help_text", "")
+            help_text = py_cmd.help_text
             if help_text:
                 echo(help_text)
                 return
 
         # No help_text — show subcommand hints if available
-        py_subcmds = get_py_command_subcommands(cmd_name)
+        py_subcmds = registry.get_subcommands(cmd_name)
         if py_subcmds:
             echo(f"Usage: /{cmd_name} [{', '.join(py_subcmds)}] [args...]\n")
             return
@@ -228,7 +235,7 @@ class CommandManager:
         cmd_full: str,
         agent: TauErgon,
     ) -> bool:
-        mod = load_py_command(
+        mod = CommandManager._get_registry().load_py(
             info.name,
             file_path=Path(info.file_path) if info.file_path else None,
         )
@@ -268,7 +275,7 @@ class CommandManager:
         agent: TauErgon,
     ) -> bool:
         """Inner dispatch — called only when depth < MAX_MD_COMMAND_RECURSION."""
-        full_content = load_command_content(info.name)
+        full_content = CommandManager._get_registry().load_content(info.name)
         if not full_content:
             command_file_not_found(info.name)
             return False

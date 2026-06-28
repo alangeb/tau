@@ -1,6 +1,22 @@
 ---
-description: Tau do task
+description: Tau do task — execute task from 2_inprogress/
 ---
+
+# /_taudotask
+
+## Purpose
+Execute a task from `tasks/2_inprogress/`. This command is invoked by `dream.py` or `automate.sh` during the task lifecycle.
+
+## Task Lifecycle Context
+
+```
+1_todo/ → 2_inprogress/ → [/_taudotask executes] → 3_done/ or 3_failed/
+```
+
+See `skill('task')` for complete framework documentation.
+
+## Execution Protocol
+
 /pyprep
 ---
 Use your ast-grep and code-simplifier skills.
@@ -8,10 +24,8 @@ Use your ast-grep and code-simplifier skills.
 **ANALYSIS LIMIT: Maximum 3 analysis tool calls (info, pyscan, pyanalyze, think). After 3 calls, you MUST start implementing.**
 
 Look into folder structure ../tasks, you'll see the folders 1_todo, 2_inprogress, 3_done, 3_failed.
-
-Chose an arbitrary file from 1_todo.
-Move (mv) the file from 1_todo into 2_inprogress.
-Read the file - the file describes the task/goal/activity you should perform.
+The task file in 2_inprogress describes the task/goal/activity you should perform.
+Read it and implement.
 
 **MANDATORY: After reading the task file, immediately start implementing. Do NOT create elaborate plans. Do NOT analyze further. Implement directly.**
 
@@ -34,6 +48,14 @@ Review your changes. Fix what needs fixing. Stay close to original instructions.
 Review your changes. Fix what needs fixing. Stay close to original instructions.
 ---
 Run pytests, sanity tests. Fix code if it is broken.
-If you manage to fix everything, move (mv) the 1 file in ../tasks/2_inprogress folder into ../task/3_done folder, and commit all changes to git (git commit).
-If you encounter permanent failures, move (mv) the 1 file in ../tasks/2_inprogress folder into ../task/3_failed folder, then revert all other changes to original.
 Report on what was done.
+
+## Post-Execution
+After successful implementation:
+1. Move task file from `2_inprogress/` to `3_done/`
+2. If failed, move to `3_failed/`
+
+## Related Skills
+- `skill('task')` — Complete task framework, verification, state management
+- `skill('dream')` — Dream orchestrator that invokes this command
+- `skill('task_creation')` — Creating tasks for execution

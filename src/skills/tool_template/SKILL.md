@@ -1,7 +1,8 @@
 ---
 name: tool_template
-description: Template for creating agent tools. Python modules in tools/. Mandatory: name, description, Pydantic Args, run(). No main(). agent + tool_call_id MANDATORY. (also load: skill_template, command_template)
+description: Create agent tools — Pydantic Args, run() function, metadata. Create tool, tool format, new tool, tool definition, custom tool (also load: skill_template, command_template)
 category: development
+keywords: tool, create tool, tool format, tool definition, custom tool, pydantic, run function
 ---
 
 # Tool Template
@@ -45,13 +46,6 @@ def run(arg1: str, arg2: int, agent: 'TauErgon', tool_call_id: str | None) -> st
 | `aliases_cmd` | `list[str]` | `[]` | Alternative names, resolved silently |
 | `aliases_arg` | `dict[str, str]` | `{}` | Alt param names → canonical, resolved silently |
 
-## Key Distinctions
-- `exec wait=True`: sends + waits 0.5s, returns output
-- `exec wait=False`: sends + returns immediately
-- `send_keys`: text WITHOUT C-m, for interactive input
-- `capture scrollback=N`: N lines history from pane buffer
-- `tail lines=N`: last N lines from captured output
-
 ## Common Pitfalls
 | Pitfall | Fix |
 |---------|-----|
@@ -59,6 +53,12 @@ def run(arg1: str, arg2: int, agent: 'TauErgon', tool_call_id: str | None) -> st
 | `scrollback=0` expects history | Use `≥30` |
 | Confusing `send_keys` with `exec` | `send_keys` = input, `exec` = execute |
 
+## Helper
+
+```bash
+python3 skills/tool_template/tool_gen.py  # tool_template helper
+```
 ## Related Skills
+- `tauskillmaintenance` — audit and maintain skills
 - `skill_template` — creating skills (sibling concept)
 - `command_template` — creating commands (sibling concept)

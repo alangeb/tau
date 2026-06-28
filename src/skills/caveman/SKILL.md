@@ -1,7 +1,8 @@
 ---
 name: caveman
-description: Make output concise — drop articles, remove filler, speak caveman style. Improve writing clarity, shorten responses, compress context. (also load: command_template, skill_template, tauskillmaintenance)
+description: Make output concise — drop articles, remove filler, speak caveman style. Concise, brief, short, compress, terse (also load: command_template, skill_template, tauskillmaintenance)
 category: communication
+keywords: concise, brief, short, compress, terse, drop articles, remove filler
 ---
 
 # Concise Communication
@@ -21,6 +22,12 @@ category: communication
 - Good: "Function returns wrong value."
 - Bad: "Let me check the file to see what's going on."
 - Good: "Checking file."
+
+## Helpers
+```bash
+python3 skills/caveman/style_check.py <file.txt>  # Check caveman style violations
+python3 skills/caveman/compress.py <input> [output]  # Compress text
+```
 
 ## Related Skills
 - `command_template` — writing concise commands

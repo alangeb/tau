@@ -15,7 +15,6 @@ import logging
 import os
 import shutil
 import tempfile
-import threading
 import time
 import uuid
 from pathlib import Path

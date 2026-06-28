@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from tools import ToolMetadata
+from tools.lib.cache import FileCache
 
 import json
-import os
 import re
 import subprocess
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.error import HTTPError, URLError
@@ -31,44 +30,14 @@ metadata = ToolMetadata(
     timeout=30,
 )
 
-# ── Cache ────────────────────────────────────────────────────────
+# ── Cache ────────────────────────────────────────────────
 
-_CACHE_DIR = os.path.join(os.getenv("TMPDIR", "/tmp"), "tau_search_cache")
-_CACHE_TTL = 300  # 5 minutes
+_search_cache = FileCache("tau_search_cache", ttl=300)
 
 
 def _cache_key(query: str, timelimit: str | None = None) -> str:
     suffix = f"_{timelimit}" if timelimit else ""
     return re.sub(r"[^a-z0-9]", "_", f"search_{query}{suffix}".lower()[:100])
-
-
-def _cleanup_cache(cache_dir: str, ttl: int) -> None:
-    try:
-        cutoff = time.time() - ttl
-        for fname in os.listdir(cache_dir):
-            fpath = os.path.join(cache_dir, fname)
-            if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
-                os.remove(fpath)
-    except OSError:
-        pass
-
-
-def _load_cache(query: str, timelimit: str | None = None) -> list[dict] | None:
-    path = os.path.join(_CACHE_DIR, f"{_cache_key(query, timelimit)}.json")
-    if not os.path.exists(path):
-        return None
-    if time.time() - os.path.getmtime(path) > _CACHE_TTL:
-        return None
-    with open(path, "r") as f:
-        return json.load(f)
-
-
-def _save_cache(query: str, results: list[dict], timelimit: str | None = None) -> None:
-    os.makedirs(_CACHE_DIR, exist_ok=True)
-    _cleanup_cache(_CACHE_DIR, _CACHE_TTL)
-    path = os.path.join(_CACHE_DIR, f"{_cache_key(query, timelimit)}.json")
-    with open(path, "w") as f:
-        json.dump(results, f)
 
 
 # ── SearXNG (optional first-attempt) ────────────────────────────
@@ -280,7 +249,7 @@ def run(
     tl = _normalize_timelimit(timelimit) if timelimit else None
 
     if cache:
-        cached = _load_cache(query, tl)
+        cached = _search_cache.load(_cache_key(query, tl))
         if cached:
             return json.dumps(cached, indent=2)
 
@@ -297,14 +266,14 @@ def run(
         results = _try_searxng(query, searxng_url, limit)
         if results:
             if cache:
-                _save_cache(query, results, tl)
+                _search_cache.save(_cache_key(query, tl), results)
             return json.dumps(results, indent=2)
 
     # Fallback to native DDG+Mojeek
     results = _do_search(query, limit, tl)
 
     if cache and results:
-        _save_cache(query, results, tl)
+        _search_cache.save(_cache_key(query, tl), results)
 
     if not results:
         return "No results found."

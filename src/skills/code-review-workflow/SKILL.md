@@ -1,7 +1,8 @@
 ---
 name: code-review-workflow
-description: Complete code review pipeline — pyscan, pyanalyze, ruff, black, summary (also load: review, python_best_practices, ast-grep, code-simplifier, git, git-verify, plan_template, project-onboard, python_debugging, bug_investigation, performance, documentation, git-advanced, search-replace, security-audit, file-ops)
+description: Complete code review pipeline — pyscan, pyanalyze, ruff, black, summary. Review code, check quality, audit codebase (also load: review, python_best_practices, ast-grep, code-simplifier)
 category: code-quality
+keywords: review pipeline, automated review, code quality, lint, format, type check, full review
 ---
 
 # Code Review Workflow
@@ -11,6 +12,8 @@ category: code-quality
 
 ## Sequence
 ```bash
+python3 skills/code-review-workflow/review_pipeline.py <path>  # Full pipeline
+# Or manual:
 pyscan(path=".")                          # Structural inventory
 pyanalyze(path=".")                        # Usage analysis, unused code
 ruff check --fix <file>                   # Auto-fix linting
@@ -34,8 +37,17 @@ black <file>                                # Format
 - `python_best_practices` — linting/formatting sequence
 - `ast-grep` — complex search/rewrite
 - `git` — commit changes after review
-- `context_management` — delegate review to subagent
-- `bug_investigation` — systematic bug analysis
 - `code-simplifier` — code clarity improvements
-- `plan_template` — structured task planning
-- `python_debugging` — interactive debugging
+- `bug_investigation` — systematic bug analysis
+- `graphify` — knowledge graph for architecture overview
+- `context_management` — delegate review
+- `documentation` — docstring patterns
+- `file-ops` — file operations
+- `git-advanced` — advanced git operations
+- `git-verify` — git verification
+- `performance` — performance analysis
+- `plan_template` — plan structure
+- `project-onboard` — project context
+- `python_debugging` — debugging
+- `search-replace` — search and replace
+- `security-audit` — security analysis

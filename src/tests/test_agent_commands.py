@@ -17,10 +17,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent_command_registry import (
+    CommandRegistry,
+    CommandSource,
     substitute_placeholders,
-    discover_commands,
-    get_command,
-    load_command_content,
     parse_multi_prompt,
 )
 from agent_core import TauErgon
@@ -33,33 +32,33 @@ class TestCommandDiscovery:
 
     def test_commands_discovered(self, commands_dir):
         """Verify commands are discovered."""
-        commands = discover_commands(str(commands_dir))
+        commands = CommandRegistry(str(commands_dir)).discover(CommandSource.MD)
         assert len(commands) > 0, "No commands found"
 
     def test_commands_have_required_fields(self, commands_dir):
         """Verify commands have required fields."""
-        commands = discover_commands(str(commands_dir))
+        commands = CommandRegistry(str(commands_dir)).discover(CommandSource.MD)
         for cmd in commands:
-            assert "name" in cmd, f"Command missing 'name': {cmd}"
-            assert "content" in cmd, f"Command missing 'content': {cmd}"
-            assert "file_path" in cmd, f"Command missing 'file_path': {cmd}"
-            assert "full_content" in cmd, f"Command missing 'full_content': {cmd}"
+            assert hasattr(cmd, "name"), f"Command missing 'name': {cmd}"
+            assert hasattr(cmd, "content"), f"Command missing 'content': {cmd}"
+            assert hasattr(cmd, "file_path"), f"Command missing 'file_path': {cmd}"
+            assert hasattr(cmd, "full_content"), f"Command missing 'full_content': {cmd}"
 
     def test_gitcrit_command_exists(self, commands_dir):
         """Verify /gitcrit command exists."""
-        commands = discover_commands(str(commands_dir))
-        names = [cmd["name"] for cmd in commands]
+        commands = CommandRegistry(str(commands_dir)).discover(CommandSource.MD)
+        names = [cmd.name for cmd in commands]
         assert "gitcrit" in names, "/gitcrit command not found"
 
     def test_command_type_is_command(self, commands_dir):
-        """Verify all commands have type='command'."""
-        commands = discover_commands(str(commands_dir))
+        """Verify all commands have source=MD."""
+        commands = CommandRegistry(str(commands_dir)).discover(CommandSource.MD)
         for cmd in commands:
-            assert cmd["type"] == "command", f"Command {cmd['name']} has wrong type"
+            assert cmd.source == CommandSource.MD, f"Command {cmd.name} has wrong source"
 
     def test_command_count_reasonable(self, commands_dir):
         """Verify reasonable number of commands."""
-        commands = discover_commands(str(commands_dir))
+        commands = CommandRegistry(str(commands_dir)).discover(CommandSource.MD)
         assert len(commands) > 5, "Expected more than 5 commands"
 
 
@@ -68,31 +67,31 @@ class TestCommandContent:
 
     def test_gitcrit_command_content(self, commands_dir):
         """Verify /gitcrit command has expected content."""
-        cmd = get_command("gitcrit", str(commands_dir))
+        cmd = CommandRegistry(str(commands_dir)).get("gitcrit", CommandSource.MD)
         assert cmd is not None
-        assert "critique" in cmd["content"].lower()
+        assert "critique" in cmd.content.lower()
 
     def test_gitcrit_contains_critique(self, commands_dir):
         """Verify /gitcrit content contains critique instructions."""
-        cmd = get_command("gitcrit", str(commands_dir))
+        cmd = CommandRegistry(str(commands_dir)).get("gitcrit", CommandSource.MD)
         assert cmd is not None
-        assert "critique" in cmd["content"].lower()
+        assert "critique" in cmd.content.lower()
 
     def test_command_content_not_empty(self, commands_dir):
         """Verify all commands have non-empty content."""
-        commands = discover_commands(str(commands_dir))
+        commands = CommandRegistry(str(commands_dir)).discover(CommandSource.MD)
         for cmd in commands:
             assert (
-                len(cmd["content"].strip()) > 0
-            ), f"Command {cmd['name']} has empty content"
+                len(cmd.content.strip()) > 0
+            ), f"Command {cmd.name} has empty content"
 
     def test_command_content_is_string(self, commands_dir):
         """Verify all command content is a string."""
-        commands = discover_commands(str(commands_dir))
+        commands = CommandRegistry(str(commands_dir)).discover(CommandSource.MD)
         for cmd in commands:
             assert isinstance(
-                cmd["content"], str
-            ), f"Command {cmd['name']} content is not a string"
+                cmd.content, str
+            ), f"Command {cmd.name} content is not a string"
 
 
 class TestCommandPlaceholderSubstitution:
@@ -181,24 +180,24 @@ class TestCommandChaining:
 class TestCommandFileLoading:
     """Test command file loading functionality."""
 
-    def test_load_command_content(self, commands_dir):
-        """Test loading command content from file."""
-        content = load_command_content("heartbeat", str(commands_dir))
+    def test_registry_load_content(self, commands_dir):
+        """Test CommandRegistry.load_content() loads command content from file."""
+        content = CommandRegistry(str(commands_dir)).load_content("heartbeat")
         assert content is not None
         assert len(content) > 0
 
     def test_load_nonexistent_command(self, commands_dir):
         """Test loading nonexistent command returns None."""
-        cmd = get_command("nonexistent_command", str(commands_dir))
+        cmd = CommandRegistry(str(commands_dir)).get("nonexistent_command", CommandSource.MD)
         assert cmd is None
 
     def test_command_file_path_correct(self, commands_dir):
         """Verify command file paths are correct."""
-        commands = discover_commands(str(commands_dir))
+        commands = CommandRegistry(str(commands_dir)).discover(CommandSource.MD)
         for cmd in commands:
             assert Path(
-                cmd["file_path"]
-            ).exists(), f"Command file not found: {cmd['file_path']}"
+                cmd.file_path
+            ).exists(), f"Command file not found: {cmd.file_path}"
 
 
 class TestParseMultiPrompt:

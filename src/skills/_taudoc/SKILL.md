@@ -1,7 +1,8 @@
 ---
 name: _taudoc
-description: Maintain TauErgon documentation structure — designs/, TAU.md, AGENT.md (also load: tau_audit, skill_template, documentation)
+description: Maintain TauErgon documentation structure — designs/, TAU.md, AGENT.md. Documentation structure, tau docs, design documents (also load: tau_audit, skill_template, documentation, command_template, dream)
 category: maintenance
+keywords: documentation, doc structure, tau docs, design documents, technical writing
 ---
 
 # Tau Documentation Layout
@@ -9,64 +10,54 @@ category: maintenance
 ## When
 "update docs", "documentation structure", "designs folder", "TAU.md", "AGENT.md", "documentation maintenance"
 
-## Structure (all paths relative to `src/`)
-
+## Structure (relative to `src/`)
 ```
 src/
-├── AGENT.md              ← System prompt (always loaded). Points to TAU.md.
-├── TAU.md                ← Developer index. Points to designs/ files.
+├── AGENT.md              ← System prompt. Points to TAU.md.
+├── TAU.md                ← Developer index. Points to designs/.
 ├── README.md             ← Minimal pointer to TAU.md + designs/
 └── designs/
-    ├── INDEX.md          ← Navigation index for designs/
-    ├── ARCHITECTURE.md   ← Request flow, modules, pipelines, patterns
-    ├── DECISIONS.md      ← Design decisions (166+ across 20 categories)
+    ├── INDEX.md          ← Navigation
+    ├── ARCHITECTURE.md   ← Request flow, modules, patterns
+    ├── DECISIONS.md      ← Design decisions (166+, 20 categories)
     ├── CONTEXT.md        ← Context management patterns
-    ├── COMMANDS.md       ← Command implementation guide
-    ├── SKILLS.md         ← Skill implementation guide
+    ├── COMMANDS.md       ← Command implementation
+    ├── SKILLS.md         ← Skill implementation
     ├── TESTING.md        ← Testing guide
-    └── TOOLS.md          ← Tool implementation guide
+    └── TOOLS.md          ← Tool implementation
 ```
 
 ## Rules
-
-1. **AGENT.md** is the system prompt. NEVER modify except to update the TAU.md reference line.
-2. **TAU.md** is the developer index. It points to designs/ for all design documents.
-3. **designs/** contains ALL design documents. No design docs outside this folder.
-4. **README.md** is a minimal pointer file. Do NOT add content here — put it in TAU.md or designs/.
-5. **commands/_taudoc.md** is the ONLY command for documentation maintenance.
-6. **skills/_taudoc/** is the ONLY skill for documentation maintenance.
-7. All paths in documentation are RELATIVE to `src/` folder.
-8. **NEVER** create new documentation files outside `designs/` without explicit approval.
-9. **NEVER** remove old entries from `designs/DECISIONS.md` — manual only.
-10. **ALWAYS** verify cross-links resolve before committing.
+1. **AGENT.md** — System prompt. NEVER modify except TAU.md reference line.
+2. **TAU.md** — Developer index. Points to designs/.
+3. **designs/** — ALL design docs. None outside.
+4. **README.md** — Minimal pointer. No content here.
+5. **commands/_taudoc.md** — ONLY doc maintenance command.
+6. **skills/_taudoc/** — ONLY doc maintenance skill.
+7. All paths RELATIVE to `src/`.
+8. NEVER create docs outside `designs/` without approval.
+9. NEVER remove `designs/DECISIONS.md` entries — manual only.
+10. ALWAYS verify cross-links before committing.
 
 ## Workflow
+1. Read `TAU.md` + relevant `designs/*.md`
+2. `pyscan` + `pyanalyze` on `src/`
+3. Compare code vs docs
+4. Update docs to match code
+5. Remove overlaps
+6. Verify cross-links
+7. Commit
 
-When updating documentation:
-
-1. Read `TAU.md` and all relevant `designs/*.md` files
-2. Run `pyscan` and `pyanalyze` on `src/` to understand current code
-3. Compare actual code against documentation
-4. Update docs to match code (not code to match docs)
-5. Remove overlaps between files
-6. Verify all cross-links resolve
-7. Commit with descriptive message
-
-## What Goes Where
-
-| Content | Location |
-|---------|-----------|
-| System prompt rules | `AGENT.md` |
-| Developer quick reference | `TAU.md` |
-| Architecture, flow, modules | `designs/ARCHITECTURE.md` |
-| Design decisions | `designs/DECISIONS.md` |
-| Context patterns | `designs/CONTEXT.md` |
-| Tool implementation | `designs/TOOLS.md` |
-| Command implementation | `designs/COMMANDS.md` |
-| Skill implementation | `designs/SKILLS.md` |
-| Testing guide | `designs/TESTING.md` |
+## Helper
+```bash
+python3 skills/_taudoc/doc_validator.py  # _taudoc helper
+```
 
 ## Related Skills
-- `tau_audit` — analyze agent logs for behavior patterns
+- `tau_audit` — analyze agent logs
 - `skill_template` — skill creation format
 - `command_template` — command creation format
+- `documentation` — docstring and changelog patterns
+- `task` — task framework
+
+- `dream` — Dream orchestrator

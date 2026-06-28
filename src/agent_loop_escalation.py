@@ -16,15 +16,15 @@ import uuid
 from typing import TYPE_CHECKING
 
 from agent_console import (
+    format_duration_ms,
     loop_warning,
     tool_start,
 )
-from agent_console_primitives import format_duration_ms
 from agent_context import (
     TauContext,
-    get_last_real_user_prompt,
 )
 from agent_loop_detect import LoopDetector
+from agent_message_utils import get_last_real_user_prompt
 from agent_reflection import ReflectionScheduler
 
 if TYPE_CHECKING:
@@ -161,8 +161,6 @@ class LoopEscalationManager:
             response_text: The defective assistant response text.
             reasoning_content: The reasoning content (if any).
         """
-        from agent_context import get_last_real_user_prompt
-
         # Get the last REAL user prompt (not synthetic escalation messages)
         last_real_prompt = get_last_real_user_prompt(self._context.get_messages())
 

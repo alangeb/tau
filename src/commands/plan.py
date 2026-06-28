@@ -1,7 +1,6 @@
 """Plan command — direct interface to the plan tool."""
 
-from agent_console import error
-from agent_console_primitives import echo
+from agent_console import echo, error
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -9,9 +8,9 @@ if TYPE_CHECKING:
 
 # ── Metadata ──
 NAME = "plan"
-DESCRIPTION = "Manage tasks: status, clear, create, add, complete, block, unblock"
+DESCRIPTION = "Manage tasks: status, clear, create, add, complete, block, unblock, progress, update, delete"
 ALIASES_CMD = ["task"]
-subcommands = ("status", "clear", "create", "add", "complete", "block", "unblock", "next")
+subcommands = ("status", "clear", "create", "add", "complete", "block", "unblock", "next", "progress", "update", "delete")
 help_text = """Usage: /plan <action> [args...]
 Actions:
   status          Show plan status
@@ -21,9 +20,12 @@ Actions:
   complete <id>   Mark task complete
   block <id> [reason] Block a task
   unblock <id>    Unblock a task
-  next            Show next actionable task"""
+  next            Show next actionable task
+  progress        Show completion percentage
+  update <id>     Update a task
+  delete <id>     Delete a task"""
 
-_VALID_ACTIONS = {"status", "clear", "create", "add", "complete", "block", "unblock"}
+_VALID_ACTIONS = {"status", "clear", "create", "add", "complete", "block", "unblock", "next", "progress", "update", "delete"}
 
 
 # ── Execution ──
@@ -39,7 +41,10 @@ def run(agent: "TauErgon", args: list[str]) -> None:
             "  complete <task_id> [notes=...]\n"
             "  block <task_id> [blocker_reason=...]\n"
             "  unblock <task_id>\n"
-            "  next"
+            "  next\n"
+            "  progress\n"
+            "  update <task_id> [description=...]\n"
+            "  delete <task_id>"
         )
         return
 

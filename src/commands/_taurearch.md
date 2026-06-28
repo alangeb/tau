@@ -32,6 +32,4 @@ Review your changes. Fix what needs fixing. Stay close to original instructions.
 Review your changes. Fix what needs fixing. Stay close to original instructions.
 ---
 Run pytests, sanity tests. Fix code if it is broken.
-If you manage to fix everything, commit the changes to git (git commit).
-If you encounter permanent failures, revert all changes to original.
 Report on what was done.

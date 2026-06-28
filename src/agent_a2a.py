@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 
 from agent_console import (
-    a2a_cli_error, a2a_started_message, agent_a2a_response, agent_card_json,
+    a2a_cli_error, agent_a2a_response, agent_card_json,
     agent_status_message, agents_json, agents_table_header, agents_table_row,
 )
 from agent_models import InputMessage

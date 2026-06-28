@@ -20,7 +20,7 @@ cd src && pytest          # Full suite
 cd src && pytest test_agent_context.py  # Specific module
 ```
 
-42 test files covering: context, LLM pipeline, tools, delegation, A2A, config, console, loop detection, models, file paths, tool validation, compression, edge cases, phantom detection.
+45 test files covering: context, LLM pipeline, tools, delegation, A2A, config, console, loop detection, models, file paths, tool validation, compression, edge cases, phantom detection.
 
 ## End-to-End Tests
 
@@ -45,7 +45,7 @@ See `skills/tau_testsuite.md` for full test suite documentation.
 | Rule | Details |
 |------|---------|
 | Gold standard | `sanity.sh` — end-to-end tests requiring LLM endpoint (~100 sec) |
-| Unit tests | `cd src && pytest` — 42 test files covering core modules |
+| Unit tests | `cd src && pytest` — 45 test files covering core modules |
 | Naming | `tc_<major>.<minor>.<idx>_<name>.sh` (e.g., `tc_1.0.1_basic.sh`) |
 | Structure | SETUP → EXECUTE → VALIDATE → CLEANUP |
 | Helpers | `expect_*()` functions — print PASS/FAIL, return 0/1 — **DO NOT INVERT** |

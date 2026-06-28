@@ -1,7 +1,6 @@
 """Delegate command — orchestrator mode for task delegation."""
 
-from agent_console import error
-from agent_console_primitives import blank_line, echo, status
+from agent_console import blank_line, echo, status
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

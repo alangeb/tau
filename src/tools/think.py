@@ -11,8 +11,7 @@ if TYPE_CHECKING:
 
 from dataclasses import dataclass, field
 
-from agent_console import error
-from agent_console_primitives import format_duration_ms
+from agent_console import error, format_duration_ms
 from agent_subagent import invoke_fork_sync
 from agent_tool_filter import ToolFilter
 

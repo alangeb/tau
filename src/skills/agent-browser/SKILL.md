@@ -1,7 +1,8 @@
 ---
 name: agent-browser
-description: Browser automation CLI for AI agents — navigate websites, web scraping, fill forms, click elements (also load: bug_investigation, web-research, search-replace)
+description: Browser automation CLI for AI agents — navigate websites, web scraping, fill forms, click elements. Browser, web automation, playwright, headless (also load: bug_investigation, web-research, search-replace, shell_scripting, image)
 category: development
+keywords: browser automation, web scraping, interactive browser, page navigation, click, form fill
 ---
 
 # agent-browser
@@ -50,6 +51,12 @@ EVALEOF
 - Close browser when done to avoid leaked processes
 - Complex JS: use `eval --stdin` with heredoc to avoid shell quoting
 
+## Helper
+
+```bash
+source skills/agent-browser/browser_patterns.sh
+```
 ## Related Skills
-- `fetch` — simpler web content extraction
+- `image` — image loading and vision models
+- `web-research` — web content extraction (fetch, crawl, search)
 - `shell_scripting` — automate browser workflows

@@ -8,17 +8,13 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from typing import Any
 
 from agent_models import Colors
 
 __all__ = [
-    "_log_audit_lock",
-    "_log_audit",
+    "_role_color",
     "compute_duration",
     "format_duration_ms",
-    "_cw",
-    "_role_color",
     "echo",
     "blank_line",
     "echo_no_newline",

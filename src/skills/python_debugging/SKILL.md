@@ -1,20 +1,20 @@
 ---
 name: python_debugging
-description: Debug Python programs with background tools (also load: bug_investigation, code-review-workflow)
+description: Debug Python — background sessions, breakpoints, trace execution, interactive pdb. Debug python, trace errors, stack trace, pdb, breakpoint, traceback, error in python, debug script (also load: bug_investigation, background)
 category: development
+keywords: python, debug, trace, pdb, breakpoint, traceback, error, crash, interactive
 ---
 
 # Python Debugging
 
 ## When
-"debug python", "interactive debugging", "breakpoint", "pdb session", "trace execution"
+"debug python", "interactive debugging", "breakpoint", "pdb session", "trace execution", "traceback", "error in python", "debug script", "find bug in code"
 
 ## Basic Debug Session
 ```python
 session_name = background_new(command="bash")
 background_exec(session_name=session_name, command="cd $HOME/tau/src", wait=True)
 background_exec(session_name=session_name, command="python3 -i script.py", wait=False)
-# Interact with running process
 background_send_keys(session_name=session_name, text="breakpoint()\n")
 background_send_keys(session_name=session_name, text="result = function(data)\n")
 background_capture(session_name=session_name, scrollback=50)
@@ -37,9 +37,7 @@ print(f"Result: {result}")
 
 ### Lost Return Values
 ```python
-# Check if function returns value
 python3 -c "import inspect; from module import func; print(inspect.signature(func))"
-# Trace usage
 grep -n 'func(' code.py | grep -v 'def func'
 grep -B1 -A1 'result = func(' code.py
 ```
@@ -66,6 +64,11 @@ grep -n 'on_.*=' *.py
 ## Checklist
 1. `background_new()` → 2. `cd` to correct dir → 3. Set up Python path → 4. Run with `breakpoint()` or `pdb` → 5. Inspect interactively → 6. `background_capture()` → 7. `background_kill()`
 
+## Helper
+
+```bash
+python3 skills/python_debugging/debug_session.py  # python_debugging helper
+```
 ## Related Skills
 - `bug_investigation` — systematic bug investigation workflow
 - `code-review-workflow` — automated code analysis

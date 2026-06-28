@@ -13,7 +13,7 @@ Usage:
   python3 extract_user_messages.py [log_dir] [output_file]
 
 Defaults:
-  log_dir    = /home/alangeb/.local/tau/log/
+  log_dir    = ~/.local/tau/log/
   output_file = /tmp/all_user_messages.tsv
 """
 
@@ -108,7 +108,7 @@ def parse_context_file(filepath):
 
 
 def main():
-    log_dir = sys.argv[1] if len(sys.argv) > 1 else '/home/alangeb/.local/tau/log'
+    log_dir = sys.argv[1] if len(sys.argv) > 1 else '~/.local/tau/log'
     output_file = sys.argv[2] if len(sys.argv) > 2 else '/tmp/all_user_messages.tsv'
 
     log_path = Path(log_dir)

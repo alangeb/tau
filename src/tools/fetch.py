@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from tools import ToolMetadata
 
+from tools.lib.cache import FileCache
+
 import gzip
 import json
-import os
 import re
 import subprocess
 import time
@@ -36,42 +37,11 @@ metadata = ToolMetadata(
 
 # ── Cache ──────────────────────────────────────────────────────────
 
-_CACHE_DIR = os.path.join(os.getenv("TMPDIR", "/tmp"), "tau_fetch_cache")
-_CACHE_TTL = 3600  # 1 hour
+_fetch_cache = FileCache("tau_fetch_cache", ttl=3600, extension=".md")
 
 
 def _url_key(url: str) -> str:
     return re.sub(r"[^a-z0-9._-]", "_", url.lower()[:200])
-
-
-def _cleanup_cache(cache_dir: str, ttl: int) -> None:
-    """Remove stale cache files older than *ttl* seconds."""
-    try:
-        cutoff = time.time() - ttl
-        for fname in os.listdir(cache_dir):
-            fpath = os.path.join(cache_dir, fname)
-            if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
-                os.remove(fpath)
-    except OSError:
-        pass
-
-
-def _load_cache(url: str) -> str | None:
-    path = os.path.join(_CACHE_DIR, f"{_url_key(url)}.md")
-    if not os.path.exists(path):
-        return None
-    if time.time() - os.path.getmtime(path) > _CACHE_TTL:
-        return None
-    with open(path, "r") as f:
-        return f.read()
-
-
-def _save_cache(url: str, content: str) -> None:
-    os.makedirs(_CACHE_DIR, exist_ok=True)
-    _cleanup_cache(_CACHE_DIR, _CACHE_TTL)
-    path = os.path.join(_CACHE_DIR, f"{_url_key(url)}.md")
-    with open(path, "w") as f:
-        f.write(content)
 
 
 # ── Crawl4AI Legacy Fetch (optional first-attempt) ──────────────
@@ -239,7 +209,7 @@ def _fetch_single(
 ) -> dict:
     """Fetch a single URL and return structured result. Includes ``raw_html`` key for callers like crawl."""
     if use_cache:
-        cached = _load_cache(url)
+        cached = _fetch_cache.load(_url_key(url))
         if cached:
             return {"url": url, "content": cached, "cached": True}
 
@@ -276,7 +246,7 @@ def _fetch_single(
         meta["word_count"] = len(md.split())
 
         if use_cache:
-            _save_cache(url, md)
+            _fetch_cache.save(_url_key(url), md)
 
         links = _extract_links(raw_html, url) if filter_type != "raw" else []
 

@@ -8,7 +8,6 @@ Supports single tool calls and batch execution with:
 """
 
 import json
-import os
 import re
 import signal
 import sys
@@ -31,7 +30,6 @@ from tools.validation import (
     _get_tool_schema_info,
     _validate_tool_args,
     normalize_tool_call,
-    get_valid_fields_from_tool,
 )
 from tools import (
     DEFAULT_TOOL_MAX_SIZE,
@@ -245,7 +243,6 @@ def execute_tool_call(tc: dict, agent: "TauErgon", audit_writer: "AuditWriter | 
 
     entry = TOOLS.get(tool_name)
     tool_func = entry.run if entry else None
-    tool_module = entry.module if entry else None
 
     if tool_func is None:
         available_names = list(TOOLS.keys())

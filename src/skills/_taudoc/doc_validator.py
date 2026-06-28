@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """_taudoc helper - documentation structure validation."""
 
-import os
 from pathlib import Path
 
 

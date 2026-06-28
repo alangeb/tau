@@ -1,14 +1,11 @@
 """Health command — model server health monitoring dashboard."""
 
-from __future__ import annotations
-
-import shlex
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent_core import TauErgon
 
-from agent_console_primitives import blank_line, echo, status, display_success, display_warning, display_error
+from agent_console import blank_line, display_error, display_success, display_warning, echo, status
 from agent_model_health import get_health_monitor, CircuitState, HealthStatus
 
 name = "health"
@@ -70,10 +67,9 @@ def _display_status_dashboard(status: HealthStatus) -> None:
     blank_line()
 
 
-def run(agent: "TauErgon", args: str) -> None:
+def run(agent: "TauErgon", args: list[str]) -> None:
     """Execute the health command."""
-    parts = shlex.split(args.strip()) if args.strip() else []
-    subcommand = parts[0] if parts else "status"
+    subcommand = args[0] if args else "status"
 
     monitor = get_health_monitor()
 

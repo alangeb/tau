@@ -9,7 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent_context import TauContext, is_synthetic_message, _SYNTHETIC_PREFIX
+from agent_context import TauContext
+from agent_message_utils import _SYNTHETIC_PREFIX, is_synthetic_message
 
 
 class TestSyntheticBridgeInsertion:

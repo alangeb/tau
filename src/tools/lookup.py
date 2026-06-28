@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from tools import ToolMetadata
+from tools.lib.cache import FileCache
 
 import json
-import os
 import re
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.error import HTTPError, URLError
@@ -30,43 +29,13 @@ metadata = ToolMetadata(
     max_size=32768,
 )
 
-# ── Cache ────────────────────────────────────────────────────────
+# ── Cache ────────────────────────────────────────────────
 
-_CACHE_DIR = os.path.join(os.getenv("TMPDIR", "/tmp"), "tau_lookup_cache")
-_CACHE_TTL = 3600  # 1 hour
+_lookup_cache = FileCache("tau_lookup_cache", ttl=3600)
 
 
 def _cache_key(query: str) -> str:
     return re.sub(r"[^a-z0-9]", "_", f"lookup_{query}".lower()[:100])
-
-
-def _cleanup_cache(cache_dir: str, ttl: int) -> None:
-    try:
-        cutoff = time.time() - ttl
-        for fname in os.listdir(cache_dir):
-            fpath = os.path.join(cache_dir, fname)
-            if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
-                os.remove(fpath)
-    except OSError:
-        pass
-
-
-def _load_cache(query: str) -> list[dict] | None:
-    path = os.path.join(_CACHE_DIR, f"{_cache_key(query)}.json")
-    if not os.path.exists(path):
-        return None
-    if time.time() - os.path.getmtime(path) > _CACHE_TTL:
-        return None
-    with open(path, "r") as f:
-        return json.load(f)
-
-
-def _save_cache(query: str, results: list[dict]) -> None:
-    os.makedirs(_CACHE_DIR, exist_ok=True)
-    _cleanup_cache(_CACHE_DIR, _CACHE_TTL)
-    path = os.path.join(_CACHE_DIR, f"{_cache_key(query)}.json")
-    with open(path, "w") as f:
-        json.dump(results, f)
 
 
 # ── Search sources ───────────────────────────────────────────────
@@ -174,14 +143,14 @@ def run(
     cache: bool = True,
 ) -> str:
     if cache:
-        cached = _load_cache(query)
+        cached = _lookup_cache.load(_cache_key(query))
         if cached:
             return json.dumps(cached, indent=2)
 
     results = _do_lookup(query, limit)
 
     if cache and results:
-        _save_cache(query, results)
+        _lookup_cache.save(_cache_key(query), results)
 
     if not results:
         return "No results found."

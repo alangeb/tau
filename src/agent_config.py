@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from agent_llm_models import DEFAULT_MAX_CONTEXT_TOKENS
+
 __all__ = [
     "MalformedConfig",
     "LoopDetectionConfig",
@@ -109,7 +111,7 @@ class LLMGroup:
     api_base: str
     api_key: str = ""
     timeout: int = 300
-    max_context_tokens: int = 200000
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     max_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None

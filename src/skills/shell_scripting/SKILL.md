@@ -1,71 +1,70 @@
 ---
 name: shell_scripting
-description: Common bash patterns — piping, text processing, file ops, process management (also load: background, signal-cli, agent-browser, reference, web-research, performance, search-replace, file-ops)
+description: Tau bash patterns — audit log processing, test output parsing, worktree operations. Bash scripting, shell commands, text processing, awk, sed, grep, find, sort, uniq, xargs, pipe (also load: background, reference, search-replace, file-ops)
 category: development
+keywords: bash, shell, script, audit log, test output, worktree, awk, sed, grep, find, sort, uniq, xargs, pipe
 ---
 
 # Shell Scripting
 
 ## When
-"bash pattern", "pipe commands", "text processing", "shell one-liner", "find and process"
+"bash pattern", "audit log processing", "test output parsing", "shell one-liner", "find and process", "bash script", "shell commands", "grep", "find", "sort", "uniq", "xargs", "pipe", "pipeline"
 
-## Text Processing
+## Audit Log Processing
 ```bash
-# Search and extract
-grep -rn "pattern" . | grep -v "binary" | head -20
-grep -oP "regex" file.txt
-grep -c "pattern" file.txt                          # Count matches
+# Tool usage across all logs
+for f in ~/.local/tau/log/*_2026*_1.audit; do
+  grep -oP "final_name='[^']*" "$f" | sed "s/final_name='"//
+done | sort | uniq -c | sort -rn
 
-# Transform
-sed 's/old/new/g' file.txt                           # Replace
-awk '{print $1, $3}' file.txt                        # Select columns
-cut -d',' -f1 file.txt                               # CSV column
+# Skill loading frequency
+grep -rh '"skill_name":\s*"[^"]*"' ~/.local/tau/log/*_2026*_1.audit | \
+  grep -oP '"skill_name":\s*"\K[^"]+' | sort | uniq -c | sort -rn
 
-# Sort and unique
-sort | uniq -c | sort -rn                            # Frequency count
-sort -u                                               # Unique lines
+# Error patterns
+grep -c 'TOOL_ERROR\|TOOL_BLOCKED' <audit_file>
 ```
 
-## File Operations
+## Test Output Parsing
 ```bash
-# Find files
-find . -name "*.py" -type f                           # By name
-find . -name "*.py" -mtime -1                        # Modified in 1 day
-find . -name "*.py" -size +100k                      # Large files
+# Status summary
+find $HOME/tau/test/output -name "status.json" | xargs grep '"status"' | sort | uniq -c
 
-# Batch operations
-find . -name "*.bak" -delete                          # Cleanup
-find . -name "*.py" -exec grep "TODO" {} \;           # Search in found files
-
-# Quick stats
-wc -l *.py                                              # Line count
-du -sh .                                                 # Directory size
+# Duration analysis
+grep -oP 'duration_s=\K[\d.]+' <audit_file> | sort -n | tail -10
 ```
 
-## Process Management
+## Worktree Operations
 ```bash
-# Background with PID
-command &
-PID=$!
-kill $PID                                                # Stop
-wait $PID                                                # Wait for finish
-
-# Timeout
-timeout 60 command                                       # Kill after 60s
-
-# Check if running
-ps -p $PID > /dev/null 2>&1 && echo "running"
+# Verify worktree identity
+test -f .git
+MAIN_REPO=$(cat .git | sed 's/^gitdir: \(.*\)\/.git\/worktrees\/.*$/\1/')
+BRANCH=$(git branch --show-current)
 ```
 
 ## Gotchas
-- **Quoting**: Use `'single'` for literal, `"double"` for expansion
+- **Quoting**: `'single'` for literal, `"double"` for expansion
 - **Pipefail**: `set -o pipefail` to catch errors in pipes
 - **Globbing**: `shopt -s nullglob` to handle empty globs
-- **Exit codes**: Check `$?` after commands
 
+## Helper
+
+```bash
+source skills/shell_scripting/common_patterns.sh
+```
 ## Related Skills
+- `image` — image loading and vision models
+- `docker` — container management
 - `background` — tmux session management
-- `grep` — pattern searching
 - `agent-browser` — browser automation via shell
+- `tau_audit` — audit log analysis
+- `tau_testsuite` — test output parsing
 - `command_template` — shell-based commands
-- `signal-cli` — signal messaging automation
+
+- `performance` — Performance
+- `signal-cli` — Signal CLI and JSON-RPC API
+- `freecad` — Headless FreeCAD 3D modeling
+- `web-research` — Web research
+- `search-replace` — Find and replace patterns across files
+- `reference` — Tau quick reference
+- `file-ops` — File operations

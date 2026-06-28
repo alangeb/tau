@@ -1,0 +1,13 @@
+{
+  "id": "4e8e3391",
+  "description": "what is 2+2",
+  "status": "complete",
+  "iterations": 0,
+  "acceptance_criteria": [
+    "Task objective is achieved",
+    "No errors in execution",
+    "Output matches expected format",
+    "Requirements from description are met: what is 2+2"
+  ],
+  "created_at": "2026-06-28T15:08:01+00:00"
+}

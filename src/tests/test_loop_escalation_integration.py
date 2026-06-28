@@ -17,7 +17,8 @@ from unittest.mock import MagicMock, patch
 
 from agent_loop_detect import LoopDetector
 from agent_reflection import ReflectionScheduler, ReflectionConfig
-from agent_context import TauContext, is_synthetic_message
+from agent_context import TauContext
+from agent_message_utils import is_synthetic_message
 from agent_loop_escalation import LoopEscalationManager
 
 

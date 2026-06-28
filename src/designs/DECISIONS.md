@@ -12,11 +12,11 @@
 | 1.6 | **`CommandManager`** — unified command resolution and dispatch in `agent_commands.py`; resolves `.py` → builtin → `.md` priority with `CommandSource`/`CommandInfo` | Centralized command routing |
 | 1.7 | **`InputHandler`** — manages stdin thread, signal handling, and input dispatch in `agent_input.py`; separates input loop from agent core | Decoupled input processing |
 
-## Compression (12)
+## Compression (15)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 2.1 | **Eight sequential algorithms**: oversized_tool_redaction → drop_reasoning → last_transaction → tool_pruning → redact_blocks → tool_pruning_full → redact_blocks_full → full_reset | Ordered by impact: structural redaction first, then LLM summary of recent turns, then boundary-limited pruning/redaction, then full-context pruning/redaction, full reset last |
+| 2.1 | **Eleven sequential algorithms**: prune_images → oversized_tool_redaction → drop_reasoning → last_transaction → tool_pruning → redact_blocks → tool_pruning_full → redact_blocks_full → full_reset → conversation_summary → blind_truncate | Ordered by impact: image pruning first, then structural redaction, then LLM summary of recent turns, then boundary-limited pruning/redaction, then full-context pruning/redaction, full reset, then deterministic conversation summary, then blind truncation as absolute last resort |
 | 2.2 | **Fixed 50% byte boundary** — computed ONCE from original context, never moves during compression | Predictable, preserves recent context |
 | 2.3 | **Right-to-left scanning** — compresses oldest blocks first to preserve KV cache prefix | KV cache efficiency |
 | 2.4 | **Parameter consistency across LLM calls** — same model/tools/tool_choice/params; only `messages` varies → enables full KV cache reuse | Maximize cache hits |
@@ -28,6 +28,9 @@
 | 2.10 | **`compress_oversized_tool_redaction` as first algorithm** — strips oversized tool outputs (>20% of context) before other compression | Targets disproportionately large outputs first |
 | 2.11 | **Two-tier boundary strategy** — steps 4–5 respect 50% boundary; steps 6–7 scan entire context | Graduated escalation: protect recent context first, then compress everything if needed |
 | 2.12 | **`compress_drop_reasoning` as second algorithm** — strips reasoning fields before LLM summarization | Cheap, high-yield reduction before expensive LLM calls |
+| 2.13 | **`compress_prune_images` as first algorithm** — replaces image blocks with text placeholders (keeps last image per message); images dominate context size; right-to-left within 50% boundary | Most aggressive reduction: images are the largest context consumers |
+| 2.14 | **`compress_conversation_summary` as tenth algorithm** — deterministic restructuring (no LLM call) that condenses entire conversation into a single summary user message; preserves ALL interaction history in compact structured format; always OpenAI-alternation-compliant | Guaranteed compression when all LLM-based methods fail; zero API cost; preserves complete interaction history |
+| 2.15 | **`compress_blind_truncate` as eleventh algorithm** — last-resort truncation of summary message from the beginning; guaranteed to produce context within target_size_bytes; preserves most recent information | Absolute fallback: when even deterministic summary is too large, truncate from oldest end |
 
 ## LLM Layer (18)
 
@@ -39,7 +42,7 @@
 | 3.4 | **Post-parse recovery** — extract tool calls from text content when LLM misses structured format | Robustness against LLM quirks |
 | 3.5 | **Validate before sending to API** — check tool call JSON, empty replies, length limits | Fail fast, save API calls |
 | 3.6 | **`InvalidReplyError` for retryable violations** — fast-fail on first error | Clear error signaling |
-| 3.7 | **XML-style and pipe-style tag constants** — centralized in `agent_llm.py` | Single source of truth |
+| 3.7 | **XML-style and pipe-style tag constants** — centralized in `agent_llm_tool_parse.py` | Single source of truth |
 | 3.8 | **`CacheTracker` with sliding window** — tracks prompt cache hit rates across session | Observability |
 | 3.9 | **End-of-turn validation** — check for unclosed thinking tags, malformed tool-call syntax | Quality gate |
 | 3.10 | **Pre-API field stripping** — remove non-LLM-relevant fields to avoid 400 errors | Defensive coding |
@@ -48,7 +51,7 @@
 | 3.13 | **Bounded logging** — prevent console flooding | UX protection |
 | 3.14 | **Cross-backend support** — handles both vLLM and llama.cpp formats | Backend agnostic |
 | 3.15 | **Conservative post-parse** — only extracts clearly valid tool calls | Safety over flexibility |
-| 3.16 | **`PrefixCacheTracker` in `agent_llm.py`** — tracks expected vs actual prefix cache hits, reports divergence with param change detection | Cache observability |
+| 3.16 | **`PrefixCacheTracker` in `agent_llm_cache.py`** — tracks expected vs actual prefix cache hits, reports divergence with param change detection | Cache observability |
 | 3.17 | **`LLMCallConfig` dataclass** — unified configuration for LLM invocations (model, messages, tools, tool_choice, stream, extra_kwargs) | Centralized call config |
 | 3.18 | **In-place compression replaces truncation** — overflow recovery uses LLM-based compression on real context, eliminating redundant copy compression | Overflow tracking |
 
@@ -126,7 +129,7 @@
 | 8.4 | **System-wide flags** (`_interrupted`, `_exit_requested`) — cooperative cross-thread shutdown | Clean termination |
 | 8.5 | **`InputHandler` stdin daemon thread** — reads stdin in background with `select()`; dispatches `/commands`, `!shell`, and regular input | Non-blocking input |
 
-## Commands (13)
+## Commands (14)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
@@ -134,7 +137,7 @@
 | 9.2 | **Python commands: full agent access** — `run(agent, args)` with no return value, manages own context | Arbitrary program logic |
 | 9.3 | **Markdown commands: prompt templates** — YAML frontmatter, placeholder substitution, multi-prompt chains | Easy authoring |
 | 9.4 | **Dynamic placeholder substitution** — `${time}`, `${date}`, `${datetime}` resolved at load time | Flexible prompts |
-| 9.5 | **Dynamic discovery, no caching** — fresh scan every call | Always up-to-date |
+| 9.5 | **Cached discovery** — `CommandRegistry` caches discovered commands; `clear_cache()` for invalidation | Performance with invalidation support |
 | 9.6 | **Conflict resolution** — .py wins over .md for same name, with console warning | Predictable precedence |
 | 9.7 | **Simple YAML parsing** — only `description:` field | Minimal complexity |
 | 9.8 | **Relative default directory** (`commands/`) | Portable |
@@ -143,8 +146,9 @@
 | 9.11 | **`plan` command** — hierarchical task plan management (create, add, complete, block, unblock, status, next, progress, update, delete, clear) | Task organization |
 | 9.12 | **`CommandSource` enum** — tracks origin (builtin, .py, .md) for each resolved command | Debugging & precedence |
 | 9.13 | **`CommandManager.dispatch` recursion guard** — `MAX_MD_COMMAND_RECURSION` prevents infinite .md command chains | Safety against recursive prompts |
+| 9.14 | **`health` command** (`commands/health.py`) — model server health monitoring dashboard with subcommands `status`, `reset`, `check`; displays `CircuitState` (closed/open/half_open), failure rate, consecutive failures/successes, recovery attempts, last error | Operational observability for LLM server health |
 
-## Skills (4)
+## Skills (5)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
@@ -152,6 +156,7 @@
 | 10.2 | **Cached skill list** — loaded once, cached after first call | Performance |
 | 10.3 | **Fuzzy/case-insensitive skill matching** — flexible lookup | User-friendly |
 | 10.4 | **Skill execution via fork** — inherits full context + skill content as instructions | Context-aware execution |
+| 10.5 | **Shared skill discovery** (`lib/skill_discovery.py`) — `SkillInfo` TypedDict, `discover_skills()` supports both folder-per-skill (`skills/name/SKILL.md`) and legacy flat-file (`skills/name.md`) formats; deduplication with folder-per-skill winning; `skill_name_from_path()` is canonical name extraction used by `tools/skill.py` and `validate_skills.py` | Single source of truth for skill path resolution |
 
 ## Background Processes (TMUX) (3)
 
@@ -184,7 +189,7 @@
 | 13.5 | **Stats observability** via `get_stats()` | Monitoring |
 | 13.6 | **Escalation levels** — `LoopDetector` tracks warning levels 1–4 with separate repeat and entropy templates; triggers `LoopEscalationManager` for reflection injection and recovery | Progressive intervention |
 
-## A2A Protocol (14)
+## A2A Protocol (15)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
@@ -237,18 +242,18 @@
 | 17.5 | **`SubAgentResult` captures output + token metrics** — structured result containers | Observability |
 | 17.6 | **Atomic single-append writes** — no explicit file locking | Concurrency safety |
 | 17.7 | **Config source annotations** — `[env]`, `[file]` transparency in status display | Configuration visibility |
-| 17.8 | **`ErrorRateTracker`** — thread-safe sliding window error rate tracking with burst detection and alert thresholds in `agent_session.py` | Proactive error monitoring |
+| 17.8 | **`ErrorRateTracker`** — thread-safe sliding window error rate tracking with burst detection and alert thresholds in `agent_audit_writer.py` | Proactive error monitoring |
 | 17.9 | **`TokenTracker`** — centralized token accounting in `agent_token_tracker.py` with session-wide and per-turn counters; integrates `CacheTracker` for cache hit rates | Granular token observability |
 
-## Context Management (7)
+## Context Management (9)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 18.1 | **`TauContext._fork_metadata` separation** — fork metadata (pending tool calls, fork identity) stored separately from conversation history | Clean compression while preserving fork state |
 | 18.2 | **Context validation after every mutation** (`_validate_on_mutation`) — enforces alternating USER/ASSISTANT turns, matching tool call/result pairs, no orphaned tool calls | API compliance |
 | 18.3 | **`close_turn` mechanism** — ensures context ends in valid terminal state after incomplete turns | Graceful recovery |
-| 18.4 | **`is_synthetic_message()` unified detection** — single function checks `SYNTHETIC_PREFIX` marker on any message (user or assistant); replaces old `_is_synthetic_user_message()` | Eliminated redundant detection logic |
-| 18.5 | **Synthetic message protocol** — all system-injected messages use `SYNTHETIC_PREFIX = "[SYSTEM-SYNTHETIC: "` marker; `make_synthetic_user(category, content)` factory creates them; recovery paths inject synthetic user messages (NOT tool calls) to maintain OpenAI alternation; `is_synthetic_message()` detects them; `get_last_real_user_prompt()` finds real user boundaries; synthetic messages excluded from consecutive-role validation; `TauContext.append_synthetic_user()` and `TauContext.cleanup_synthetic()` are public methods for synthetic message operations; `cleanup_synthetic()` removes bridges WITHOUT merging (merge is explicit via `merge_consecutive_assistants()`) | Structured, consistent recovery; prevents context pollution; proper encapsulation |
+| 18.4 | **`is_synthetic_message()` unified detection** — single function checks `SYNTHETIC_PREFIX` marker on any message (user or assistant); replaces old `_is_synthetic_user_message()`; **utilities moved to `agent_message_utils.py`** (zero-dependency module) | Eliminated redundant detection logic |
+| 18.5 | **Synthetic message protocol** — all system-injected messages use `SYNTHETIC_PREFIX = "[SYSTEM-SYNTHETIC: "` marker; `make_synthetic_user(category, content)` factory creates them; recovery paths inject synthetic user messages (NOT tool calls) to maintain OpenAI alternation; `is_synthetic_message()` detects them; `get_last_real_user_prompt()` finds real user boundaries; synthetic messages excluded from consecutive-role validation; `TauContext.append_synthetic_user()` and `TauContext.cleanup_synthetic()` are public methods for synthetic message operations; `cleanup_synthetic()` removes bridges WITHOUT merging (merge is explicit via `merge_consecutive_assistants()`); **utility functions (`is_synthetic_message`, `make_synthetic_user`, `get_last_real_user_prompt`, `_sanitize_text`, `_sanitize_content`, `_SYNTHETIC_PREFIX`) moved to `agent_message_utils.py` — `agent_context.py` re-exports for backward compatibility** | Structured, consistent recovery; prevents context pollution; proper encapsulation |
 | 18.6 | **OpenAI alternation INVARIANT** — `system → user ↔ assistant ↔ tool`; consecutive same-role messages are FORBIDDEN; synthetic bridges are NON-NEGOTIABLE (removing them breaks API compliance); any change bypassing bridges MUST prove alternation is maintained and pass all tests in `test_context_synthetic_bridge.py` + `test_recover_invalid_end_of_turn.py` | Prevents architectural oscillation; enforces API contract |
 | 18.7 | **Explicit `merge_consecutive_assistants()`** — `cleanup_synthetic()` removes bridges ONLY (no merge); `merge_consecutive_assistants()` is public and caller-controlled; merges **assistant messages** (content, tool_calls deduplicated by ID, reasoning, refusal, usage_metadata summed); merges **user messages** gracefully (content concatenated, warning logged); does NOT merge tool messages (each has unique tool_call_id); `close_turn()` explicitly calls `merge_consecutive_assistants()` after `cleanup_synthetic()` | **Assistant-only merge was expanded to user merge: synthetic bridges are always user-role messages inserted after assistant messages, so removing them can only create consecutive assistant pairs. Consecutive user messages can also appear from tool-result / post-parse edge cases. Graceful merge prevents crashes while logging warnings for debugging.** Explicit merge chosen over auto-merge and no-merge: auto-merge hides symptoms by embedding policy in cleanup; no-merge ignores the alternation problem entirely. Explicit merge separates data cleanup from policy decision: cleanup removes internal synthetic bridges, merge is a visible, auditable caller-controlled step. Prevents architectural oscillation by making the merge decision explicit and documented. |
 | 18.8 | **End-turn recovery redesign** — `_recovery_active` flag (reset at start of `invoke_with_tools_loop()`, set in `_recover_from_missing_end_turn()`); `last_substantive_response` only updates when NOT in recovery mode (prevents recovery responses from clobbering the original); empty responses still trigger recovery; reminder includes first 40 chars preview of stored response; **content-only end-of-turn was REVERTED** (broke subagent tests — subagents returned early without calling `end_turn`) | **Recovery lock prevents the "clobbering bug" where recovery responses overwrote the original good response. Preview in reminder gives the model clear context about what ENDTURN will resolve to, reducing confusion. Content-only end-of-turn was reverted because it caused subagents to short-circuit the turn loop before completing their work.** The recovery mechanism is a "last resort" for cases where the model keeps failing to call `end_turn`. All responses still require explicit `end_turn` (except via `force_end_turn`). |
@@ -285,3 +290,10 @@
 | 22.1 | **Phantom tool call detection** — `agent_phantom_detect.py` detects tool-call-like XML tags that postparse missed; raises `InvalidReplyError` to trigger retry | Catches LLM-generated fake tool calls before they pollute context |
 | 22.2 | **Configurable rules via `phantom_rules.json`** — `PhantomRules` dataclass: suffix/prefix patterns, command keywords, whitelist tags, confidence threshold; loaded from file with graceful fallback | Adaptable detection without code changes |
 | 22.3 | **Levenshtein scoring** — `_score_phantom()` computes edit distance against known tool names; confidence threshold filters false positives | Precision over recall for phantom detection |
+
+## Privacy & Anonymization (2)
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 23.1 | **No personal information in project files** — skills, source code, task files, documentation, and all other project artifacts must NEVER contain real timestamps, user names, email addresses, personal paths, or any identifying information outside the project | Privacy protection; project remains shareable and anonymous |
+| 23.2 | **`$HOME` over literal paths** — use `$HOME` or relative paths instead of `/home/alangeb`; `alangeb` is the only acceptable personal reference and only in `$HOME` context, and even that should be avoided where possible | Path portability; eliminates user identity from codebase |

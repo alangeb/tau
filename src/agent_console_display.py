@@ -169,18 +169,6 @@ def context_append_warning(errors: list[str]) -> None:
         _log_audit("warning", f"Context validation: {err}")
 
 
-def context_restore_failure(target_ctx: str) -> None:
-    msg = f"[Context file empty/malformed: {target_ctx}]"
-    display_error(msg)
-    _log_audit("warning", msg)
-
-
-def no_context_file_found() -> None:
-    msg = "[No context file found for this session]"
-    display_error(msg)
-    _log_audit("warning", msg)
-
-
 def context_list_display(contexts: list[dict]) -> None:
     if not contexts:
         display_warning("[No context files found]")
@@ -214,6 +202,12 @@ def context_preview_display(context_file: str, messages: list[dict]) -> None:
     for msg in messages:
         role = msg.get("role", "unknown")
         content = msg.get("content", "")
+        if isinstance(content, list):
+            image_count = sum(1 for p in content if p.get("type") == "image_url")
+            text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
+            content = f"[{image_count} image(s)]"
+            if text_parts:
+                content += ": " + text_parts[0][:200]
         color = _role_color(role)
         sys.stdout.write(f"{color}[{role.upper()}] {content}{Colors.RESET}\n")
     sys.stdout.write("\n")
@@ -263,6 +257,8 @@ def agent_status(status: AgentStatus) -> None:
     display_info("AGENT STATUS")
     display_success(f"PID: {os.getpid()}")
     display_success(f"Parent PID: {os.getppid()}")
+    if status.agent_name:
+        display_success(f"Name: {status.agent_name}")
     display_success(f"Context: {status.context_len} msgs | {token_display} tokens ({status.byte_count:,} bytes)")
     display_success(f"Capacity: {status.percentage * 100:.1f}% ({status.max_context_tokens:,} max)")
     display_success(f"Session file: {status.context_file}")
@@ -416,12 +412,12 @@ def _format_builtin_entry(primary: str, entry: tuple, width: int) -> str:
     return f"  /{primary}  -  {desc}{hint}" if desc else f"  /{primary}{hint}"
 
 
-def _format_py_entry(cmd: dict, builtin_names: frozenset[str], width: int,
-                     default_desc: str = "No description") -> str:
+def _format_py_entry(cmd: "CommandInfo", builtin_names: frozenset[str], width: int,
+                      default_desc: str = "No description") -> str:
     """Format a single external Python command entry."""
-    name = cmd.get("name", "unknown")
-    desc = cmd.get("description", default_desc)
-    subcmds = cmd.get("subcommands", ())
+    name = cmd.name
+    desc = cmd.description or default_desc
+    subcmds = cmd.subcommands
     hint = _subcmd_hint(subcmds)
     override = _override_text(name, builtin_names, _OVERRIDE_BADGE)
     if width > 0:
@@ -429,10 +425,10 @@ def _format_py_entry(cmd: dict, builtin_names: frozenset[str], width: int,
     return f"  /{name}  -  {desc}{hint}{override}"
 
 
-def _format_md_entry(cmd: dict, width: int, default_desc: str = "No description") -> str:
+def _format_md_entry(cmd: "CommandInfo", width: int, default_desc: str = "No description") -> str:
     """Format a single external Markdown command entry."""
-    name = cmd.get("name", "unknown")
-    desc = cmd.get("description", default_desc)
+    name = cmd.name
+    desc = cmd.description or default_desc
     if width > 0:
         return f"  /{name:<{width}} - {desc}"
     return f"  /{name}  -  {desc}"
@@ -454,7 +450,7 @@ def _format_builtin_section(all_info: dict, py_names: set[str] | None, width: in
     return lines
 
 
-def _format_py_section(py_cmds: list[dict], builtin_names: frozenset[str], width: int,
+def _format_py_section(py_cmds: list["CommandInfo"], builtin_names: frozenset[str], width: int,
                         default_desc: str = "No description") -> list[str]:
     """Format the external Python commands section."""
     lines: list[str] = []
@@ -462,13 +458,13 @@ def _format_py_section(py_cmds: list[dict], builtin_names: frozenset[str], width
         lines.append("  (no external python commands found)")
         return lines
     lines.append("External Python Commands:")
-    for cmd in sorted(py_cmds, key=lambda c: c.get("name", "")):
+    for cmd in sorted(py_cmds, key=lambda c: c.name):
         lines.append(_format_py_entry(cmd, builtin_names, width, default_desc))
     lines.append("")
     return lines
 
 
-def _format_md_section(md_cmds: list[dict], width: int,
+def _format_md_section(md_cmds: list["CommandInfo"], width: int,
                         default_desc: str = "No description") -> list[str]:
     """Format the external Markdown commands section."""
     lines: list[str] = []
@@ -476,7 +472,7 @@ def _format_md_section(md_cmds: list[dict], width: int,
         lines.append("  (no external markdown commands found)")
         return lines
     lines.append("External Markdown Commands:")
-    for cmd in sorted(md_cmds, key=lambda c: c.get("name", "")):
+    for cmd in sorted(md_cmds, key=lambda c: c.name):
         lines.append(_format_md_entry(cmd, width, default_desc))
     lines.append("")
     return lines
@@ -487,13 +483,15 @@ def _format_md_section(md_cmds: list[dict], width: int,
 
 def show_help() -> None:
     """Display help information with all available commands."""
-    from agent_command_registry import discover_commands, discover_py_commands
     from agent_command_handlers import BUILTIN_CMD_NAMES, get_primary_command_info
+    from agent_commands import CommandManager
+    from agent_command_registry import CommandSource
 
     width = 18  # Fixed column width for help display
     all_info = get_primary_command_info()
-    py_cmds = discover_py_commands()
-    md_cmds = discover_commands()
+    registry = CommandManager._get_registry()
+    py_cmds = registry.discover(CommandSource.PY)
+    md_cmds = registry.discover(CommandSource.MD)
 
     base_text = "HELP\n\n"
     base_text += "\n".join(_format_builtin_section(all_info, None, width))
@@ -507,18 +505,16 @@ def show_help() -> None:
 
 def show_commands() -> None:
     """List all available commands including built-in and custom commands."""
-    from agent_command_registry import (
-        discover_commands,
-        discover_py_commands,
-        get_py_command_names,
-    )
     from agent_command_handlers import BUILTIN_CMD_NAMES, get_primary_command_info
+    from agent_commands import CommandManager
+    from agent_command_registry import CommandSource
 
     width = 0  # Variable width for commands display
-    py_names = get_py_command_names()
+    registry = CommandManager._get_registry()
+    py_names = registry.get_names(CommandSource.PY)
     all_info = get_primary_command_info()
-    py_cmds = discover_py_commands()
-    md_cmds = discover_commands()
+    py_cmds = registry.discover(CommandSource.PY)
+    md_cmds = registry.discover(CommandSource.MD)
 
     lines: list[str] = ["AVAILABLE COMMANDS\n"]
     lines.extend(_format_builtin_section(all_info, py_names, width))
@@ -710,8 +706,7 @@ def tools_listing(tool_count: int, tool_data: list[dict]) -> None:
 
 
 def tools_json_schema(tool_count: int, tools_json: str) -> None:
-    display_info(f"TOOLS JSON SCHEMA ({tool_count} tools)")
-    sys.stdout.write(tools_json)
+    sys.stdout.write(tools_json + "\n")
 
 
 # ── Table/A2A display ────────────────────────────────────────────────────────
@@ -748,7 +743,6 @@ __all__ = [
     # Context display
     "context_dump", "context_summary_stats", "context_status_bar",
     "context_validation_warning", "context_append_warning",
-    "context_restore_failure", "no_context_file_found",
     "context_list_display", "context_preview_display",
     "context_validation_display", "context_recovery_display",
     "context_dump_with_json",

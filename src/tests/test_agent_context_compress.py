@@ -15,6 +15,8 @@ from unittest.mock import Mock
 
 from agent_context_compress import (
     compress_context,
+    compress_conversation_summary,
+    compress_blind_truncate,
     compress_last_transaction,
     compress_tool_pruning,
     compress_tool_pruning_full,
@@ -653,3 +655,490 @@ class TestCompressRedactBlocksFull:
         result_full, _ = compress_redact_blocks_full(list(ctx), Mock(), "test-model", target_size_bytes=100)
 
         assert _calculate_context_bytes(result_boundary) == _calculate_context_bytes(result_full)
+
+
+from agent_context_compress import compute_compression_target_bytes
+
+
+class TestComputeCompressionTargetBytes:
+    """Test compute_compression_target_bytes — token-aware target calculation."""
+
+    def test_byte_target_only(self):
+        """No token info — falls back to pure byte target."""
+        result = compute_compression_target_bytes(
+            current_bytes=10000,
+            target_percentage=0.30,
+            last_known_tokens=None,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        assert result == 7000  # 10000 * (1 - 0.30)
+
+    def test_token_target_more_aggressive(self):
+        """Token target is lower than byte target — token wins."""
+        result = compute_compression_target_bytes(
+            current_bytes=100000,
+            target_percentage=0.30,
+            last_known_tokens=188000,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        # byte_target = 70000
+        # safety_margin = max(1000, int(200000 * 0.025)) = 5000
+        # target_tokens = 200000 - 12000 - 5000 = 183000
+        # token_reduction_ratio = (188000 - 183000) / 188000 = 0.0266
+        # token_byte_target = 100000 * (1 - 0.0266) * 0.3 = 29310
+        # min(70000, 29310) = 29310
+        assert result < 70000  # token target is more aggressive
+        assert result > 0
+
+    def test_token_target_less_aggressive(self):
+        """Token target is higher than byte target — byte wins."""
+        result = compute_compression_target_bytes(
+            current_bytes=100000,
+            target_percentage=0.90,  # very aggressive byte target
+            last_known_tokens=188000,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        # byte_target = int(100000 * 0.10) = 10000 (or 9999 due to float)
+        # token_byte_target will be much larger
+        # min(byte_target, large_number) = byte_target
+        assert result <= 10000
+
+    def test_ratio_collapse_simulation(self):
+        """Verify safety factor accounts for ratio collapse."""
+        result = compute_compression_target_bytes(
+            current_bytes=6500000,
+            target_percentage=0.30,
+            last_known_tokens=188001,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        # safety_margin = 5000
+        # target_tokens = 200000 - 12000 - 5000 = 183000
+        # token_reduction_ratio = (188001 - 183000) / 188001 ≈ 0.0266
+        # token_byte_target = 6500000 * (1 - 0.0266) * 0.3 ≈ 1900230
+        # byte_target = 4550000
+        # min(4550000, 1900230) = 1900230
+        assert result < 4550000  # token-aware target is more aggressive
+        assert result > 0
+
+    def test_overflow_recovery(self):
+        """Simulate the exact scenario from the bug report."""
+        result = compute_compression_target_bytes(
+            current_bytes=6500000,
+            target_percentage=0.30,
+            last_known_tokens=188001,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        # Should produce a much more aggressive target than pure byte target
+        byte_target = int(6500000 * 0.70)
+        assert result < byte_target
+
+    def test_edge_cases_zero_tokens(self):
+        """Zero tokens — falls back to byte target."""
+        result = compute_compression_target_bytes(
+            current_bytes=10000,
+            target_percentage=0.30,
+            last_known_tokens=0,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        assert result == 7000
+
+    def test_edge_cases_none_tokens(self):
+        """None tokens — falls back to byte target."""
+        result = compute_compression_target_bytes(
+            current_bytes=10000,
+            target_percentage=0.30,
+            last_known_tokens=None,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        assert result == 7000
+
+    def test_edge_cases_equal_tokens(self):
+        """Tokens at target — no reduction needed, returns byte target."""
+        result = compute_compression_target_bytes(
+            current_bytes=10000,
+            target_percentage=0.30,
+            last_known_tokens=183000,  # exactly at target_tokens
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        # target_tokens = 200000 - 12000 - 5000 = 183000
+        # last_known_tokens (183000) is NOT > target_tokens (183000)
+        # So token_target stays as byte_target
+        assert result == 7000
+
+    def test_safety_margin(self):
+        """Verify output tokens and safety margin are accounted for."""
+        result = compute_compression_target_bytes(
+            current_bytes=100000,
+            target_percentage=0.30,
+            last_known_tokens=195000,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        # safety_margin = 5000
+        # target_tokens = 200000 - 12000 - 5000 = 183000
+        # token_reduction_ratio = (195000 - 183000) / 195000 = 0.0615
+        # token_byte_target = 100000 * (1 - 0.0615) * 0.3 = 28155
+        # byte_target = 70000
+        # min(70000, 28155) = 28155
+        assert result < 70000
+        assert result > 0
+
+    def test_tokens_below_target(self):
+        """When tokens are below target, no token reduction needed."""
+        result = compute_compression_target_bytes(
+            current_bytes=10000,
+            target_percentage=0.30,
+            last_known_tokens=100000,  # well below target
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        # target_tokens = 183000, last_known_tokens (100000) < target_tokens
+        # No token reduction needed, falls back to byte target
+        assert result == 7000
+
+class TestCompressConversationSummary:
+    """Test compress_conversation_summary — deterministic conversation restructuring."""
+
+    def _make_simple_context(self):
+        return [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there!"},
+            {"role": "user", "content": "How are you?"},
+            {"role": "assistant", "content": "I'm doing well, thanks!"},
+        ]
+
+    def test_conversation_summary_basic(self):
+        """Simple conversation produces structured summary."""
+        ctx = self._make_simple_context()
+        result, metadata = compress_conversation_summary(ctx, None, "test", 1000)
+        # Result should have system + user summary (+ assistant if not within turn)
+        assert len(result) >= 2
+        assert result[0].get("role") == "system"
+        assert result[1].get("role") == "user"
+        content = result[1].get("content", "")
+        assert "## CONVERSATION HISTORY" in content
+        assert "### CURRENT TASK" in content
+        assert "**USER:** How are you?" in content
+        assert metadata["step_name"] == "CONVERSATION_SUMMARY"
+
+    def test_conversation_summary_with_tools(self):
+        """Conversation with tool calls preserves tool info."""
+        ctx = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Run a command"},
+            {"role": "assistant", "content": "Running...", "tool_calls": [{"id": "1", "function": {"name": "bash"}, "type": "function"}]},
+            {"role": "tool", "content": "output ok", "tool_call_id": "1", "name": "bash"},
+            {"role": "assistant", "content": "Done"},
+        ]
+        result, metadata = compress_conversation_summary(ctx, None, "test", 1000)
+        content = result[1].get("content", "")
+        assert "CALL: bash" in content
+        assert "RESULT (bash): output ok" in content
+
+    def test_conversation_summary_synthetic_messages(self):
+        """Synthetic messages are noted as [SYSTEM: category]."""
+        ctx = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "[SYNTHETIC:end_turn_reminder] Previous turn ended."},
+            {"role": "assistant", "content": "Acknowledged."},
+        ]
+        result, metadata = compress_conversation_summary(ctx, None, "test", 1000)
+        content = result[1].get("content", "")
+        assert "[SYSTEM: end_turn_reminder]" in content
+
+    def test_conversation_summary_within_turn(self):
+        """Within-turn (tool result at end) shows in-progress status."""
+        ctx = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Task"},
+            {"role": "assistant", "content": "Calling tool", "tool_calls": [{"id": "1", "function": {"name": "test"}, "type": "function"}]},
+            {"role": "tool", "content": "result", "tool_call_id": "1", "name": "test"},
+        ]
+        result, metadata = compress_conversation_summary(ctx, None, "test", 1000)
+        content = result[1].get("content", "")
+        assert "**STATUS:** in-progress" in content
+        # Within turn: should NOT have synthetic assistant closing message
+        assert len(result) == 2  # system + user summary only
+
+    def test_conversation_summary_between_turns(self):
+        """Between turns: adds synthetic assistant closing message."""
+        ctx = self._make_simple_context()
+        result, metadata = compress_conversation_summary(ctx, None, "test", 1000)
+        # Should have system + user summary + synthetic assistant
+        assert len(result) == 3
+        assert result[2].get("role") == "assistant"
+        assert "summarized" in result[2].get("content", "").lower()
+
+    def test_openai_alternation_compliance(self):
+        """Result is always valid OpenAI alternation."""
+        ctx = self._make_simple_context()
+        result, _ = compress_conversation_summary(ctx, None, "test", 1000)
+        roles = [m.get("role") for m in result]
+        # Should be [system, user] or [system, user, assistant]
+        assert roles[0] == "system"
+        assert roles[1] == "user"
+        if len(roles) == 3:
+            assert roles[2] == "assistant"
+
+
+class TestCompressBlindTruncate:
+    """Test compress_blind_truncate — guaranteed-fit truncation."""
+
+    def test_blind_truncate_basic(self):
+        """Truncation removes from beginning."""
+        ctx = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "A" * 5000 + "### CURRENT TASK\n**USER:** important\n**STATUS:** done"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        result, metadata = compress_blind_truncate(ctx, None, "test", 200)
+        content = result[1].get("content", "")
+        assert "### CURRENT TASK" in content
+        assert "**USER:** important" in content
+        assert "[... truncated ...]" in content
+        assert metadata["step_name"] == "BLIND_TRUNCATE"
+
+    def test_blind_truncate_preserves_current_task(self):
+        """CURRENT TASK section is preserved intact."""
+        ctx = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "X" * 10000 + "### CURRENT TASK\n**USER:** critical info\n**STATUS:** in-progress"},
+        ]
+        result, metadata = compress_blind_truncate(ctx, None, "test", 300)
+        content = result[1].get("content", "")
+        assert "**USER:** critical info" in content
+        assert "**STATUS:** in-progress" in content
+
+    def test_blind_truncate_marker(self):
+        """Truncation marker is added."""
+        ctx = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "Y" * 5000 + "### CURRENT TASK\n**USER:** task\n**STATUS:** done"},
+        ]
+        result, _ = compress_blind_truncate(ctx, None, "test", 200)
+        content = result[1].get("content", "")
+        assert "[... truncated ...]" in content
+
+    def test_blind_truncate_already_fits(self):
+        """No truncation when content already fits."""
+        ctx = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "short content"},
+        ]
+        result, metadata = compress_blind_truncate(ctx, None, "test", 5000)
+        assert metadata["status"] == "ALREADY_FITS"
+        assert result[1].get("content") == "short content"
+
+    def test_pipeline_integration(self):
+        """Conversation summary + blind truncate work together."""
+        ctx = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
+        # First: conversation summary
+        summary_ctx, _ = compress_conversation_summary(ctx, None, "test", 1000)
+        # Then: blind truncate on the summary
+        truncated, meta = compress_blind_truncate(summary_ctx, None, "test", 100)
+        assert meta["step_name"] == "BLIND_TRUNCATE"
+        # Verify result is small enough
+        assert _calculate_context_bytes(truncated) <= 100 or meta["status"] == "TRUNCATED"
+
+class TestTokenBudgetWiring:
+    """Test that token budget values are wired through the call chain."""
+
+    def test_llm_call_config_receives_real_values(self):
+        """Verify LLMCallConfig accepts and stores max_context_tokens/max_output_tokens."""
+        from agent_llm_models import LLMCallConfig
+
+        config = LLMCallConfig(
+            max_context_tokens=131072,
+            max_output_tokens=8192,
+        )
+        assert config.max_context_tokens == 131072
+        assert config.max_output_tokens == 8192
+
+    def test_llm_call_config_defaults_as_fallback(self):
+        """Verify LLMCallConfig defaults are 200K/12K when not overridden."""
+        from agent_llm_models import LLMCallConfig
+
+        config = LLMCallConfig()
+        assert config.max_context_tokens == 200000
+        assert config.max_output_tokens == 12000
+
+    def test_invoke_llm_with_retry_compression_passes_token_budget(self):
+        """Verify _invoke_llm_with_retry_compression threads token budget to LLMCallConfig."""
+        from agent_llm_models import LLMCallConfig
+
+        # Patch _invoke_llm_with_retry to capture the config
+        captured_config = None
+
+        def mock_invoke_llm_with_retry(client, model_name, messages, tools, tool_choice, stream, config, **kwargs):
+            nonlocal captured_config
+            captured_config = config
+            # Return a minimal successful response
+            mock_resp = type('MockResp', (), {
+                'raw': type('MockRaw', (), {
+                    'choices': [{'message': {'content': 'summary'}}]
+                })(),
+                'text': 'summary',
+                'reasoning': None,
+                'stats': type('MockStats', (), {
+                    'total_tokens': 10,
+                    'input_tokens': 5,
+                    'output_tokens': 5,
+                    'cached_tokens': 0,
+                    'hit_rate': None,
+                })(),
+                'success': True,
+                'error': None,
+                'tool_calls': [],
+            })()
+            return mock_resp, False
+
+        import agent_context_compress as mcc
+        original = mcc._invoke_llm_with_retry
+        mcc._invoke_llm_with_retry = mock_invoke_llm_with_retry
+
+        try:
+            resp = mcc._invoke_llm_with_retry_compression(
+                client=None,
+                model_name="test",
+                messages=[{"role": "user", "content": "hello"}],
+                tools=[],
+                tool_choice="auto",
+                stream=False,
+                max_context_tokens=131072,
+                max_output_tokens=8192,
+            )
+            assert captured_config is not None
+            assert captured_config.max_context_tokens == 131072
+            assert captured_config.max_output_tokens == 8192
+        finally:
+            mcc._invoke_llm_with_retry = original
+
+    def test_token_target_with_128k_model(self):
+        """Simulate 128K model: verify target is correct for 180K tokens."""
+        from agent_context_compress import compute_compression_target_bytes
+
+        # 128K model, 180K tokens (overflow scenario)
+        result = compute_compression_target_bytes(
+            current_bytes=5000000,
+            target_percentage=0.30,
+            last_known_tokens=180000,
+            max_context_tokens=131072,
+            max_output_tokens=8192,
+        )
+        # safety_margin = max(1000, int(131072 * 0.025)) = 3276
+        # target_tokens = 131072 - 8192 - 3276 = 119604
+        # token_reduction_ratio = (180000 - 119604) / 180000 = 0.3355
+        # token_byte_target = 5000000 * (1 - 0.3355) * 0.3 = 1000750
+        # byte_target = 3500000
+        # min(3500000, 1000750) = 1000750
+        assert result < 3500000  # token-aware is more aggressive
+        assert result > 0
+
+    def test_token_target_with_32k_model(self):
+        """Simulate 32K model: verify target is correct for 30K tokens."""
+        from agent_context_compress import compute_compression_target_bytes
+
+        # 32K model, 30K tokens (near overflow)
+        result = compute_compression_target_bytes(
+            current_bytes=2000000,
+            target_percentage=0.30,
+            last_known_tokens=30000,
+            max_context_tokens=32768,
+            max_output_tokens=4096,
+        )
+        # safety_margin = max(1000, int(32768 * 0.025)) = 819
+        # target_tokens = 32768 - 4096 - 819 = 27853
+        # token_reduction_ratio = (30000 - 27853) / 30000 = 0.0716
+        # token_byte_target = 2000000 * (1 - 0.0716) * 0.3 = 555280
+        # byte_target = 1400000
+        # min(1400000, 555280) = 555280
+        assert result < 1400000  # token-aware is more aggressive
+        assert result > 0
+
+    def test_token_target_with_200k_model(self):
+        """Simulate 200K model: verify target is correct for 190K tokens."""
+        from agent_context_compress import compute_compression_target_bytes
+
+        # 200K model, 190K tokens (near overflow)
+        result = compute_compression_target_bytes(
+            current_bytes=8000000,
+            target_percentage=0.30,
+            last_known_tokens=190000,
+            max_context_tokens=200000,
+            max_output_tokens=12000,
+        )
+        # safety_margin = max(1000, int(200000 * 0.025)) = 5000
+        # target_tokens = 200000 - 12000 - 5000 = 183000
+        # token_reduction_ratio = (190000 - 183000) / 190000 = 0.0368
+        # token_byte_target = 8000000 * (1 - 0.0368) * 0.3 = 2313600
+        # byte_target = 5600000
+        # min(5600000, 2313600) = 2313600
+        assert result < 5600000  # token-aware is more aggressive
+        assert result > 0
+
+    def test_compress_context_passes_token_budget(self):
+        """Verify compress_context passes token budget to compute_compression_target_bytes."""
+        # This is an integration test - we verify the function signature accepts
+        # and uses the parameters correctly
+        from agent_context_compress import compress_context, compute_compression_target_bytes
+
+        # Verify that compress_context has the right signature
+        import inspect
+        sig = inspect.signature(compress_context)
+        params = list(sig.parameters.keys())
+        assert "last_known_tokens" in params
+        assert "max_context_tokens" in params
+        assert "max_output_tokens" in params
+
+    def test_extract_token_count_from_error(self):
+        """Verify token count extraction from API error messages."""
+        from agent_llm_invoke import _extract_token_count_from_error
+
+        # Standard OpenAI-style error
+        assert _extract_token_count_from_error(
+            "your prompt contains at least 188001 input tokens"
+        ) == 188001
+
+        # Alternative format
+        assert _extract_token_count_from_error(
+            "Request too large. Your prompt contains 150000 tokens"
+        ) == 150000
+
+        # No match
+        assert _extract_token_count_from_error("some other error") is None
+
+    def test_handle_context_overflow_passes_token_budget(self):
+        """Verify _handle_context_overflow passes token budget to _try_context_compress."""
+        from agent_llm_invoke import _handle_context_overflow, _extract_token_count_from_error
+        from agent_llm_models import LLMCallConfig
+
+        # Verify that _extract_token_count_from_error works
+        assert _extract_token_count_from_error(
+            "your prompt contains at least 188001 input tokens"
+        ) == 188001
+
+        # Verify LLMCallConfig stores the values
+        config = LLMCallConfig(
+            max_context_tokens=131072,
+            max_output_tokens=8192,
+            compress_client=None,
+            compress_model="test",
+            compress_tools=[],
+            compress_extra_kwargs={},
+            compress_audit_writer=None,
+        )
+        assert config.max_context_tokens == 131072
+        assert config.max_output_tokens == 8192

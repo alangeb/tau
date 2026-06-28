@@ -164,7 +164,7 @@ class TestFormatTransformation:
 
     def test_transform_sdk_format_to_executor_format(self):
         """SDK format is correctly transformed to executor format."""
-        # SDK format (as produced by agent_llm.py)
+        # SDK format (as produced by agent_llm_client.py)
         sdk_tool_calls = [
             {
                 "id": "call_1",

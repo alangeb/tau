@@ -602,7 +602,7 @@ def print_report(results):
     print(f"{'='*80}")
 
 def main():
-    log_dir = '/home/alangeb/.local/tau/log'
+    log_dir = '~/.local/tau/log'
     
     if not os.path.isdir(log_dir):
         print(f"Error: Directory not found: {log_dir}", file=sys.stderr)

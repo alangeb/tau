@@ -23,19 +23,21 @@ from agent_heartbeat import HeartbeatResponse
 from agent_lifecycle import AgentLifecycle
 from agent_console import (
     assistant_message_display,
-    context_restored,
+    blank_line,
+    echo_no_newline,
     error,
     force_exit_message,
     interrupted_message,
     print_agent_exit_summary,
     print_context_status,
+    prompt,
     shell_command_usage,
     shell_tool_not_available,
+    status,
     tool_result,
     user_echo,
     warning,
 )
-from agent_console_primitives import blank_line, echo_no_newline, prompt, status
 from agent_session import LOG_DIR
 from agent_models import InputMessage
 from tools import TOOLS
@@ -132,7 +134,16 @@ def _read_context_metadata(context_file: Path) -> tuple[int, str]:
     for msg in reversed(data):
         if msg.get("role") == "user":
             content = msg.get("content", "")
-            if len(content) > 80:
+            if isinstance(content, list):
+                image_count = sum(1 for p in content if p.get("type") == "image_url")
+                text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
+                content = f"[{image_count} image(s)]"
+                if text_parts:
+                    t = text_parts[0]
+                    if len(t) > 80:
+                        t = t[:77] + "..."
+                    content += ": " + t
+            elif isinstance(content, str) and len(content) > 80:
                 content = content[:77] + "..."
             last_user = content
             break
@@ -178,7 +189,16 @@ def preview_context(context_file: Path, n_messages: int = 3) -> list[dict]:
     preview = []
     for msg in data[-n_messages:]:
         content = msg.get("content", "")
-        if len(content) > 200:
+        if isinstance(content, list):
+            image_count = sum(1 for p in content if p.get("type") == "image_url")
+            text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
+            content = f"[{image_count} image(s)]"
+            if text_parts:
+                t = text_parts[0]
+                if len(t) > 200:
+                    t = t[:197] + "..."
+                content += ": " + t
+        elif isinstance(content, str) and len(content) > 200:
             content = content[:197] + "..."
         preview.append({"role": msg.get("role", "unknown"), "content": content})
     return preview

@@ -14,8 +14,7 @@ from typing import TYPE_CHECKING, NamedTuple
 if TYPE_CHECKING:
     from agent_core import TauErgon
 
-from agent_console import error, warning
-from agent_console_primitives import blank_line, echo, status
+from agent_console import blank_line, echo, error, status, warning
 
 # ── Constants ──
 name = "ralph"

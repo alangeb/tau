@@ -1,13 +1,14 @@
 ---
 name: bug_investigation
-description: Systematically investigate bugs using automated tools, identify root causes, propose fixes (also load: python_debugging, code-review-workflow, ast-grep, graphify, agent-browser, error-recovery, performance, security-audit, git-advanced, idea)
+description: Systematically investigate bugs — pyscan, pyanalyze, grep, hypothesis testing, root cause, fix proposal. Debug, root cause, investigate, trace, why broken, why fails, diagnose, something wrong, error, crash, not working, find bug (also load: code-review-workflow, ast-grep, graphify, python_debugging, think)
 category: development
+keywords: debug, root cause, investigate, bug, trace, why, broken, fails, diagnose, error, crash, not working, hypothesis, fix
 ---
 
 # Bug Investigation
 
 ## When
-"investigate bug", "root cause", "debug issue", "find bug", "why does this fail"
+"investigate bug", "root cause", "debug issue", "find bug", "why does this fail", "something is broken", "why does it fail", "diagnose", "investigate issue"
 
 ## Tool Sequence (ALWAYS first)
 1. `pyscan(path=".")` — structural inventory, call relationships
@@ -34,10 +35,26 @@ category: development
 - [ ] Fix proposal with specific code changes
 - [ ] Verification plan defined
 
+## Helper
+```bash
+python3 skills/bug_investigation/investigate.py <path>  # Automated investigation report
+```
+
 ## Related Skills
+- `swe_bench` — SWE-bench workflow
+- `docker` — container management
 - `python_debugging` — interactive debugging with background
 - `code-review-workflow` — automated code analysis
 - `ast-grep` — complex pattern search
 - `context_management` — delegate investigation
 - `plan_template` — structure investigation steps
 - `tau_audit` — analyze agent behavior patterns
+
+- `error-recovery` — Handle tool errors
+- `performance` — Performance
+- `git-advanced` — Advanced git
+- `security-audit` — Security checks
+- `idea` — Capture ideas for features
+- `think` — Deep reasoning tool
+- `graphify` — Turn codebases into persistent knowledge graphs
+- `agent-browser` — Browser automation CLI for AI agents

@@ -1,13 +1,14 @@
 ---
 name: tau_testsuite
-description: Tool test suite guide - fast A2A tests, structured testcases, helpers, consistency (also load: test-suite-monitor, dependency_management)
+description: Tool test suite guide - fast A2A tests, structured testcases, helpers, consistency. Test suite, write tests, test automation, sanity tests, test structure (also load: test-suite-monitor, dependency_management, background)
 category: development
+keywords: test suite, run tests, sanity check, test runner, regression tests
 ---
 
 # Test Suite
 
 ## When
-"create test", "test suite", "write test case", "test structure", "test helpers"
+"create test", "test suite", "write test case", "test structure", "test helpers", "test automation"
 
 ## Quick Start
 ```bash
@@ -53,18 +54,16 @@ if expect_file_exists "output.txt" "File created" "$TEST_NAME"; then
 else
     TEST_RESULT="FAIL"
 fi
-
-# WRONG — inverts logic
-if ! expect_file_exists "output.txt" ...
+# WRONG — inverts logic: if ! expect_file_exists "output.txt" ...
 ```
 
 ### Prefer Side Effects Over Output Parsing
 - ✓ File created → `expect_file_exists`
 - ✓ File modified → `expect_file_contains`
-- ✗ Testing for your own input verbatim (circular)
+- ✗ Testing for own input verbatim (circular)
 
 ### Display Input on Failure
-Store full result, display on assertion failure for debugging.
+Store full result, display on assertion failure.
 
 ### Single Responsibility
 One thing per test. Name: `tc_<major>.<minor>.<idx>_<name>.sh`
@@ -104,6 +103,13 @@ cleanup_a2a_agent "$AGENT_PID"
 - [ ] `status.json` correct structure
 - [ ] Runs locally without manual setup
 
+## Helper
+```bash
+source skills/tau_testsuite/test_runner.sh
+```
+
 ## Related Skills
 - `test-suite-monitor` — background test monitoring workflow
 - `background` — tmux session management
+- `shell_scripting` — test output parsing
+- `dependency_management` — test dependencies

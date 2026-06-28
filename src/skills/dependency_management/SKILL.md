@@ -1,60 +1,41 @@
 ---
 name: dependency_management
-description: Manage Python dependencies — pip install, venv setup, requirements files, package isolation (also load: python_best_practices, project-onboard, security-audit)
+description: Tau dependency management — venv setup, pip installs, package isolation. Dependencies, pip, virtualenv, requirements.txt, pip install, requirements, packages (also load: python_best_practices, project-onboard)
 category: development
+keywords: dependency, pip, venv, virtualenv, requirements, install, package, isolation
 ---
 
 # Dependency Management
 
 ## When
-"install package", "pip install", "venv setup", "requirements", "missing import"
+"install package", "pip install", "venv setup", "requirements", "missing import", "virtualenv", "packages"
 
-## Virtual Environment
+## Tau Project Setup
 ```bash
-# Create
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Check active
-which python                                              # Should point to .venv
-pip list                                                   # Installed packages
-```
-
-## Install Patterns
-```bash
-# Single package
-pip install package_name
-
-# From requirements
+cd $HOME/tau
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# Specific version
-pip install package==1.2.3
-
-# Dev dependencies
-pip install -r dev-requirements.txt
 ```
 
-## Requirements File Management
+## Install Tools (Tau-Specific)
 ```bash
-# Generate
-pip freeze > requirements.txt
-
-# Update single
-pip install --upgrade package
-pip freeze > requirements.txt
-
-# Check for outdated
-pip list --outdated
+pip install ruff black mypy graphifyy  # Tau dev tools
+pip install --upgrade <package>        # Update single
 ```
 
-## Common Issues
-- **Permission denied**: Use `pip install --user` or venv
-- **Conflicting versions**: Check `pip check`
-- **Missing build deps**: `apt install python3-dev build-essential`
-- **Binary wheels**: `pip install --no-binary :all:` for source build
+## Rules
+- NEVER global pip install — use venv
+- `pip check` after install — verify conflicts
+- `pip list --outdated` — audit regularly
 
+## Helper
+
+```bash
+python3 skills/dependency_management/deps_check.py  # dependency_management helper
+```
 ## Related Skills
 - `python_best_practices` — linting/formatting installed tools
 - `project-onboard` — discover project dependencies
 - `tau_testsuite` — test dependencies
+
+- `security-audit` — Security checks

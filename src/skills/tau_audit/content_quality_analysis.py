@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from analyze_audit import analyze_audit
 
-AUDIT_DIR = "/home/alangeb/.local/tau/log"
+AUDIT_DIR = "~/.local/tau/log"
 UNCERTAINTY_WORDS = ['probably', 'maybe', 'i think', 'i\'m not sure', 'possibly', 'likely']
 CONFIDENCE_WORDS = ['confirmed', 'verified', 'tested', 'works', 'definitely', 'certain']
 SELF_CORRECTION_WORDS = ['actually', 'wait', 'no,', 'correction', 'oops']
@@ -677,7 +677,7 @@ def main():
     print(report)
     
     # Save to file
-    output_path = "/home/alangeb/tau-dev1/content_quality_analysis.txt"
+    output_path = "$HOME/tau-dev1/content_quality_analysis.txt"
     with open(output_path, 'w') as f:
         f.write(report)
     print(f"\nReport saved to: {output_path}", file=sys.stderr)

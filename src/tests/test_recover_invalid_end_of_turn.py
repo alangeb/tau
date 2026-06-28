@@ -10,7 +10,8 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent_context import TauContext, is_synthetic_message, _SYNTHETIC_PREFIX
+from agent_context import TauContext
+from agent_message_utils import _SYNTHETIC_PREFIX, is_synthetic_message
 from agent_loop_detect import LoopDetector
 from agent_reflection import ReflectionScheduler, ReflectionConfig
 from agent_loop_escalation import LoopEscalationManager
