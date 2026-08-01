@@ -32,7 +32,7 @@ mkdir -p /tmp/pyscan_test_empty
 # Run pyscan on empty directory using direct tool invocation
 result=$(cd /tmp && PYTHONPATH=$HOME/tau/src /usr/bin/env python3 -c "
 from tools.pyscan import run
-print(run(agent=None, path='/tmp/pyscan_test_empty'))
+print(run(path='/tmp/pyscan_test_empty'))
 ")
 
 pass=1

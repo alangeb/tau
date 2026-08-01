@@ -1,6 +1,6 @@
 ---
 name: documentation
-description: Documentation patterns — docstrings, changelog format. Write docs, documentation, changelog, release notes, docstrings (also load: _taudoc, readme_template)
+description: "Documentation patterns — docstrings, changelog, release notes. Write docs, technical writing (also load: _taudoc, image, readme_template, caveman, code-review-workflow, skill_template, wiki)"
 category: documentation
 keywords: documentation, docstring, changelog, release notes, write docs
 ---
@@ -51,13 +51,14 @@ def function(arg1, arg2):
 - Changelog: semantic sections only
 
 ## Helper
-
 ```bash
 python3 skills/documentation/doc_helper.py  # documentation helper
 ```
+
 ## Related Skills
 - `_taudoc` — project documentation structure
 - `readme_template` — README documentation
+- `caveman` — write concise docs
 - `code-review-workflow` — review documentation quality
-
-- `skill_template` — Create new skill or modify existing skills. Create skill
+- `skill_template` — skill creation format
+- `wiki` — knowledge storage and retrieval

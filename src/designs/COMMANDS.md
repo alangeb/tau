@@ -30,7 +30,7 @@ DESCRIPTION: str = "What this command does"
 # Optional:
 ALIASES_CMD: list[str] = ["alias1"]
 
-def run(agent: "TauErgon", args: list[str]) -> None:
+def run(agent: TauErgon, args: list[str]) -> None:
     """Execute with full agent access."""
     ...
 ```

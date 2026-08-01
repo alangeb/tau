@@ -49,10 +49,13 @@ def verify_task(task_file):
     return 0 if pct >= 50 else 1
 
 def main():
+    _script_dir = os.path.dirname(os.path.realpath(__file__))
+    _root = os.path.dirname(os.path.dirname(_script_dir))
+    tasks_dir = os.path.join(_root, "tasks")
     if len(sys.argv) < 2:
         # List all tasks
         for d in ["1_todo", "2_inprogress", "3_done", "3_failed"]:
-            tasks = glob.glob(os.path.join("tasks", d, "*.md"))
+            tasks = glob.glob(os.path.join(tasks_dir, d, "*.md"))
             if tasks:
                 print(f"{d}: {len(tasks)} tasks")
         return 0

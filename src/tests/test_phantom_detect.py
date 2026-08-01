@@ -19,7 +19,7 @@ class TestScorePhantom:
 
     @pytest.fixture
     def known_tools(self):
-        return frozenset(["bash", "file_read", "file_write", "end_turn", "git"])
+        return frozenset(["bash", "file_read", "file_write", "git"])
 
     def test_whitelist_tag_not_phantom(self, rules):
         """HTML tags should score 0.0."""
@@ -53,7 +53,7 @@ class TestScorePhantom:
 
     def test_levenshtein_proximity(self, rules, known_tools):
         """Tag similar to real tool (Levenshtein) should trigger."""
-        score, reasons = _score_phantom("endturn", "ENDTURN", rules, known_tools)
+        score, reasons = _score_phantom("endturn", "END_TURN", rules, known_tools)
         assert score >= rules.confidence_threshold
         assert any("close to tool" in r for r in reasons)
 
@@ -72,7 +72,7 @@ class TestDetectPhantoms:
 
     @pytest.fixture
     def known_tools(self):
-        return frozenset(["bash", "file_read", "file_write", "end_turn", "git"])
+        return frozenset(["bash", "file_read", "file_write", "git"])
 
     def test_bash_command_detected(self, rules, known_tools):
         """<bash_command> should be detected as phantom."""
@@ -130,7 +130,7 @@ class TestStripPhantoms:
 
     @pytest.fixture
     def known_tools(self):
-        return frozenset(["bash", "file_read", "file_write", "end_turn", "git"])
+        return frozenset(["bash", "file_read", "file_write", "git"])
 
     def test_strip_from_content(self, rules, known_tools):
         """Phantoms should be removed from content."""

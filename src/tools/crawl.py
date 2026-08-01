@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import os
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 from urllib.parse import urlparse
-
-if TYPE_CHECKING:
-    from agent_core import TauErgon
 
 from .fetch import _extract_links, _fetch_single
 # ── Tool interface ────────────────────────────────────────────────
@@ -140,11 +136,13 @@ class Args:
 # ── Execution ─────────────────────────────────────────────────────
 
 def run(
-    url: str, agent: "TauErgon", tool_call_id: str | None = None,
-    max_pages: int = 5, depth: int = 2, same_domain: bool = True,
+    url: str, max_pages: int = 5, depth: int = 2, same_domain: bool = True,
     filter_type: str = "fit", timeout: int = 10,
+    _ctx: ToolContext | None = None,
 ) -> str:
     """Crawl a website starting from the given URL."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     results = _crawl(url, max_pages, depth, same_domain, filter_type, timeout)
 
     if not results:

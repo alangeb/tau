@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent_context import TauContext
-from agent_message_utils import _SYNTHETIC_PREFIX, is_synthetic_message
+from agent_message_utils import is_synthetic_message
 
 
 class TestSyntheticBridgeInsertion:
@@ -43,7 +43,7 @@ class TestSyntheticBridgeInsertion:
 
         # Verify bridge is synthetic
         assert is_synthetic_message(msgs[3]), "Bridge should be synthetic"
-        assert _SYNTHETIC_PREFIX in msgs[3]["content"]
+        assert "[U:meta | N:" in msgs[3]["content"]
 
     def test_consecutive_assistant_no_validation_errors(self):
         """After bridge insertion, validate() should return no errors."""
@@ -187,7 +187,7 @@ class TestSyntheticBridgeCleanup:
         # system, user, assistant, assistant (synthetic removed, NO merge)
         assert len(msgs) == 4
         assert msgs[0] == {"role": "system", "content": "System."}
-        assert msgs[1] == {"role": "user", "content": "User."}
+        assert msgs[1] == {"role": "user", "content": "[U:real | N:0] User."}
         assert msgs[2]["role"] == "assistant"
         assert msgs[2]["content"] == "First."
         assert msgs[3]["role"] == "assistant"

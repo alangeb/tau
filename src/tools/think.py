@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 from typing import TYPE_CHECKING
 
@@ -25,7 +25,7 @@ negligible compared to single-token decoding, and keeps prefix cache intact.
 The fork analyzes the conversation and returns structured analysis to its parent.
 
 Use when stuck in a loop, when assumptions changed, or for explicit planning.
-The fork has NO tools except end_turn — it is a pure thinker, not an actor.
+The fork has NO tools — it is a pure thinker, not an actor.
 
 DELEGATION HIERARCHY:
 1. Internal reasoning → Always start here. Use your built-in reasoning for all tasks.
@@ -57,10 +57,11 @@ Remember: you delegate the thinking. You do not do it yourself.
 
 # ── Constants ──
 
-THINK_TOOL_ALLOWLIST = frozenset({"end_turn"})
+THINK_TOOL_ALLOWLIST = frozenset()  # No tools allowed — pure reasoning only
+THINK_MAX_NESTING = 3  # Block think() at nesting level 3+ to prevent recursion bombs
 
 # Pre-computed: sorted, comma-separated list of permitted tools.
-_ALLOWED_TOOLS_STR = ", ".join(sorted(THINK_TOOL_ALLOWLIST))
+_ALLOWED_TOOLS_STR = ", ".join(sorted(THINK_TOOL_ALLOWLIST)) if THINK_TOOL_ALLOWLIST else "(none — pure reasoning only)"
 
 # Pre-computed: invariant header for think-mode prompts.
 _THINK_HEADER = (
@@ -68,15 +69,15 @@ _THINK_HEADER = (
     "You are a THINKER — a philosopher, not an actor.\n"
     "You analyze, reason, and plan. You CANNOT take actions.\n\n"
     f"PERMITTED TOOLS: {_ALLOWED_TOOLS_STR}\n"
-    "You MUST NOT use any tool not listed above.\n\n"
+    "You MUST NOT use any tool.\n\n"
     "RULES:\n"
-    "- You MAY NOT call any tool except end_turn.\n"
+    "- You MAY NOT call any tool.\n"
     "- You MAY NOT read files, search code, or investigate.\n"
     "- Your entire output is your REASONING — analysis returned to your parent.\n"
     "- Examine the conversation context above. Analyze what happened,\n"
     "  what went wrong, and what should be done differently.\n"
-    "- Return your analysis via end_turn. Be concise: 2-5 paragraphs maximum.\n"
-    "- You MUST call end_turn immediately with your analysis. NO EXCEPTIONS.\n"
+    "- Return your analysis as plain text. Be concise: 2-5 paragraphs maximum.\n"
+    "- Your response is automatically captured — no special tool call needed.\n"
 )
 
 
@@ -106,15 +107,13 @@ def _build_prompt(question: str) -> str:
         return (
             f"QUESTION:\n{question}\n\n"
             f"{_THINK_HEADER}"
-            "Answer with a focused analysis of the question.\n\n"
-            "When finished, call end_turn with your final analysis as the message."
+            "Answer with a focused analysis of the question."
         )
     return (
         _THINK_HEADER
         + "Think hard about our current task. "
         "Answer with a comprehensive plan about what should be done to address our current task. "
         "What do we already know for certain? What do we need to determine?"
-        + "\n\nWhen finished, call end_turn with your final plan as the message."
     )
 
 
@@ -134,12 +133,18 @@ def _build_safe_fallback(question: str, error: str, duration_ms: float | None = 
 
 # ── Execution ──
 
-def run(question: str = "", agent: "TauErgon" = None, tool_call_id: str | None = None) -> str:
+def run(
+    question: str = "",
+    _ctx: ToolContext | None = None,
+) -> str:
     """Spawn a forked subagent for focused thinking.
 
     NEVER fails — always returns a useful response, even if the fork
     cannot be spawned. Uses safe fallback analysis as last resort.
     """
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
+
     if agent is None:
         # Even this edge case gets a useful response
         return (
@@ -159,6 +164,15 @@ def run(question: str = "", agent: "TauErgon" = None, tool_call_id: str | None =
                 f"pending tool call is resolved. Resolve it first, then try again.\n"
             )
 
+    # Recursion depth protection: block think() at high nesting levels
+    if agent.nesting_count >= THINK_MAX_NESTING:
+        return (
+            f"⚠️  Recursion depth limit reached (nesting={agent.nesting_count}, max={THINK_MAX_NESTING}).\n"
+            f"\nSpawning think has been BLOCKED to prevent recursion bombs.\n\n"
+            f"At this nesting level, you MUST analyze inline and return your response.\n"
+            f"Do NOT call think() again. Summarize your analysis and proceed.\n"
+        )
+
     prompt = _build_prompt(question)
     start_time = time.monotonic()
 
@@ -167,14 +181,15 @@ def run(question: str = "", agent: "TauErgon" = None, tool_call_id: str | None =
             prompt=prompt,
             parent_context=agent.context,
             parent_agent=agent,
-            nesting_count=agent.nesting_count,
+            nesting_stack=agent.nesting_stack,
+            nesting_type="T",
             tool_call_id=tool_call_id,
             tool_filter=ToolFilter(
                 allowlist=THINK_TOOL_ALLOWLIST,
                 denied_message=(
                     "Tool '{tool_name}' is not permitted in think mode. "
-                    "You are a pure thinker — you MAY ONLY call end_turn. "
-                    "Reformulate using only end_turn."
+                    "You are a pure thinker — you MAY NOT call any tools. "
+                    "Return your analysis as plain text."
                 ),
             ),
             config=agent.config,

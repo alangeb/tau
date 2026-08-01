@@ -4,10 +4,13 @@ Design documents for TauErgon. See `../TAU.md` for the developer guide.
 
 | Document | Content |
 |----------|---------|
+| [A2A_PROTOCOL.md](A2A_PROTOCOL.md) | Agent-to-agent communication via Unix sockets: message types, constants, session discovery |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Request flow, module dependencies, LLM pipeline, architectural patterns |
-| [DECISIONS.md](DECISIONS.md) | 191 design decisions across 23 categories |
-| [CONTEXT.md](CONTEXT.md) | Context management patterns, subagent invocation, error handling |
 | [COMMANDS.md](COMMANDS.md) | Three-tier command dispatch, implementation guide |
+| [CONTEXT.md](CONTEXT.md) | Context management patterns, subagent invocation, error handling |
+| [DECISIONS.md](DECISIONS.md) | 230 design decisions across 27 categories |
+| [DELEGATE.md](DELEGATE.md) | Delegate mode: orchestrator loop, tool restrictions, loop mechanics |
+| [INPUT_PROTOCOL.md](INPUT_PROTOCOL.md) | CLI input handling: `#`/`#!` multiline, `!` shell, `+` steering, `/` commands |
 | [SKILLS.md](SKILLS.md) | Skill contract, implementation guide |
 | [TESTING.md](TESTING.md) | Manual testing, unit tests, e2e tests, test rules |
 | [TOOLS.md](TOOLS.md) | Tool contract, implementation rules, common patterns |

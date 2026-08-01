@@ -105,8 +105,6 @@ def _strip_phantoms(
 
 
 # Validation pipeline: order matters (most critical first).
-# NOTE: finish_reason="length" (truncation) is handled by is_valid_end_of_turn
-# in agent_endofturn_validate.py → recovery loop, not by retrying the same call.
 _VALIDATORS = [
     _validate_tool_call_json,
     _validate_empty_reply,

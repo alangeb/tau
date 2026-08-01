@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import re
 import subprocess
@@ -37,7 +37,7 @@ metadata = ToolMetadata(
         "run_shell_command", "listdir", "list_directory", "listfiles",
         "run", "shell", "cmd",
     ],
-    aliases_arg={"command": "cmd"},
+    aliases_arg={"command": "cmd", "shell_command": "cmd"},
     max_size=524288,
     timeout=300,  # Must match Args default timeout
 )
@@ -178,8 +178,10 @@ class Args:
 
 # ── Execution ────────────────────────────────────────────────────────────────
 
-def run(cmd: str, agent: TauErgon, tool_call_id: str | None, timeout: int = 300, **kwargs) -> str:
+def run(cmd: str, timeout: int = 300, _ctx: ToolContext | None = None, **kwargs) -> str:
     """Execute shell command with safety checks."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     rejection = _check_and_block(agent, cmd)
     if rejection:
         return rejection

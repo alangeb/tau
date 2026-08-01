@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 from tools.lib.cache import FileCache
 
 import json
@@ -136,12 +136,11 @@ class Args:
 # ── Execution ────────────────────────────────────────────────────
 
 def run(
-    query: str,
-    agent: "TauErgon",
-    tool_call_id: str | None = None,
-    limit: int = 5,
-    cache: bool = True,
+    query: str, limit: int = 5, cache: bool = True,
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if cache:
         cached = _lookup_cache.load(_cache_key(query))
         if cached:

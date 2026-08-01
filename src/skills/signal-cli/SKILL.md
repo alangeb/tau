@@ -43,9 +43,9 @@ signal-cli listAccounts
 ```
 
 ## Gotchas
-- **Config locked**: When daemon runs, CLI commands fail with "Config file is in use"
-- **Receive**: Use JSON-RPC POST, NOT HTTP GET
-- **Multi-account**: Daemon starts in multi-account mode when multiple accounts configured
+- **Config locked**: Daemon running → CLI fails with "Config file is in use"
+- **Receive**: JSON-RPC POST, NOT HTTP GET
+- **Multi-account**: Daemon starts multi-account mode with multiple accounts
 
 ## SQLite DB
 Location: `~/.local/share/signal-cli/data/[ACCOUNT_ID]/account.db`
@@ -64,10 +64,9 @@ Location: `~/.local/share/signal-cli/data/[ACCOUNT_ID]/account.db`
 - Pre-keys available: `SELECT COUNT(*) FROM pre_key`
 
 ## Helper
-
 ```bash
 python3 skills/signal-cli/signal_rpc.py  # signal cli helper
 ```
+
 ## Related Skills
-- `shell_scripting` — automate signal workflows
 - `background` — run signal daemon in background

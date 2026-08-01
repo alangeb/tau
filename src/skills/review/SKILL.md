@@ -1,6 +1,6 @@
 ---
 name: review
-description: Code review process — detailed analysis, inventory, improvement plan. Review code, code analysis, quality assessment (also load: code-review-workflow, python_best_practices, ast-grep, code-simplifier, git, git-verify, project-onboard)
+description: Code review process — detailed analysis, inventory, improvement plan (also load: code-review-workflow, git-verify, python_best_practices, ast-grep, code-simplifier, git, project-onboard)
 category: code-quality
 keywords: code review, code analysis, quality assessment, deep review, evaluate code, assess code
 ---
@@ -59,11 +59,9 @@ python3 skills/review/review_helper.py  # review helper
 ```
 
 ## Related Skills
-- `code-review-workflow` — complete automated pipeline
-- `python_best_practices` — linting/formatting
 - `ast-grep` — complex search/rewrite
+- `code-review-workflow` — complete automated pipeline
 - `code-simplifier` — code clarity improvements
 - `git` — commit reviewed changes
-
-- `project-onboard` — Understand new project
-- `git-verify` — Verify code changes
+- `project-onboard` — understand new project
+- `python_best_practices` — linting/formatting

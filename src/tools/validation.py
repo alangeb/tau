@@ -18,7 +18,6 @@ __all__ = [
     "get_valid_fields_from_tool",
     # Validation
     "normalize_tool_call",
-    "fix_tool_call",
     "validate_tool_name",
     "fill_defaults_from_args",
 ]
@@ -251,7 +250,7 @@ def validate_tool_name(
     return False, None, suggestions
 
 
-# ── Coercion helpers ───────────────────────────────────────────────────────
+# ── Coercion ─────────────────────────────────────────────────────────────
 
 def _coerce_and_warn(
     tool_name: str, field_name: str, value: str,
@@ -286,9 +285,6 @@ def normalize_tool_call(tc: dict) -> list[str]:
     """Normalize a tool call: resolve aliases, coerce types, fill defaults.
 
     This is the single entry point for the complete normalization pipeline.
-    It replaces the previous two-phase pattern of calling ``fix_tool_call`` twice
-    with different arguments.
-
     Registries (CMD_ALIASES, ARG_ALIASES, TOOLS) are loaded lazily on first call.
 
     Mutates *tc* in-place; returns warning strings for every correction.
@@ -333,7 +329,7 @@ def normalize_tool_call(tc: dict) -> list[str]:
             warning(msg)
             warnings.append(msg)
 
-    # 3. Look up tool entry and coerce types
+        # 3. Look up tool entry and coerce types
     entry = _TOOLS.get(tool_name)
     if entry is not None:
         module = entry.module
@@ -368,7 +364,7 @@ def normalize_tool_call(tc: dict) -> list[str]:
             args[field_name] = coerced
             _coerce_and_warn(tool_name, field_name, value, coerced, label, warnings)
 
-        # 3b. Reverse coercion — ensure schema-declared "string" fields are strings.
+        # 4. Reverse coercion — ensure schema-declared "string" fields are strings.
         # Covers cases where the caller passes int/bool/float but the tool expects str.
         for field_name, value in list(args.items()):
             if isinstance(value, str):
@@ -392,35 +388,10 @@ def normalize_tool_call(tc: dict) -> list[str]:
             warning(msg)
             warnings.append(msg)
 
-        # 4. Fill defaults from Args dataclass
+        # 5. Fill defaults from Args dataclass
         fill_defaults_from_args(args, module)
 
     return warnings
-
-
-# ── Legacy entry point ────────────────────────────────────────────────────
-
-def fix_tool_call(
-    tc: dict,
-    cmd_aliases: dict[str, str] | None = None,  # noqa: ARG001 — deprecated, ignored
-    arg_aliases: dict[str, dict[str, str]] | None = None,  # noqa: ARG001 — deprecated, ignored
-    tool_module: Any | None = None,  # noqa: ARG001 — deprecated, ignored
-) -> list[str]:
-    """Fix a parsed tool call: resolve aliases, then coerce types.
-
-    .. deprecated::
-        This function now delegates to :func:`normalize_tool_call` and ignores
-        all parameters. The parameters are kept for backward compatibility only.
-        Use :func:`normalize_tool_call` directly.
-    """
-    import warnings
-    warnings.warn(
-        "fix_tool_call is deprecated and ignores all parameters; "
-        "use normalize_tool_call instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return normalize_tool_call(tc)
 
 
 # ── Internal helpers (private) ────────────────────────────────────────────
@@ -478,6 +449,16 @@ def _generate_validation_error(
             matches = get_close_matches(unknown, valid_fields, n=1, cutoff=FUZZY_SUGGESTION_CUTOFF)
             if matches:
                 suggestions.append(f"  Did you mean '{matches[0]}' instead of '{unknown}'?")
+            else:
+                # Check if unknown param is a common mistake (e.g., boolean as string)
+                if unknown.endswith('=True') or unknown.endswith('=False'):
+                    param_name = unknown.split('=')[0]
+                    param_matches = get_close_matches(param_name, valid_fields, n=1, cutoff=FUZZY_SUGGESTION_CUTOFF)
+                    if param_matches:
+                        suggestions.append(
+                            f"  '{unknown}' looks like a boolean assignment — "
+                            f"try '{param_matches[0]}=true' or '{param_matches[0]}=false' (lowercase)"
+                        )
         if suggestions:
             parts.append("Suggestions:\n" + "\n".join(suggestions))
 

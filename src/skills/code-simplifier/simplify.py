@@ -3,7 +3,6 @@
 
 import ast
 import sys
-from typing import Optional
 
 
 def analyze_complexity(source: str) -> dict:

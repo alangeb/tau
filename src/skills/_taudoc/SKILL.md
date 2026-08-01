@@ -1,6 +1,6 @@
 ---
 name: _taudoc
-description: Maintain TauErgon documentation structure — designs/, TAU.md, AGENT.md. Documentation structure, tau docs, design documents (also load: tau_audit, skill_template, documentation, command_template, dream)
+description: "Maintain TauErgon docs — designs/, TAU.md, AGENT.md. Documentation maintenance, doc updates, design docs, project documentation (also load: tau_audit, skill_template, documentation, command_template, dream)"
 category: maintenance
 keywords: documentation, doc structure, tau docs, design documents, technical writing
 ---
@@ -50,14 +50,12 @@ src/
 
 ## Helper
 ```bash
-python3 skills/_taudoc/doc_validator.py  # _taudoc helper
+python3 skills/_taudoc/doc_validator.py <src_path>  # Validate doc structure
 ```
 
 ## Related Skills
-- `tau_audit` — analyze agent logs
-- `skill_template` — skill creation format
 - `command_template` — command creation format
 - `documentation` — docstring and changelog patterns
-- `task` — task framework
-
+- `skill_template` — skill creation format
+- `tau_audit` — analyze agent logs
 - `dream` — Dream orchestrator

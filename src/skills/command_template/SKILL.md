@@ -1,6 +1,6 @@
 ---
 name: command_template
-description: Create custom commands — markdown prompt templates and Python run() functions. Create command, command format, slash command, custom command, /command (also load: skill_template, tool_template, caveman, _taudoc)
+description: "Create custom commands — markdown prompt templates, Python run() functions. New command, define command (also load: caveman, skill_template, tool_template, dream, reference, shell_scripting)"
 category: development
 keywords: command, create command, slash command, custom command, prompt template, run function
 ---
@@ -17,7 +17,7 @@ keywords: command, create command, slash command, custom command, prompt templat
 ## Markdown Format
 ```markdown
 ---
-description: Brief description
+description: "Command description (also load: related_skills)"
 ---
 Content with $1, $2, $* placeholders.
 ---
@@ -34,14 +34,6 @@ Second prompt (multi-prompt via ---)
 
 ### Chaining
 Content starting with `/` triggers another command: `/fork Critique $1`
-
-### Writing Rules
-1. **Assume agent knows basics** — no git/Python/shell explanations
-2. **Lead with "NEVER"** — safety rules first
-3. **FACTS table** — project-specific info only
-4. **Procedures concise** — commands, not tutorials
-5. **Define ERROR/WARNING** — error reporting up front
-6. **Remove redundancy** — every line must carry unique info
 
 ## Python Format
 ```python
@@ -82,11 +74,9 @@ python3 skills/command_template/command_gen.py  # command_template helper
 ```
 
 ## Related Skills
+- `caveman` — writing concise commands
 - `skill_template` — creating skills (sibling concept)
 - `tool_template` — creating tools (sibling concept)
-- `_taudoc` — documentation structure
-- `caveman` — writing concise commands
-- `shell_scripting` — shell-based commands
+- `dream` — self-improvement loop
 - `reference` — quick reference for common commands
-- `tauskillmaintenance` — audit command quality
-- `readme_template` — README structure
+- `shell_scripting` — shell-based commands

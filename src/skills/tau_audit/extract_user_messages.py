@@ -19,32 +19,19 @@ Defaults:
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
-
-# Regex patterns for audit file parsing
-AUDIT_SESSION_START_RE = re.compile(
-    r'^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]\s+SESSION_START\s+(.*)'
-)
-AUDIT_CWD_RE = re.compile(r"cwd='([^']+)'\s*")
-AUDIT_USER_LINE_RE = re.compile(r'^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]\s+USER\s*(.*)')
-
-# Regex to extract session prefix from filename
-PREFIX_RE = re.compile(r'^(\d+_\d{14}_\d+)')
-
-
-def extract_cwd_from_session_start(line):
-    """Extract cwd from a SESSION_START line."""
-    m = AUDIT_CWD_RE.search(line)
-    return m.group(1) if m else '?'
+from _audit_parse import parse_line
 
 
 def extract_prefix_from_filename(filename):
-    """Extract session prefix from filename."""
-    m = PREFIX_RE.match(filename)
-    return m.group(1) if m else filename
+    """Extract session prefix from filename (e.g. 12345_20260705034845_1)."""
+    # Format: PID_TIMESTAMP_SEQ
+    parts = filename.split('_')
+    if len(parts) >= 3:
+        return '_'.join(parts[:3])
+    return filename
 
 
 def parse_audit_file(filepath):
@@ -54,26 +41,30 @@ def parse_audit_file(filepath):
     in_user_block = False
 
     with open(filepath, 'r', errors='replace') as f:
-        for line in f:
-            # Check for SESSION_START to get cwd
-            if 'SESSION_START' in line:
-                cwd = extract_cwd_from_session_start(line) or '?'
-
-            # Check for USER line
-            m = AUDIT_USER_LINE_RE.match(line)
-            if m:
-                in_user_block = True
-                # Content is on the next line(s)
+        for raw_line in f:
+            record = parse_line(raw_line)
+            if record is None:
+                # Continuation line — collect user content
+                if in_user_block and raw_line.startswith('  | '):
+                    yield (prefix, cwd, raw_line[4:].strip(), 'audit')
                 continue
 
-            # If we're in a user block, read content
-            if in_user_block and line.startswith('  | '):
-                yield (prefix, cwd, line[4:].strip(), 'audit')
-                continue
-
-            # Any non-content line ends the user block
-            if in_user_block and not line.startswith('  | '):
+            # SESSION_START → extract cwd
+            if record.record_type == 'SESSION_START':
+                cwd = record.fields.get('cwd', '?')
+                # Strip surrounding quotes if present
+                if cwd.startswith("'") and cwd.endswith("'"):
+                    cwd = cwd[1:-1]
                 in_user_block = False
+                continue
+
+            # USER → start collecting content
+            if record.record_type == 'USER':
+                in_user_block = True
+                continue
+
+            # Any other record ends the user block
+            in_user_block = False
 
 
 def parse_context_file(filepath):
@@ -89,22 +80,11 @@ def parse_context_file(filepath):
     if not isinstance(data, list):
         return
 
-    # Extract cwd from system prompt if present
-    cwd = '?'
-    for entry in data:
-        if isinstance(entry, dict) and entry.get('role') == 'system':
-            content = entry.get('content', '')
-            if isinstance(content, str):
-                cwd_m = re.search(r"Log file:\s*(\S+\.audit)", content)
-                if cwd_m:
-                    # Try to extract cwd from log file path in system prompt
-                    pass
-
     for entry in data:
         if isinstance(entry, dict) and entry.get('role') == 'user':
             content = entry.get('content', '')
             if isinstance(content, str) and content.strip():
-                yield (prefix, cwd, content.strip(), 'context')
+                yield (prefix, '?', content.strip(), 'context')
 
 
 def main():
@@ -147,10 +127,6 @@ def main():
                     total_users += 1
 
     print(f"Extracted {total_users} unique user messages to '{output_file}'", file=sys.stderr)
-
-    # Stats
-    audit_count = sum(1 for _ in open(output_file)) - 1  # minus header
-    print(f"Total lines (including header): {audit_count + 1}", file=sys.stderr)
 
 
 if __name__ == '__main__':

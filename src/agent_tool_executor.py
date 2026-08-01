@@ -7,6 +7,8 @@ Supports single tool calls and batch execution with:
 - Loop detection and prevention
 """
 
+from __future__ import annotations
+
 import json
 import re
 import signal
@@ -19,7 +21,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from agent_core import TauErgon
 
-from agent_console import loop_warning_display, tool_blocked, tool_error_detail, tool_output, tool_start, warning
+from agent_console import (
+    loop_warning_display,
+    tool_blocked,
+    tool_error_detail,
+    tool_output,
+    tool_start,
+    warning,
+)
 from agent_session import (
     AuditWriter,
     SESSION_PREFIX,
@@ -33,6 +42,7 @@ from tools.validation import (
 )
 from tools import (
     DEFAULT_TOOL_MAX_SIZE,
+    ToolContext,
     TOOLS,
 )
 
@@ -52,6 +62,36 @@ DEFAULT_TOOL_TIMEOUT = 180
 # to prevent any tool crash from killing the agent.
 TOOL_EXEC_EXCEPTIONS = Exception
 TOOL_EXEC_EXCEPTIONS_WITH_TIMEOUT = Exception  # Same — catches everything including TimeoutError
+
+
+# ── A2A chunk emission ─────────────────────────────────────────────────────
+
+
+def _emit_a2a_chunk(agent: TauErgon, chunk_type: str, data: dict) -> None:
+    """Emit an A2A chunk for the current request.
+
+    Appends a chunk dict to ``agent._pending_a2a_chunks[request_id]``.
+    No-op when there is no active A2A request (``_current_a2a_request_id`` is None).
+
+    Chunk types:
+    - ``tool_call``: tool, args
+    - ``tool_result``: tool, output, status
+    - ``tool_error``: tool, error_message
+    - ``assistant``: content
+    """
+    request_id = getattr(agent, '_current_a2a_request_id', None)
+    if not request_id:
+        return
+    chunks = getattr(agent, '_pending_a2a_chunks', None)
+    if not chunks:
+        return
+    if request_id not in chunks:
+        chunks[request_id] = []
+    chunks[request_id].append({
+        "type": chunk_type,
+        "id": request_id,
+        **data
+    })
 
 
 # ── Signal-based timeout infrastructure (Unix only) ──────────────────────────
@@ -90,7 +130,7 @@ _TOOL_NAME_FRAGMENTS = (
 )
 
 # Regex to extract just the tool name from malformed calls like
-# "end_turn(message=...)" or "bash(cmd=...)".
+# "bash(cmd=...)" or "file_read(path=...)".
 _TOOL_NAME_RE = re.compile(r"^([a-zA-Z_]\w*)")
 
 
@@ -99,7 +139,7 @@ def _sanitize_tool_name(raw: str) -> str:
 
     Handles:
     - XML/HTML fragments leaking from output (</parameter, </function, ...)
-    - Parenthesised arguments: ``end_turn(message="...")`` → ``end_turn``
+    - Parenthesised arguments: ``bash(cmd="ls")`` → ``bash``
     - Trailing whitespace / newlines
     """
     name = raw
@@ -127,7 +167,7 @@ def _signal_timeout_handler(signum: int, frame: Any) -> None:
 
 
 def _log_tool_error(
-    audit_writer: "AuditWriter | None",
+    audit_writer: AuditWriter | None,
     call_id: str,
     error: Exception,
     duration_ms: float,
@@ -184,42 +224,73 @@ def _display_tool_error(tool_name: str, error_msg: str, error_type: str) -> None
     # TOOL_BLOCKED is handled by tool_blocked() which already emits console output
 
 
+def _get_truncation_hint(tool_name: str) -> str:
+    """Return a tool-specific suggestion for reducing output size."""
+    hints = {
+        "pyscan": "Use pyscan(compact=True) for ~60% smaller output, or target specific files.",
+        "pygraph": "Use pygraph with targeted queries instead of full analysis.",
+        "pyanalyze": "Target specific files instead of full directory analysis.",
+        "grep": "Reduce max_results or use more specific patterns.",
+        "fetch": "Reduce max_length or use metadata_only=True.",
+    }
+    return hints.get(tool_name, "Consider using tool-specific options to reduce output size.")
+
+
 # ── Single tool call execution ────────────────────────────────────────────
 
 
-def execute_tool_call(tc: dict, agent: "TauErgon", audit_writer: "AuditWriter | None" = None) -> str:
+def execute_tool_call(
+    tc: dict,
+    agent: TauErgon,
+    audit_writer: AuditWriter | None = None,
+    system_call: bool = False,
+    bypass_filter: bool = False,
+) -> str:
     """Execute a single tool call with timeout, validation, and error handling.
 
     Args:
         tc: Tool call dict with keys: id, name, args_dict.
         agent: TauErgon instance for context, tool filter, and loop detection.
+        system_call: If True, skip loop detection tracking (system-initiated calls).
+        bypass_filter: If True, skip tool filter check (system recovery calls).
 
     Returns:
         Tool output string, or an error/warning message on failure.
     """
     call_id = tc["id"]
-    tool_name = tc["name"]
-    args = tc.get("args_dict", {})
+    original_tool_name = tc["name"]
 
-    loop_prefix = ""
-    loop_warning = agent.loop_detector.detect_tool_loop(tool_name, args)
-    if loop_warning:
-        loop_warning_display(loop_warning)
-        loop_prefix = f"{loop_warning}\n\n"
+    ctx = ToolContext(agent=agent, tool_call_id=call_id)
 
-    if not agent.tool_filter.should_include(tool_name):
+    # Check filter BEFORE normalization so that aliases in allowlists work.
+    # Users may specify aliases (e.g., "read") in their allowlist, and we
+    # should respect that rather than requiring canonical names.
+    if not bypass_filter and not agent.tool_filter.should_include(original_tool_name):
         available = agent.tool_filter.get_available(agent.available_tool_names)
         available_str = ", ".join(available)
-        tool_blocked(tool_name, available_str)
+        tool_blocked(original_tool_name, available_str)
 
         if audit_writer:
             audit_writer.tool_blocked(
                 call_id=call_id,
-                tool_name=tool_name,
+                tool_name=original_tool_name,
                 available_str=available_str,
             )
 
-        return f"{loop_prefix}{agent.tool_filter.format_denied(tool_name, available)}"
+        return agent.tool_filter.format_denied(original_tool_name, available)
+
+    # Normalize tool call: resolve aliases, coerce types, fill defaults.
+    from tools.validation import normalize_tool_call
+    normalize_tool_call(tc)
+
+    tool_name = tc["name"]
+    args = tc.get("args_dict", {})
+
+    loop_prefix = ""
+    loop_warning = agent.loop_detector.detect_tool_loop(tool_name, args, system_call=system_call)
+    if loop_warning:
+        loop_warning_display(loop_warning)
+        loop_prefix = f"{loop_warning}\n\n"
 
     # Validate args structure before proceeding
     args_issues = _validate_args_structure(tc, tool_name)
@@ -321,9 +392,9 @@ def execute_tool_call(tc: dict, agent: "TauErgon", audit_writer: "AuditWriter | 
             cap_timeout = DEFAULT_TOOL_TIMEOUT
 
         if _USE_SIGNALS:
-            result = _execute_with_signal_timeout(tool_func, args, agent, call_id, tool_name, cap_timeout)
+            result = _execute_with_signal_timeout(tool_func, args, ctx, tool_name, cap_timeout)
         else:
-            result = _execute_with_thread_timeout(tool_func, args, agent, call_id, tool_name, cap_timeout)
+            result = _execute_with_thread_timeout(tool_func, args, ctx, tool_name, cap_timeout)
 
     except TOOL_EXEC_EXCEPTIONS_WITH_TIMEOUT as e:
         duration_ms = (time.monotonic() - _start_time) * 1000
@@ -357,7 +428,8 @@ def execute_tool_call(tc: dict, agent: "TauErgon", audit_writer: "AuditWriter | 
         )
         trunc_msg = (
             f"⚠ TOOL OUTPUT TRUNCATED: '{tool_name}' produced {output_bytes} bytes (max: {max_size}).\n\n"
-            f"First 10 lines (≤500 bytes):\n{preview}{file_note}"
+            f"First 10 lines (≤500 bytes):\n{preview}{file_note}\n\n"
+            f"💡 Tip: {_get_truncation_hint(tool_name)}"
         )
 
         if audit_writer:
@@ -398,7 +470,7 @@ def execute_tool_call(tc: dict, agent: "TauErgon", audit_writer: "AuditWriter | 
     return f"{loop_prefix}{result}"
 
 
-def _execute_with_signal_timeout(tool_func, args, agent, call_id, tool_name, cap_timeout: int) -> Any:
+def _execute_with_signal_timeout(tool_func, args, ctx: ToolContext, tool_name, cap_timeout: int) -> Any:
     """Execute tool with signal-based timeout (Unix only).
 
     Uses signal.setitimer() for sub-second precision timeouts.
@@ -418,7 +490,7 @@ def _execute_with_signal_timeout(tool_func, args, agent, call_id, tool_name, cap
         signal.setitimer(signal.ITIMER_REAL, cap_timeout)
 
         try:
-            result = tool_func(**args, agent=agent, tool_call_id=call_id)
+            result = tool_func(**args, _ctx=ctx)
         finally:
             # ALWAYS cancel timer, restore old handler AND timer state.
             signal.setitimer(signal.ITIMER_REAL, 0)
@@ -434,7 +506,7 @@ def _execute_with_signal_timeout(tool_func, args, agent, call_id, tool_name, cap
     return result
 
 
-def _execute_with_thread_timeout(tool_func, args, agent, call_id, tool_name, cap_timeout: int) -> Any:
+def _execute_with_thread_timeout(tool_func, args, ctx: ToolContext, tool_name, cap_timeout: int) -> Any:
     """Execute tool with thread-based timeout (Windows fallback).
     
     Uses daemon threads with queue-based IPC. This is the old approach
@@ -446,9 +518,9 @@ def _execute_with_thread_timeout(tool_func, args, agent, call_id, tool_name, cap
 
     result_queue = queue.Queue()
 
-    def call_func(current_call_id=call_id):
+    def call_func(current_ctx=ctx):
         try:
-            result = tool_func(**args, agent=agent, tool_call_id=current_call_id)
+            result = tool_func(**args, _ctx=current_ctx)
             result_queue.put(("success", result))
         except TOOL_EXEC_EXCEPTIONS as e:
             result_queue.put(("error", f"Error invoking tool '{tool_name}': {e}"))
@@ -540,9 +612,9 @@ def _deduplicate_tool_calls(tool_calls: list[dict]) -> list[dict]:
 
 def execute_tool_batch(
     tool_calls: list[dict],
-    agent: "TauErgon",
+    agent: TauErgon,
     reasoning: str | None = None,
-    audit_writer: "AuditWriter | None" = None,
+    audit_writer: AuditWriter | None = None,
 ) -> None:
     """Execute all tool calls and append results to agent context.
 
@@ -645,19 +717,44 @@ def execute_tool_batch(
 
     # ── Execute tools (with replacements using FULL question) ──
     for tc in tool_calls:
+        # Emit A2A chunk for tool call
+        _emit_a2a_chunk(
+            agent, "tool_call",
+            {"tool": tc["name"], "args": tc.get("args_dict", {})}
+        )
+
         if tc["id"] in replacement_map:
             question, _ = replacement_map[tc["id"]]
-            # Execute think with FULL detailed question
+            # Execute think with FULL detailed question (system call, bypass filter)
             result = execute_tool_call(
                 {"id": tc["id"], "name": "think", "args_dict": {"question": question}},
                 agent,
                 audit_writer=audit_writer,
+                system_call=True,
+                bypass_filter=True,
             )
         else:
             result = execute_tool_call(tc, agent, audit_writer=audit_writer)
             # Track unknown tools (for future replacement)
             if TOOLS.get(tc["name"]) is None:
                 agent.loop_detector.record_unknown_tool(tc["name"])
+
+        # Emit A2A chunk for tool result (truncated to 1000 chars)
+        # Detect error results by checking common error prefixes
+        _a2a_result = result[:1000]
+        if (_a2a_result.startswith("Error invoking tool") or
+                _a2a_result.startswith("Tool '") and "not found" in _a2a_result or
+                _a2a_result.startswith("Tool '") and "Did you mean" in _a2a_result or
+                "is not available" in _a2a_result):
+            _emit_a2a_chunk(
+                agent, "tool_error",
+                {"tool": tc["name"], "error_message": _a2a_result}
+            )
+        else:
+            _emit_a2a_chunk(
+                agent, "tool_result",
+                {"tool": tc["name"], "output": _a2a_result, "status": "success"}
+            )
 
         if tc["id"] in norm_warnings_map:
             fixes = "; ".join(norm_warnings_map[tc["id"]])

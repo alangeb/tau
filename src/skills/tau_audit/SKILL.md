@@ -1,6 +1,6 @@
 ---
 name: tau_audit
-description: Analyze Tau log files — agent behavior, errors, loops, tool usage, session patterns, API failures. Audit logs, analyze logs, session review, agent behavior, what went wrong, tool errors, loop detection, session stats (also load: bug_investigation, _taudoc, shell_scripting, tauskillmaintenance)
+description: "Analyze Tau log files — agent behavior, errors, loops, tool usage (also load: _taudoc, bug_investigation, error-recovery, shell_scripting, tauskillmaintenance, swe_bench)"
 category: analysis
 keywords: audit, analyze, logs, session, behavior, errors, loops, tool usage, API failure, what went wrong
 ---
@@ -11,18 +11,24 @@ keywords: audit, analyze, logs, session, behavior, errors, loops, tool usage, AP
 "analyze audit", "audit file", "context file", "tau log", "session review", "agent behavior", "what went wrong", "tool errors", "loop detection", "session stats", "API failure", "plan file", "analyze logs"
 
 ## Entry Types
-| Type | Fields |
-|------|--------|
+| Type | Key Fields |
+|------|------------|
 | `SESSION_START` | `pid`, `model`, `tools=N`, `cwd`, `nesting`, `version`, `branch`, `hash` |
-| `USER` | Content with `  | ` prefix |
-| `ASSISTANT` | `content_len=N`, `nesting=N` |
-| `TOOL_CALL` | `id=`, `original_name=`, `final_name=`, `fixes=`, `nesting=N` |
-| `TOOL_RESULT` | `id=`, `status=success/error`, `duration_ms=`, `bytes=`, `tool=` |
-| `TOOL_ERROR` | `id=`, `error_type=RuntimeError/TOOL_NOT_FOUND/TimeoutError/VALIDATION_ERROR` |
-| `TOOL_BLOCKED` | `id=`, `tool=`, `available=...` |
-| `FORK_START`/`FORK_END` | `task=`, `duration_s=`, `nesting=N` |
-| `SUBAGENT_START`/`SUBAGENT_END` | `task=`, `duration_s=`, `nesting=N` |
-| `CONSOLE_WARNING` | Content, `nesting=N` |
+| `SESSION_END` | `duration_s`, `tool_calls`, `tokens` |
+| `USER` | `type=manual\|synthetic`, `source=fork\|subagent` |
+| `ASSISTANT` | `content_len=N`, `type=response\|reasoning` |
+| `TOOL_CALL` | `id=`, `original_name=`, `final_name=`, `nesting=N` |
+| `TOOL_RESULT` | `id=`, `status=success/error`, `duration_ms=`, `bytes=` |
+| `TOOL_ERROR` | `error_type=RuntimeError/TOOL_NOT_FOUND/TimeoutError/VALIDATION_ERROR` |
+| `TOOL_BLOCKED` | `tool=`, `available=...` |
+| `FORK_START/END` | `task=`, `duration_s=`, `nesting=N` |
+| `SUBAGENT_START/END` | `task=`, `duration_s=`, `nesting=N` |
+| `COMPRESS_*` | `step=`, `bytes_before/after=`, `msgs_before/after=` |
+| `CONTEXT_*` | `count=`, `total=`, `bytes_total=` |
+| `CONSOLE_*` | Content, `nesting=N` |
+| `CONFIG_CHANGE` | `key=`, `old_value=`, `new_value=` |
+| `ERROR_RATE_ALERT` | `rate=`, `window_s=` |
+| `LOOP_DETECTION` | `type=`, `count=`, `duration_s=` |
 
 ## Key Patterns
 - Content lines: `  | ` prefix (2 spaces + pipe)
@@ -34,10 +40,10 @@ keywords: audit, analyze, logs, session, behavior, errors, loops, tool usage, AP
 
 ## Quick Stats
 ```bash
-python3 skills/tau_audit/analyze_audit.py <audit_file>
-python3 skills/tau_audit/batch_analyze.py <log_dir> --top 10 --sort errors
-python3 skills/tau_audit/audit_analyze.py tools        # Tool usage summary
-python3 skills/tau_audit/audit_analyze.py errors       # Error summary
+python3 skills/tau_audit/analyze_audit.py <audit_file>          # Single-file, all dimensions, JSON
+python3 skills/tau_audit/batch_analyze.py <log_dir> --top 10 --sort errors  # Multi-file
+python3 skills/tau_audit/audit_analyze.py tools                 # Tool usage summary
+python3 skills/tau_audit/audit_analyze.py errors                # Error summary
 ```
 
 ## Pattern Search
@@ -83,18 +89,8 @@ PID-based naming: `{pid}_{YYYYMMDDHHMMSS}_{counter}`
 | `comprehensive_tool_analysis.py` | Tool chains, latency, TOOL_BLOCKED |
 
 ## Related Skills
-- `info` — agent status and context usage
-- `web-research` — web content extraction
+- `_taudoc` — documentation structure
 - `bug_investigation` — root cause analysis
-- `context_management` — context windows
 - `shell_scripting` — audit log processing
-- `reference` — quick lookup for patterns
+- `tauskillmaintenance` — periodic skill maintenance
 - `swe_bench` — SWE-bench workflow
-
-- `error-recovery` — Handle tool errors
-- `git-advanced` — Advanced git
-- `skill_template` — Create new skill or modify existing skills
-- `dream` — Dream orchestrator
-- `_taudoc` — Maintain TauErgon documentation structure
-- `tauskillmaintenance` — Periodic skill maintenance
-- `performance` — Performance

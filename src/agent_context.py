@@ -7,6 +7,8 @@ DESIGN INVARIANT: Message alternation is maintained via synthetic bridges.
 See designs/DECISIONS.md §18 (Context Management) for the architectural rationale.
 """
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -14,16 +16,24 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 if TYPE_CHECKING:
     from agent_core import TauErgon
 
-from agent_console import _role_color, context_append_warning, context_validation_warning
-from agent_llm import DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS
+from agent_console import (
+    _role_color,
+    context_validation_warning,
+)
+from agent_audit_bridge import log_context_add, log_context_remove, log_context_merge, log_context_snapshot
+from agent_llm_models import DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS
 from agent_message_utils import (
     _sanitize_content,
     _sanitize_text,
-    get_last_real_user_prompt,
     is_synthetic_message,
-    make_synthetic_user,
 )
 from agent_models import Colors
+from agent_context_validation import (
+    validate_context,
+    validate_on_mutation,
+    get_pending_tool_ids as _get_pending_tool_ids,
+    validate_tool_resolution as _validate_tool_resolution,
+)
 
 # --- Module-level helpers ---
 
@@ -32,9 +42,53 @@ from agent_models import Colors
 _PENDING_TOOL_MARKER = "[PENDING: deferred; resolves after fork. Do not assume result.]"
 _FORK_TOOL_MARKER = "[FORK: You are the fork. THIS IS SYNCHRONOUS — you block until complete, then return your result directly. There is NO background execution, NO 'reporting back later'. You are the fork. Task: {task}]"
 
+# User message prefix format: [U:TYPE | N:stack] Content
+# Types: real, meta, confirm, inject, system, fork, subagent, redirect
+_USER_PREFIX_PATTERN = "[U:"
+_USER_PREFIX_FORMAT = "[U:{type} | N:{stack}] "
+
+# Category-to-type mapping for synthetic user messages
+_SYNTHETIC_CATEGORY_TO_TYPE = {
+    "continuation": "meta",
+    "turn_started": "meta",
+    "turn_closed": "meta",
+    "eot_confirmation": "confirm",
+    "parent_inject": "inject",
+    "escalation": "system",
+    "recovery": "system",
+}
+
+
+def _make_user_prefix(user_type: str, nesting_stack: str) -> str:
+    """Create a user message prefix."""
+    return _USER_PREFIX_FORMAT.format(type=user_type, stack=nesting_stack)
+
+
+def _is_synthetic_user_prefix(content: str) -> bool:
+    """Check if content has a synthetic user message prefix."""
+    if not isinstance(content, str):
+        return False
+    return content.startswith(_USER_PREFIX_PATTERN) and content != "[U:real | N:"
+
+
+def _get_user_type_from_prefix(content: str) -> str | None:
+    """Extract user type from prefix, or None if no prefix."""
+    if not isinstance(content, str) or not content.startswith(_USER_PREFIX_PATTERN):
+        return None
+    # Parse [U:TYPE | N:stack]
+    try:
+        end = content.index("]")
+        prefix = content[1:end]  # "U:TYPE | N:stack"
+        type_part = prefix.split(" | ")[0]  # "U:TYPE"
+        return type_part[2:]  # "TYPE"
+    except (ValueError, IndexError):
+        return None
+
+
 __all__ = ["TauContext", "ContextMessage", "TauContextInstance",
-           "get_last_real_user_prompt", "is_synthetic_message",
-           "make_synthetic_user"]
+           "is_synthetic_message",
+           "_is_synthetic_user_prefix",
+           "_get_user_type_from_prefix", "_make_user_prefix"]
 
 ContextMessage: TypeAlias = dict[str, Any]
 TauContextInstance: TypeAlias = "TauContext"
@@ -54,13 +108,15 @@ class TauContext:
     from the message list to avoid polluting conversation history.
     """
 
-    def __init__(self, messages: list[dict] | None = None):
+    def __init__(self, messages: list[dict] | None = None, nesting_stack: str = "0"):
         self._messages: list[dict] = list(messages) if messages else []
+        self._metadata: dict[str, Any] = {}
         self._fork_metadata: dict[str, Any] = {
             "pending_tool_ids": set(),
             "fork_tool_call_id": None,
             "fork_task": None,
         }
+        self.nesting_stack: str = nesting_stack
         self._validate_on_mutation()
 
     # --- List protocol ---
@@ -79,39 +135,33 @@ class TauContext:
     def __repr__(self) -> str:
         return f"TauContext({len(self)} msgs)"
 
-    # --- Validation ---
-    def _validate_on_mutation(self) -> None:
-        """Validate context after mutation, printing warnings for errors.
+    # --- Metadata ---
+    def set_metadata(self, **kwargs) -> None:
+        """Set metadata fields for context file save.
 
-        Suppresses unresolved tool-call warnings when context is mid-batch
-        (last message is assistant with tool_calls or a tool result).
+        Args:
+            **kwargs: Metadata key-value pairs (e.g., pid, working_dir, start_time, model, agent_name).
         """
-        errors = self.validate()
-        if errors:
-            last = self._messages[-1] if self._messages else None
-            in_progress = last is not None and (
-                last.get("role") == "tool"
-                or (last.get("role") == "assistant" and last.get("tool_calls"))
-            )
-            if in_progress:
-                errors = [e for e in errors if "unresolved tool call" not in e]
-            if errors:
-                # Audit: log context state alongside the warning
-                from agent_audit_bridge import log_console_warning
-                last_role = last.get("role", "none") if last else "empty"
-                log_console_warning(
-                    f"Context validation ({len(self._messages)} msgs, last={last_role}): "
-                    + "; ".join(errors)
-                )
-                context_append_warning(errors)
+        self._metadata.update(kwargs)
+
+    def get_metadata(self) -> dict:
+        """Return a copy of the context metadata."""
+        return dict(self._metadata)
+
+    # --- Validation (delegated to agent_context_validation) ---
+    def _validate_on_mutation(self) -> None:
+        """Validate context after mutation, printing warnings for errors."""
+        validate_on_mutation(self._messages)
 
     # --- Mutations ---
     def _append(self, msg: dict) -> None:
         """Internal method to append a message to the context."""
         self._messages.append(msg)
+        log_context_add(1, len(self._messages), self.bytes_size())
 
     def clear(self) -> None:
         """Clear all messages except the system prompt (preserved at index 0)."""
+        removed = len(self._messages) - 1  # System prompt preserved
         system = (
             self._messages[0]
             if self._messages and self._messages[0].get("role") == "system"
@@ -120,26 +170,80 @@ class TauContext:
         self._messages.clear()
         if system is not None:
             self._messages.append(system)
+        log_context_remove(removed, len(self._messages), self.bytes_size())
         self._validate_on_mutation()
 
     def extend(self, msgs: list[dict]) -> None:
         """Extend the context by appending multiple messages at once."""
         self._messages.extend(msgs)
+        log_context_add(len(msgs), len(self._messages), self.bytes_size())
         self._validate_on_mutation()
 
     def append_synthetic_user(self, category: str, content: str) -> None:
         """Append a synthetic user message to the context.
 
         Synthetic messages are system-injected bridges that maintain valid
-        OpenAI message alternation. They are marked with SYNTHETIC_PREFIX
+        OpenAI message alternation. They are prefixed with [U:TYPE | N:stack]
         so they can be detected and excluded from undo boundaries and
         consecutive-role validation.
 
+        Logs to console (white) and audit for visibility.
+
+        WARNING: If context ends with tool results, use
+        `append_synthetic_user_with_bridge()` instead to maintain alternation.
+
         Args:
-            category: The synthetic message category (e.g., 'end_turn_reminder').
+            category: The synthetic message category (e.g., 'eot_confirmation').
             content: The message content (without prefix).
         """
-        self._append(make_synthetic_user(category, _sanitize_text(content)))
+        # Map category to type
+        user_type = _SYNTHETIC_CATEGORY_TO_TYPE.get(category, "system")
+        # Create prefixed content
+        prefix = _make_user_prefix(user_type, self.nesting_stack)
+        prefixed_content = prefix + _sanitize_text(content)
+        # Log synthetic message to console and audit
+        from agent_console import synthetic_user
+        synthetic_user(category, content)
+        self._append({"role": "user", "content": prefixed_content})
+
+    def append_synthetic_user_with_bridge(self, category: str, content: str,
+                                           bridge_text: str = "[Processing new input...]") -> None:
+        """Append a synthetic user message with an assistant bridge if needed.
+
+        Ensures OpenAI alternation compliance: if the context ends with tool
+        results, an assistant message, or a user message, a synthetic assistant
+        message is added first. If the context already ends with an assistant
+        message (no pending tool calls), the bridge is skipped.
+
+        This is the PREFERRED method for injecting synthetic user messages
+        during tool execution. See DECISIONS.md §19.3–19.5.
+
+        Args:
+            category: The synthetic message category (e.g., 'parent_inject').
+            content: The message content (without prefix).
+            bridge_text: Text for the assistant bridge message (default: minimal).
+        """
+        # Check if context ends with tool results or user message (bridge needed)
+        needs_bridge = False
+        if self._messages:
+            last = self._messages[-1]
+            if last.get("role") == "tool":
+                needs_bridge = True
+            elif last.get("role") == "assistant" and last.get("tool_calls"):
+                # Assistant with tool_calls - tool results should follow
+                # If they haven't yet, we still need a bridge
+                needs_bridge = True
+            elif last.get("role") == "user":
+                # Context ends with user message — need assistant bridge
+                # before appending another (synthetic) user message
+                needs_bridge = True
+
+        if needs_bridge:
+            # Add synthetic assistant bridge first
+            self.append_assistant(bridge_text, synthetic=True)
+
+        # Add synthetic user message
+        self.append_synthetic_user(category, content)
 
     def undo(self) -> None:
         """Undo the last conversation turn by removing messages from the last user message onward.
@@ -162,380 +266,20 @@ class TauContext:
             return
         if last_user_idx == 0 and self._messages[0].get("role") == "system":
             return
+        removed = len(self._messages) - last_user_idx
         self._messages = self._messages[:last_user_idx]
+        log_context_remove(removed, len(self._messages), self.bytes_size())
         self._validate_on_mutation()
 
-    # --- Validation ---
+    # --- Validation (delegated to agent_context_validation) ---
     def validate(self) -> list[str]:
-        """Validate the entire context against OpenAI API compliance rules.
+        """Validate the entire context against OpenAI API compliance rules."""
+        return validate_context(self._messages)
 
-        Checks:
-        - Exactly one system message at index 0
-        - No consecutive messages with same role (tool exceptions allowed)
-        - Valid message structure and required fields
-        - Proper tool call/tool result pairing
-        - Valid tool_call_id references
-        """
-        errors: list[str] = []
-        valid_roles = {"system", "user", "assistant", "tool"}
-
-        if not self._messages:
-            return errors
-
-        # Exactly one system message required
-        system_count = sum(1 for m in self._messages if isinstance(m, dict) and m.get("role") == "system")
-        if system_count != 1:
-            errors.append(
-                f"Context must have exactly one system message (found {system_count})"
-            )
-
-        # Collect tool_call_ids from assistant messages
-        tool_call_ids = set()
-        for msg in self._messages:
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                for tool_call in msg.get("tool_calls", []):
-                    if isinstance(tool_call, dict):
-                        tool_id = tool_call.get("id")
-                        if tool_id:
-                            tool_call_ids.add(tool_id)
-
-        # Validate each message individually
-        for i, msg in enumerate(self._messages):
-            if not isinstance(msg, dict):
-                errors.append(f"Message {i} is not a dictionary")
-                continue
-
-            role = msg.get("role")
-            if role not in valid_roles:
-                errors.append(
-                    f"Message {i} has invalid role '{role}' "
-                    "(must be system, user, assistant, or tool)"
-                )
-                continue
-
-            # Content required for all roles
-            if "content" not in msg:
-                errors.append(f"Message {i} missing required 'content' field")
-            else:
-                content = msg["content"]
-                if content is not None and not isinstance(content, (str, list)):
-                    errors.append(
-                        f"Message {i} has invalid content type: {type(content)} "
-                        "(must be str or list)"
-                    )
-
-            # Validate assistant tool_calls
-            if role == "assistant":
-                tool_calls = msg.get("tool_calls", [])
-                if not isinstance(tool_calls, list):
-                    errors.append(f"Message {i} tool_calls is not a list")
-                else:
-                    seen_ids = set()
-                    for tool_call in tool_calls:
-                        if not isinstance(tool_call, dict):
-                            errors.append(f"Message {i} tool_call is not a dictionary")
-                            continue
-
-                        tool_call_id = tool_call.get("id")
-                        if not tool_call_id:
-                            errors.append(f"Message {i} tool_call missing 'id' field")
-                        elif tool_call_id in seen_ids:
-                            errors.append(
-                                f"Message {i} has duplicate tool_call_id: {tool_call_id}"
-                            )
-                        else:
-                            seen_ids.add(tool_call_id)
-
-                        # OpenAI tool_call structure
-                        if "id" not in tool_call:
-                            errors.append("tool_call missing 'id' field")
-                        if "function" not in tool_call:
-                            errors.append("tool_call missing 'function' field")
-                        else:
-                            func = tool_call["function"]
-                            if "name" not in func:
-                                errors.append("function missing 'name' field")
-                            if "arguments" not in func:
-                                errors.append("function missing 'arguments' field")
-                            else:
-                                if not isinstance(func["arguments"], str):
-                                    errors.append("function arguments must be string")
-                                else:
-                                    try:
-                                        json.loads(func["arguments"])
-                                    except json.JSONDecodeError:
-                                        errors.append(
-                                            "function arguments must be valid JSON"
-                                        )
-
-            # OpenAI content rules
-            if role != "tool":
-                content = msg.get("content")
-                if content is None:
-                    if not (role == "assistant" and msg.get("tool_calls")):
-                        errors.append("Content cannot be None")
-                elif isinstance(content, str) and not content.strip():
-                    if not (role == "assistant" and msg.get("tool_calls")):
-                        errors.append("Content cannot be empty string")
-                elif isinstance(content, list) and not content:
-                    errors.append("Content list cannot be empty")
-
-            # Tool msg requires: tool_call_id, name, content
-            if role == "tool":
-                tool_call_id = msg.get("tool_call_id")
-                if tool_call_id is None:
-                    errors.append("tool message missing tool_call_id")
-                elif not isinstance(tool_call_id, str) or not tool_call_id.strip():
-                    errors.append("tool_call_id must be non-empty string")
-
-                if "name" not in msg:
-                    errors.append(
-                        "tool message missing 'name' field (required by OpenAI spec)"
-                    )
-                elif not isinstance(msg["name"], str) or not msg["name"].strip():
-                    errors.append("tool message 'name' must be non-empty string")
-
-                content = msg.get("content")
-                if content is None:
-                    pass  # Allowed — treated as empty tool result
-                elif not isinstance(content, str):
-                    errors.append("tool message 'content' must be a string")
-
-        # Validate cross-message sequencing rules
-        last_role = None
-        pending_tool_ids: set[str] = set()
-        tool_call_info: dict[str, str] = {}
-
-        for i, msg in enumerate(self._messages):
-            if not isinstance(msg, dict):
-                continue
-
-            role = msg.get("role")
-
-            if role == "assistant":
-                if pending_tool_ids:
-                    errors.append(
-                        f"Message {i}: Assistant message with pending tool calls "
-                        f"({pending_tool_ids}). All tool results must be received first."
-                    )
-                for tool_call in msg.get("tool_calls", []):
-                    if isinstance(tool_call, dict) and tool_call.get("id"):
-                        tool_id = tool_call["id"]
-                        func = tool_call.get("function", {})
-                        func_name = func.get("name", "unknown")
-                        func_args = func.get("arguments", "")
-                        tool_call_info[tool_id] = f"{func_name}({func_args})"
-                        pending_tool_ids.add(tool_id)
-
-            elif role == "tool":
-                tool_call_id = msg.get("tool_call_id")
-                if tool_call_id:
-                    if tool_call_id not in pending_tool_ids:
-                        errors.append(
-                            f"Message {i}: Tool result references unknown "
-                            f"tool_call_id '{tool_call_id}'"
-                        )
-                    else:
-                        pending_tool_ids.remove(tool_call_id)
-
-            if last_role == "tool" and role == "user" and not is_synthetic_message(msg):
-                errors.append(
-                    f"Message {i}: Tool message must be followed by assistant, not user"
-                )
-
-            if i > 0 and role == "system":
-                errors.append(
-                    f"Message {i} has 'system' role after first message "
-                    "(should be user/assistant)"
-                )
-
-            if (
-                i == 1
-                and role == "assistant"
-                and self._messages[0].get("role") == "system"
-            ):
-                errors.append(
-                    f"Message {i}: Assistant message must be preceded by user "
-                    "message after system prompt"
-                )
-
-            # Consecutive-role check: exclude synthetic messages (system-injected bridges)
-            # BUT update last_role for synthetic messages so they break consecutive sequences
-            if is_synthetic_message(msg):
-                last_role = role  # Bridge breaks the chain
-            elif last_role is not None and role == last_role and role != "tool":
-                errors.append(
-                    f"Message {i} has consecutive messages with same role '{role}'"
-                )
-                last_role = role
-            else:
-                last_role = role
-
-        if pending_tool_ids:
-            unresolved_details = [
-                tool_call_info[tid] for tid in pending_tool_ids if tid in tool_call_info
-            ]
-            details_str = (
-                ", ".join(unresolved_details)
-                if unresolved_details
-                else str(pending_tool_ids)
-            )
-            errors.append(
-                f"Context has {len(pending_tool_ids)} unresolved tool call(s): "
-                f"{pending_tool_ids}. Tool calls: {details_str}. "
-                "All tool results should be received before next assistant message."
-            )
-
-        for i, msg in enumerate(self._messages):
-            if not isinstance(msg, dict):
-                continue
-            if msg.get("role") == "tool":
-                tool_call_id = msg.get("tool_call_id")
-                if tool_call_id and tool_call_id not in tool_call_ids:
-                    errors.append(
-                        f"Message {i} tool result references non-existent "
-                        f"tool_call_id: {tool_call_id}"
-                    )
-
-        return errors
-
-    # --- Recovery ---
-    def attempt_recovery(self) -> tuple[bool, list[str]]:
-        """Attempt to auto-repair common context validation errors.
-
-        Fixes:
-        - Missing system message (adds one at index 0)
-        - Consecutive same-role messages (inserts synthetic user bridges)
-        - Assistant without preceding user after system (inserts synthetic bridge)
-        - Unresolved tool calls (adds placeholder tool results)
-        - Malformed messages (non-dict entries are removed)
-
-        Uses snapshot/rollback: if recovery makes context worse (more errors),
-        the original state is restored.
-
-        Returns:
-            Tuple of (recovered: bool, fixes_applied: list[str])
-            recovered=True means all fixable issues were addressed.
-        """
-        fixes: list[str] = []
-        # Snapshot for rollback
-        original_messages = list(self._messages)
-        original_error_count = len(self.validate())
-        try:
-            # 1. Remove malformed messages (non-dict entries)
-            original_len = len(self._messages)
-            self._messages = [
-                msg for msg in self._messages
-                if isinstance(msg, dict)
-            ]
-            removed = original_len - len(self._messages)
-            if removed:
-                fixes.append(f"Removed {removed} malformed (non-dict) message(s)")
-
-            # 2. Fix missing system message
-            system_count = sum(1 for m in self._messages if m.get("role") == "system")
-            if system_count == 0 and self._messages:
-                self._messages.insert(0, {
-                    "role": "system",
-                    "content": "[Recovery: System message was missing]",
-                })
-                fixes.append("Added missing system message")
-
-            # 3. Fix assistant at index 1 without preceding user (after system)
-            if (len(self._messages) >= 2
-                    and self._messages[0].get("role") == "system"
-                    and self._messages[1].get("role") == "assistant"):
-                self._messages.insert(1, make_synthetic_user(
-                    "recovery",
-                    "Context repair: inserted bridge between system and assistant"
-                ))
-                fixes.append("Inserted synthetic user bridge after system message")
-
-            # 4. Fix consecutive same-role messages by inserting synthetic bridges
-            i = 1
-            while i < len(self._messages):
-                if not isinstance(self._messages[i], dict):
-                    i += 1
-                    continue
-                curr = self._messages[i]
-                prev = self._messages[i - 1] if i > 0 else None
-                if (prev is not None
-                        and isinstance(prev, dict)
-                        and curr.get("role") in {"user", "assistant"}
-                        and prev.get("role") == curr.get("role")
-                        and not is_synthetic_message(curr)):
-                    role = curr.get("role", "unknown")
-                    self._messages.insert(i, make_synthetic_user(
-                        "recovery",
-                        f"Context repair: bridge between consecutive {role} messages"
-                    ))
-                    fixes.append(
-                        f"Inserted synthetic bridge between consecutive {role} messages at index {i}"
-                    )
-                    i += 2
-                else:
-                    i += 1
-
-            # 5. Fix unresolved tool calls by adding placeholder results
-            pending = self.get_pending_tool_ids()
-            if pending:
-                for tid in sorted(pending):
-                    self._messages.append({
-                        "role": "tool",
-                        "tool_call_id": tid,
-                        "name": "unknown",
-                        "content": "[Recovery: placeholder result for unresolved tool call]",
-                    })
-                fixes.append(f"Added placeholder results for {len(pending)} unresolved tool call(s)")
-
-            # 6. Fix tool message followed by user (non-synthetic)
-            i = 0
-            while i < len(self._messages) - 1:
-                if (self._messages[i].get("role") == "tool"
-                        and self._messages[i + 1].get("role") == "user"
-                        and not is_synthetic_message(self._messages[i + 1])):
-                    self._messages.insert(i + 1, make_synthetic_user(
-                        "recovery",
-                        "Context repair: bridge between tool and user message"
-                    ))
-                    fixes.append(
-                        f"Inserted synthetic bridge between tool and user at index {i + 1}"
-                    )
-                    i += 2
-                else:
-                    i += 1
-
-            # Rollback check: if recovery made things worse, restore original
-            new_error_count = len(self.validate())
-            if new_error_count > original_error_count:
-                self._messages = original_messages
-                return False, []
-
-            if not fixes:
-                return False, []
-            return new_error_count == 0, fixes
-
-        except Exception:
-            # Recovery must never crash — restore original state
-            self._messages = original_messages
-            return False, ["Recovery failed — context may still be invalid"]
-
-    # --- Pending state ---
+    # --- Pending state (delegated to agent_context_validation) ---
     def get_pending_tool_ids(self) -> set[str]:
         """Return the set of tool_call_ids that have not yet received a matching tool result."""
-        pending = set()
-        for msg in self._messages:
-            if not isinstance(msg, dict):
-                continue
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls", []):
-                    if isinstance(tc, dict) and tc.get("id"):
-                        pending.add(tc["id"])
-            elif msg.get("role") == "tool":
-                tid = msg.get("tool_call_id")
-                if tid:
-                    pending.discard(tid)
-        return pending
+        return _get_pending_tool_ids(self._messages)
 
     def is_tool_pending(self) -> bool:
         """Check if any tool calls in the context are awaiting results."""
@@ -543,13 +287,7 @@ class TauContext:
 
     def validate_tool_resolution(self) -> list[str]:
         """Validate that all tool calls have been resolved with matching tool results."""
-        pending = self.get_pending_tool_ids()
-        if pending:
-            return [
-                f"Context has {len(pending)} unresolved tool call(s): {pending}. "
-                "All tool results should be received before next assistant message."
-            ]
-        return []
+        return _validate_tool_resolution(self._messages)
 
     # --- Token estimation ---
     def estimate_tokens(self, pending_tokens: int = 0) -> int:
@@ -598,29 +336,50 @@ class TauContext:
 
     # --- Persistence ---
     def load_from_file(self, context_file: Path) -> bool:
-        """Load context messages from a JSON file. Returns True on success."""
+        """Load context messages from a JSON file. Returns True on success.
+
+        Supports both legacy bare-array format and new metadata-wrapped format.
+        """
         if not context_file.exists():
             return False
         try:
             with open(context_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.set_messages(data)
+            if isinstance(data, dict) and "messages" in data:
+                # New format with metadata
+                if not isinstance(data["messages"], list):
+                    return False
+                self._metadata = data.get("metadata", {})
+                self.set_messages(data["messages"])
+            elif isinstance(data, list):
+                # Legacy bare-array format
+                self.set_messages(data)
+            else:
+                return False
             return True
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, IOError, TypeError, ValueError):
             self.clear()
             return False
 
-    def save_to_file(self, context_file: Path, force: bool = False) -> None:
+    def save_to_file(self, context_file: Path, force: bool = False) -> bool:
         """Save the current context to a JSON file.
 
+        Writes a metadata block alongside messages for context provenance.
         Skips saving if there are pending tool calls (unless force=True).
+        Returns True if file was written, False otherwise.
         """
         pending = self.get_pending_tool_ids()
         if pending and not force:
-            return
-        if len(self._messages) >= 3:
-            with open(context_file, "w", encoding="utf-8") as f:
-                json.dump(self._messages, f, indent=2)
+            return False
+        if len(self._messages) < 3:
+            return False
+        data = {
+            "metadata": self._metadata,
+            "messages": self._messages,
+        }
+        with open(context_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return True
 
     def bytes_size(self) -> int:
         """Calculate the size of the serialized context in bytes."""
@@ -635,10 +394,15 @@ class TauContext:
             )
         self._append({"role": "system", "content": _sanitize_text(content)})
 
-    def append_user(self, content: str | list) -> None:
+    def append_user(self, content: str | list, user_type: str = "real") -> None:
         """Append a user message to the context.
 
         Emits warnings for invalid sequences (consecutive users, tool->user, etc).
+
+        Args:
+            content: The message content (without prefix).
+            user_type: The user message type (real, fork, subagent, redirect).
+                Defaults to "real" for backward compatibility.
         """
         if not self._messages:
             _emit_context_validation_warning(
@@ -671,18 +435,40 @@ class TauContext:
                 f"Invalid context state: cannot append user after role '{last_role}'.",
             )
 
-        self._append({"role": "user", "content": _sanitize_content(content)})
+        # Create prefixed content
+        prefix = _make_user_prefix(user_type, self.nesting_stack)
+        if isinstance(content, str):
+            prefixed_content = prefix + _sanitize_content(content)
+        else:
+            # For list content (multimodal), prefix the text parts
+            prefixed_content = [
+                {"type": "text", "text": prefix + _sanitize_text(item["text"])}
+                if item.get("type") == "text" else item
+                for item in content
+            ]
+        self._append({"role": "user", "content": prefixed_content})
 
     def append_assistant(
         self,
         content: str | None,
         tool_calls: list[dict] | None = None,
         reasoning: str | None = None,
+        synthetic: bool = False,
     ) -> None:
         """Append an assistant message to the context.
 
         May include content, tool_calls, or both. Emits warnings for invalid sequences.
+
+        Args:
+            content: Message content.
+            tool_calls: Tool calls (if any).
+            reasoning: Reasoning content (if any).
+            synthetic: If True, log as synthetic/injected message (white console, audit).
         """
+        # Log synthetic assistant messages to console and audit
+        if synthetic and content is not None:
+            from agent_console import synthetic_assistant
+            synthetic_assistant(content)
         if not self._messages:
             _emit_context_validation_warning(
                 "Attempting to append assistant message to empty context.",
@@ -823,7 +609,10 @@ class TauContext:
 
         See designs/DECISIONS.md §18.7 for the rationale.
         """
+        removed = sum(1 for m in self._messages if is_synthetic_message(m))
         self._messages = [m for m in self._messages if not is_synthetic_message(m)]
+        if removed:
+            log_context_remove(removed, len(self._messages), self.bytes_size())
         # Intentionally NO _validate_on_mutation() here.
         # Removing bridges creates transient consecutive same-role messages.
         # Validation runs after merge_consecutive_assistants() in close_turn().
@@ -958,6 +747,9 @@ class TauContext:
             else:
                 merged.append(dict(msg))
 
+        # Log the merge: count = original - merged
+        if len(merged) < len(self._messages):
+            log_context_merge("assistant", "assistant", len(self._messages) - len(merged))
         self._messages = merged
 
     @staticmethod
@@ -1031,6 +823,8 @@ class TauContext:
             self.append_synthetic_user("turn_closed", f"Turn closed: {reason}")
         if self._messages[-1].get("role") in ("user", "tool"):
             self.append_assistant(reason)
+        # Log context snapshot at turn boundary
+        log_context_snapshot(len(self._messages), self.bytes_size(), DEFAULT_MAX_CONTEXT_TOKENS)
 
     # --- Fork context preparation ---
     def prepare_fork_context(
@@ -1093,7 +887,7 @@ class TauContext:
             sanitized["reasoning"] = _sanitize_text(msg["reasoning"])
         return sanitized
 
-    def copy(self) -> "TauContext":
+    def copy(self) -> TauContext:
         """Create a shallow copy of the context (messages only, not fork metadata)."""
         return TauContext(self._messages.copy())
 
@@ -1121,7 +915,7 @@ class TauContext:
     def compress(
         self,
         target_percentage: float,
-        agent: "TauErgon",
+        agent: TauErgon,
         tools: list | None = None,
         last_known_tokens: int | None = None,
         max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
@@ -1149,6 +943,7 @@ class TauContext:
                 max_output_tokens=max_output_tokens,
             )
             self.set_messages(compressed_messages)
+            log_context_snapshot(len(self._messages), self.bytes_size(), max_context_tokens)
             return summary is not None
         except (TypeError, ValueError, KeyError, RuntimeError, OSError):
             return False

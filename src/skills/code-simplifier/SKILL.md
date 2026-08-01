@@ -1,6 +1,6 @@
 ---
 name: code-simplifier
-description: Simplify code for clarity, consistency, maintainability — preserve functionality. Simplify code, refactor, clean code, reduce complexity (also load: code-review-workflow, review, python_best_practices)
+description: "Simplify code for clarity, consistency, maintainability — preserve functionality. Refactor, clean code (also load: code-review-workflow, review, python_best_practices, caveman)"
 category: coding
 keywords: simplify, refactor, clean code, reduce complexity, improve readability, make clearer, code clarity
 ---

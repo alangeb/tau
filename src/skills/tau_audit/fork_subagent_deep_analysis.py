@@ -5,23 +5,14 @@ Extracts: fork/subagent statistics, patterns, distributions, nesting, effectiven
 """
 
 import sys
-import os
 import re
+import os
 import json
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
-from datetime import datetime
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'skills', 'tau_audit'))
+from _audit_parse import parse_line, strip_quotes
 
-def parse_timestamp(line):
-    m = re.match(r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)', line)
-    if m:
-        try:
-            return datetime.fromisoformat(m.group(1))
-        except:
-            return None
-    return None
 
 def analyze_single_audit(filepath):
     """Analyze a single audit file for fork/subagent data."""
@@ -29,199 +20,84 @@ def analyze_single_audit(filepath):
         'filepath': str(filepath),
         'basename': os.path.basename(filepath),
     }
-    
+
     try:
         with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
-    except:
+    except Exception:
         result['error'] = 'read_failed'
         return result
-    
-    # Count entry types
+
+    # Counters
     entry_types = Counter()
-    fork_calls = 0
-    subagent_calls = 0
+    fork_calls_content = 0
+    subagent_calls_content = 0
     fork_tasks = []
     subagent_tasks = []
-    fork_start_entries = []
-    subagent_start_entries = []
-    fork_end_entries = 0
-    subagent_end_entries = 0
-    nesting_depths = []
-    nesting_line_indices = []
-    ghost_session = False
-    session_starts = 0
-    has_nesting_markers = False
-    
-    # Track fork/subagent timing
-    fork_durations = []
-    subagent_durations = []
-    fork_start_times = {}
-    subagent_start_times = {}
-    
-    # Track nesting levels
-    current_nesting = 0
+
+    for line in lines:
+        record = parse_line(line)
+        if record is not None:
+            entry_types[record.record_type] += 1
+
+            if record.record_type in ('FORK_START', 'SUBAGENT_START'):
+                task = strip_quotes(record.fields.get('task', ''))
+                if task and len(task) < 200:
+                    if record.record_type == 'FORK_START':
+                        fork_tasks.append(task)
+                    else:
+                        subagent_tasks.append(task)
+
+    # Count from content patterns (separate pass for accuracy)
+    fork_calls_content = 0
+    subagent_calls_content = 0
+    for line in lines:
+        if line.startswith('  | '):
+            fc, sc = _count_calls_in_text(line[4:])
+            fork_calls_content += fc
+            subagent_calls_content += sc
+
+    # Compute max nesting from entry types
     max_nesting = 0
-    nesting_samples = []
-    
-    # Track fork/subagent in TOOL_CALL entries
-    tool_call_count = 0
-    tool_result_count = 0
-    
-    for line_idx, line in enumerate(lines):
-        stripped = line.strip()
-        
-        # Count entry types
-        entry_m = re.match(r'^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]\s+(\w+)', line)
-        if entry_m:
-            entry_types[entry_m.group(2)] += 1
-        
-        # SESSION_START count
-        if 'SESSION_START' in stripped:
-            session_starts += 1
-        
-        # Fork calls from tool content (skill/fork/subagent patterns)
-        if '  | ' in line:
-            fork_m = re.findall(r'fork\(\s*task\s*=\s*["\']([^"\']+)["\']', line)
-            for f in fork_m:
-                fork_calls += 1
-                if len(f) < 200:
-                    fork_tasks.append(f)
-            
-            subagent_m = re.findall(r'subagent\(\s*task\s*=\s*["\']([^"\']+)["\']', line)
-            for s in subagent_m:
-                subagent_calls += 1
-                if len(s) < 200:
-                    subagent_tasks.append(s)
-        
-        # Fork/subagent from structured entries
-        if 'FORK_START' in stripped:
-            fork_start_entries.append(line_idx)
-            task_m = re.search(r"task='([^']+)'", stripped)
-            if task_m:
-                task = task_m.group(1)
-                if len(task) < 200:
-                    fork_tasks.append(task)
-            
-            # Track nesting
-            nesting_m = re.search(r'nesting=(\d+)', stripped)
-            if nesting_m:
-                depth = int(nesting_m.group(1))
-                nesting_depths.append(depth)
-                nesting_line_indices.append(line_idx)
-                has_nesting_markers = True
-            
-            # Track timing
-            ts_m = re.match(r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]', stripped)
-            if ts_m:
-                try:
-                    ts = datetime.fromisoformat(ts_m.group(1))
-                    fork_start_times[line_idx] = ts
-                except:
-                    pass
-        
-        if 'FORK_END' in stripped:
-            fork_end_entries += 1
-            # Calculate duration if we have start time
-            if line_idx in fork_start_times:
-                try:
-                    end_ts = datetime.fromisoformat(
-                        re.match(r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]', stripped).group(1)
-                    )
-                    duration = (end_ts - fork_start_times[line_idx]).total_seconds()
-                    fork_durations.append(duration)
-                except:
-                    pass
-        
-        if 'SUBAGENT_START' in stripped:
-            subagent_start_entries.append(line_idx)
-            task_m = re.search(r"task='([^']+)'", stripped)
-            if task_m:
-                task = task_m.group(1)
-                if len(task) < 200:
-                    subagent_tasks.append(task)
-            
-            nesting_m = re.search(r'nesting=(\d+)', stripped)
-            if nesting_m:
-                depth = int(nesting_m.group(1))
-                nesting_depths.append(depth)
-                nesting_line_indices.append(line_idx)
-                has_nesting_markers = True
-            
-            ts_m = re.match(r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]', stripped)
-            if ts_m:
-                try:
-                    ts = datetime.fromisoformat(ts_m.group(1))
-                    subagent_start_times[line_idx] = ts
-                except:
-                    pass
-        
-        if 'SUBAGENT_END' in stripped:
-            if line_idx in subagent_start_times:
-                try:
-                    end_ts = datetime.fromisoformat(
-                        re.match(r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]', stripped).group(1)
-                    )
-                    duration = (end_ts - subagent_start_times[line_idx]).total_seconds()
-                    subagent_durations.append(duration)
-                except:
-                    pass
-        
-        # Tool call/result counts
-        if 'TOOL_CALL' in stripped:
-            tool_call_count += 1
-        if 'TOOL_RESULT' in stripped:
-            tool_result_count += 1
-    
+    for line in lines:
+        record = parse_line(line)
+        if record is not None:
+            if record.record_type in ('FORK_START', 'SUBAGENT_START'):
+                max_nesting = max(max_nesting, record.nesting)
+
     # Detect ghost sessions
     session_start_count = entry_types.get('SESSION_START', 0)
     fork_start_count = entry_types.get('FORK_START', 0)
     subagent_start_count = entry_types.get('SUBAGENT_START', 0)
     ghost_session = session_start_count > 5 and (fork_start_count + subagent_start_count) == 0
-    
-    # Compute max nesting from nesting_depths
-    for i, depth in enumerate(nesting_depths):
-        if i > 0:
-            # Check if this is a new fork/subagent (not an end)
-            line = lines[nesting_line_indices[i]] if nesting_line_indices[i] < len(lines) else ''
-            if 'START' in line:
-                max_nesting = max(max_nesting, depth)
-    
-    # Also compute max nesting from content patterns
-    for line in lines:
-        nesting_m = re.search(r'nesting=(\d+)', line)
-        if nesting_m:
-            max_nesting = max(max_nesting, int(nesting_m.group(1)))
-    
-    # Determine total forks/subagents (entry-based)
-    total_fork_entries = entry_types.get('FORK_START', 0)
-    total_subagent_entries = entry_types.get('SUBAGENT_START', 0)
-    total_fork_ends = entry_types.get('FORK_END', 0)
-    total_subagent_ends = entry_types.get('SUBAGENT_END', 0)
-    
+
     result.update({
         'entry_types': dict(entry_types),
-        'fork_calls_content': fork_calls,
-        'subagent_calls_content': subagent_calls,
+        'fork_calls_content': fork_calls_content,
+        'subagent_calls_content': subagent_calls_content,
         'fork_tasks_sample': fork_tasks[:20],
         'subagent_tasks_sample': subagent_tasks[:20],
-        'fork_start_entries': total_fork_entries,
-        'subagent_start_entries': total_subagent_entries,
-        'fork_end_entries': total_fork_ends,
-        'subagent_end_entries': total_subagent_ends,
-        'nesting_depths': nesting_depths[:50],  # Cap at 50 samples
+        'fork_start_entries': fork_start_count,
+        'subagent_start_entries': subagent_start_count,
+        'fork_end_entries': entry_types.get('FORK_END', 0),
+        'subagent_end_entries': entry_types.get('SUBAGENT_END', 0),
         'max_nesting': max_nesting,
-        'has_nesting_markers': has_nesting_markers,
+        'has_nesting_markers': max_nesting > 0,
         'ghost_session': ghost_session,
-        'session_starts': session_starts,
-        'fork_durations': fork_durations[:100],
-        'subagent_durations': subagent_durations[:100],
-        'tool_call_count': tool_call_count,
-        'tool_result_count': tool_result_count,
+        'session_starts': session_start_count,
+        'tool_call_count': entry_types.get('TOOL_CALL', 0),
+        'tool_result_count': entry_types.get('TOOL_RESULT', 0),
         'total_lines': len(lines),
     })
-    
+
     return result
+
+
+def _count_calls_in_text(text: str) -> tuple[int, int]:
+    """Count fork() and subagent() calls in a text block."""
+    fork_count = len(re.findall(r'fork\(\s*task\s*=\s*["\']', text))
+    subagent_count = len(re.findall(r'subagent\(\s*task\s*=\s*["\']', text))
+    return fork_count, subagent_count
 
 
 def categorize_task(task):
@@ -361,13 +237,13 @@ def analyze_all_audit_files(audit_dir, sample_size=None):
             ghost_sessions.append(result['basename'])
         
         # Error tracking for effectiveness comparison
-        error_count = result.get('entry_types', {}).get('TOOL_RESULT', 0)
+        result.get('entry_types', {}).get('TOOL_RESULT', 0)
         # Count errors from content patterns
         try:
             with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
                 error_matches = len(re.findall(r'Error:|Exception:|Traceback|FAILED|failed to|timed out|timeout', content))
-        except:
+        except Exception:
             error_matches = 0
         
         if has_fork or has_subagent:

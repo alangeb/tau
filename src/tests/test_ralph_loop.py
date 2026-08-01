@@ -396,7 +396,7 @@ class TestExecuteIteration:
         # Mock agent and console
         mock_agent = Mock()
         mock_agent.invoke_with_tools.return_value = "Task completed successfully"
-        mock_console = Mock()
+        Mock()
 
         result = _execute_iteration(mock_agent, task_id, 1)
 
@@ -413,7 +413,7 @@ class TestExecuteIteration:
         mock_agent.invoke_with_tools.return_value = (
             "Done! <complete>Yes, the task is complete.</complete>"
         )
-        mock_console = Mock()
+        Mock()
 
         result = _execute_iteration(mock_agent, task_id, 1)
 
@@ -426,7 +426,7 @@ class TestExecuteIteration:
 
         mock_agent = Mock()
         mock_agent.invoke_with_tools.side_effect = Exception("LLM failed")
-        mock_console = Mock()
+        Mock()
 
         result = _execute_iteration(mock_agent, task_id, 1)
 

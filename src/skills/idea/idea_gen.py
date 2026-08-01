@@ -2,7 +2,6 @@
 """Idea capture helper - generate idea templates."""
 
 from datetime import datetime
-from typing import Optional
 
 
 def generate_idea_template(title: str, problem: str = "", target: str = "", change: str = "") -> str:

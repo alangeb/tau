@@ -23,24 +23,29 @@ class Args:
     """Tool arguments — auto-converted to JSON Schema."""
     param: str
 
-def run(param: str, agent: "TauErgon", tool_call_id: str | None) -> str:
+def run(param: str = "", _ctx: ToolContext | None = None) -> str:
     """Execute tool. Return string result."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     ...
 ```
 
 ## Key Rules
 
 1. **Auto-discovered** via `tools/__init__.py` — no manual registration needed.
-2. **`agent` and `tool_call_id` are MANDATORY** for all tools.
-3. **Use `tools/validation.py`** for `_dataclass_to_json_schema()` to generate JSON Schema.
-4. **Use `tools/lib/sandbox.py`** for path validation (`check_path`, `validate_path`) — enforces working directory boundaries.
-5. **No `main()` functions** — tools are not standalone scripts.
-6. **See `tool_template` skill** for the full template and examples.
+2. **`_ctx: ToolContext` is the single context parameter** — provides access to `agent` and `tool_call_id`.
+3. **User-facing params FIRST** (with defaults), **`_ctx` LAST** — consistent schema for LLM.
+4. **Use `tools/validation.py`** for `_dataclass_to_json_schema()` to generate JSON Schema.
+5. **Use `tools/lib/sandbox.py`** for path validation (`check_path`, `validate_path`) — enforces working directory boundaries.
+6. **No `main()` functions** — tools are not standalone scripts.
+7. **See `tool_template` skill** for the full template and examples.
 
 ## Common Patterns
 
 ```python
-def run(param: str, agent: "TauErgon", tool_call_id: str | None) -> str:
+def run(param: str = "", _ctx: ToolContext | None = None) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     # Use sandbox validation for file paths
     from tools.lib.sandbox import check_path
     resolved, err = check_path("my_tool", agent, filepath)
@@ -50,7 +55,7 @@ def run(param: str, agent: "TauErgon", tool_call_id: str | None) -> str:
     return result
 ```
 
-**Key rules**: `agent` and `tool_call_id` are MANDATORY. Use `tools/lib/sandbox.py` for path validation. No `main()` functions.
+**Key rules**: User params FIRST (with defaults), `_ctx: ToolContext | None = None` LAST. Access agent via `_ctx.agent`. Use `tools/lib/sandbox.py` for path validation. No `main()` functions.
 
 ## Tool Implementation Rules
 

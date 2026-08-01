@@ -126,6 +126,7 @@ class TestToolFilterDeniedMessage:
         }
 
         result = execute_tool_call(tc, agent)
+        # Filter check uses original tool name (before alias resolution)
         assert "BLOCKED: write_file" in result
         assert "read" in result
         # Only "read" appears because grep/write_file are NOT in the allowlist,
@@ -149,6 +150,7 @@ class TestToolFilterDeniedMessage:
         }
 
         result = execute_tool_call(tc, agent)
+        # Filter check uses original tool name (before alias resolution)
         assert "write_file" in result
         assert "restricted" in result
         assert "Reformulate" in result

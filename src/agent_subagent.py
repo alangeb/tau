@@ -10,6 +10,8 @@ Nesting restrictions prevent unbounded recursion:
   Level 0-1: Full capabilities.  Level 2+: No further subagents/forks.
 """
 
+from __future__ import annotations
+
 import copy
 import logging
 import os
@@ -37,6 +39,10 @@ __all__ = [
 
 # Default nesting depth threshold (exported for backward compatibility).
 NESTING_DEPTH_THRESHOLD = 2
+
+# Fork budget: maximum forks per session to prevent delegate loops
+FORK_BUDGET = 20
+FORK_BUDGET_WINDOW = 3600  # 1 hour window
 
 
 # ── Fork isolation helpers ─────────────────────────────────────────────────
@@ -70,10 +76,10 @@ def _make_isolated_path(base_path: Path, fork_id: str) -> Path:
 
 
 def _create_subagent(
-    parent_agent: "TauErgon",
+    parent_agent: TauErgon,
     config: Config | None,
-    tool_filter: "ToolFilter | None",
-) -> "TauErgon":
+    tool_filter: ToolFilter | None,
+) -> TauErgon:
     """Create a new TauErgon inheriting configuration from parent."""
     from agent_core import TauErgon
 
@@ -113,9 +119,10 @@ def _nesting_restriction_suffix(nesting_count: int) -> str:
 def invoke_subagent_sync(
     prompt: str,
     system_prompt: str,
-    parent_agent: "TauErgon",
+    parent_agent: TauErgon,
     nesting_count: int = 0,
-    tool_filter: "ToolFilter | None" = None,
+    nesting_stack: str = "",
+    tool_filter: ToolFilter | None = None,
     config: Config | None = None,
     nesting_threshold: int = 2,
 ) -> str:
@@ -125,19 +132,37 @@ def invoke_subagent_sync(
     Nesting restrictions are applied when depth exceeds the threshold.
     """
     subagent = _create_subagent(parent_agent, config, tool_filter)
-    subagent.nesting_count = nesting_count + 1
+    subagent.nesting_stack = nesting_stack + "S"
     subagent.original_task = prompt
 
     if nesting_count >= nesting_threshold - 1:
         system_prompt += _nesting_restriction_text(nesting_count)
 
-    subagent.context = TauContext([{"role": "system", "content": system_prompt}])
+    subagent.context = TauContext(
+        [{"role": "system", "content": system_prompt}],
+        nesting_stack=nesting_stack + "S"
+    )
 
     # Track subagent lifecycle in audit log.
     parent_agent._session.audit_writer.subagent_start(prompt)
     start_time = time.monotonic()
     try:
-        return subagent.invoke_with_tools(prompt)
+        result = subagent.invoke_with_tools(prompt)
+        # If the subagent was interrupted or exited (run_loop returned None),
+        # surface the last substantive response instead of None, which the
+        # tool executor would stringify to "None".
+        if result is None:
+            if subagent.last_substantive_response:
+                result = (
+                    "[Subagent interrupted — received exit/interrupt signal while working. "
+                    f"Last substantive response was: {subagent.last_substantive_response}]"
+                )
+            else:
+                result = (
+                    "[Subagent interrupted — received exit/interrupt signal before any "
+                    "substantive response was produced.]"
+                )
+        return result
     finally:
         duration_s = time.monotonic() - start_time
         parent_agent._session.audit_writer.subagent_end(duration_s)
@@ -146,10 +171,11 @@ def invoke_subagent_sync(
 def invoke_fork_sync(
     prompt: str,
     parent_context: TauContext,
-    parent_agent: "TauErgon",
-    nesting_count: int = 0,
+    parent_agent: TauErgon,
+    nesting_stack: str = "",
+    nesting_type: str = "F",
     tool_call_id: str | None = None,
-    tool_filter: "ToolFilter | None" = None,
+    tool_filter: ToolFilter | None = None,
     config: Config | None = None,
     nesting_threshold: int = 2,
 ) -> str:
@@ -158,7 +184,67 @@ def invoke_fork_sync(
     The fork receives the full parent conversation history. Pending tool calls
     are marked PENDING; the fork's own call is marked FORK as responder.
     Nesting restrictions are applied when depth exceeds the threshold.
+
+    Delegate loop protection: if the same task is forked repeatedly,
+    a soft reject is issued on the first duplicate (with explanation),
+    but the second duplicate is allowed to prevent blocking legitimate retries.
+
+    Args:
+        prompt: Task description for the fork.
+        parent_context: Parent's TauContext (deep-copied for fork).
+        parent_agent: Parent TauErgon instance.
+        nesting_stack: Parent's nesting stack string (e.g., "SF" = subagent→fork).
+        nesting_type: Single char appended to stack (F=fork, T=think, H=heartbeat, K=skill).
+        tool_call_id: Optional tool call ID to mark as FORK responder.
+        tool_filter: Optional tool filter for the fork.
+        config: Optional config (inherits from parent if None).
+        nesting_threshold: Depth at which nesting restrictions apply.
     """
+    # ── Delegate loop detection (soft reject) ──
+    tracker = getattr(parent_agent, "_fork_loop_tracker", None)
+    if tracker is None:
+        tracker = {"tasks": [], "warned": set(), "timestamps": []}
+        parent_agent._fork_loop_tracker = tracker
+
+    # ── Fork budget check ──
+    now = time.monotonic()
+    tracker["timestamps"] = [t for t in tracker["timestamps"] if now - t < FORK_BUDGET_WINDOW]
+    if len(tracker["timestamps"]) >= FORK_BUDGET:
+        logger.warning(
+            "Fork budget exhausted: %d forks in last %d seconds. "
+            "Blocking further forks to prevent delegate loops.",
+            FORK_BUDGET, FORK_BUDGET_WINDOW,
+        )
+        return (
+            f"⚠️  Fork budget exhausted ({FORK_BUDGET} forks in last {FORK_BUDGET_WINDOW}s).\n"
+            f"\nFurther forks have been BLOCKED to prevent delegate loops.\n\n"
+            f"Summarize your findings and return to the parent. "
+            f"Do NOT fork again until the budget resets.\n"
+        )
+    tracker["timestamps"].append(now)
+
+    normalized = prompt.strip().lower()[:200]  # Normalize for comparison
+    task_count = sum(1 for t in tracker["tasks"] if t == normalized)
+    tracker["tasks"].append(normalized)
+
+    if task_count >= 1 and normalized not in tracker["warned"]:
+        # First duplicate — soft reject with explanation
+        tracker["warned"].add(normalized)
+        logger.warning(
+            "Delegate loop detected: task forked %d times. "
+            "This fork is allowed, but repeated identical forks suggest "
+            "the parent should summarize results and terminate instead. "
+            "On the NEXT duplicate, the fork will be blocked.",
+            task_count + 1,
+        )
+    elif task_count >= 2:
+        # Second+ duplicate — allow but log
+        logger.warning(
+            "Repeated fork #%d of same task. Consider terminating "
+            "the delegation loop and summarizing results.",
+            task_count + 1,
+        )
+
     fork_id = ""
     temp_dir: Path | None = None
     try:
@@ -169,13 +255,16 @@ def invoke_fork_sync(
         # We set them briefly and clean up in finally to limit subprocess inheritance window.
         parent_audit_file = str(parent_agent._session.audit_file)
         os.environ["TAU_PARENT_AUDIT_FILE"] = parent_audit_file
-        os.environ["TAU_FORK_NESTING"] = str(nesting_count + 1)
+        os.environ["TAU_FORK_NESTING"] = nesting_stack + nesting_type
 
         fork = _create_subagent(parent_agent, config, tool_filter)
-        fork.nesting_count = nesting_count + 1
+        fork.nesting_stack = nesting_stack + nesting_type
         fork.original_task = prompt
 
-        fork.context = TauContext(copy.deepcopy(parent_context.to_list()))
+        fork.context = TauContext(
+            copy.deepcopy(parent_context.to_list()),
+            nesting_stack=nesting_stack + nesting_type
+        )
 
         nesting_suffix = ""
         if fork.nesting_count >= nesting_threshold - 1:
@@ -201,7 +290,7 @@ def invoke_fork_sync(
             task=(
                 "You successfully forked! You are the fork now. "
                 "Work exactly on this TASK (do not work on other things - they will be taken care of), "
-                "then end your turn with the end_turn tool call. "
+                "then end your turn with a plain text response. "
                 "TASK: {prompt}"
             ),
             fork_tool_call_id=effective_tool_call_id,
@@ -212,6 +301,20 @@ def invoke_fork_sync(
         parent_agent._session.audit_writer.fork_start(prompt)
         start_time = time.monotonic()
         result = fork.invoke_with_tools(f"{prompt}")
+        # If the fork was interrupted or exited (run_loop returned None),
+        # surface the last substantive response instead of None, which the
+        # tool executor would stringify to "None".
+        if result is None:
+            if fork.last_substantive_response:
+                result = (
+                    "[Fork interrupted — received exit/interrupt signal while working. "
+                    f"Last substantive response was: {fork.last_substantive_response}]"
+                )
+            else:
+                result = (
+                    "[Fork interrupted — received exit/interrupt signal before any "
+                    "substantive response was produced.]"
+                )
         duration_s = time.monotonic() - start_time
         parent_agent._session.audit_writer.fork_end(duration_s)
 

@@ -2,7 +2,7 @@
 name: task
 description: Task framework — lifecycle, verification, state management. Task files, dream execution, idea-to-task pipeline, status verification (also load: dream, idea, task_creation, _taudoc)
 category: orchestration
-keywords: task, tasks, task framework, task lifecycle, task status, task verification, task state, dream task, idea, idea capture, task queue, task done, task failed, task inprogress, task todo, automate, automation, task file, task completion, task review, task check, verify task, is task done, task progress
+keywords: task, tasks, task framework, task lifecycle, task status, task verification, task state, dream task, task queue, task done, task failed, task inprogress, task todo, automate, automation, task file, task completion, task review, task check, verify task, is task done, task progress
 ---
 
 # Task Framework
@@ -24,8 +24,18 @@ tasks/
 ## Lifecycle
 ```
 1_todo/ → 2_inprogress/ → agent works → 3_done/ (success)
-                                    → 3_failed/ (failure)
+                                      → 3_failed/ (failure)
 ```
+
+## Task Ordering (CRITICAL)
+Tasks in `1_todo/` processed in **filename-sorted order** (lexicographic). Determines execution sequence:
+- `TASK_##.md` naming: `TASK_01.md`, `TASK_02.md` → numerical order
+- Non-TASK files sort alphabetically relative to `TASK_` files
+- Use `tasks/queue.sh "description"` to auto-generate numbered files
+- Manual files: use `TASK_##.md` format to control order
+
+## Task Knowledge Isolation (CRITICAL)
+**Each task runs in isolation.** Task N+1 sees only **result** of Task N (code changes, tests). No knowledge of Task N's instructions or intent. Each task must be **self-contained**. Dependencies must be **observable in codebase**.
 
 ## Verify Task Status (CRITICAL: By CONTENT, not filename)
 ```bash
@@ -76,12 +86,6 @@ See `skill('dream')` for details.
 3. **Missing tests** — Search test function names across all test files
 4. **Ignoring 3_done/** — File in `3_done/` = agent judged complete; verify with content search
 
-## Related Skills
-- `dream` — Orchestrator, cycle steps, self-improvement loop
-- `idea` — Idea capture before formalizing as tasks
-- `task_creation` — Creating new tasks
-- `_taudoc` — Documentation structure
-
 ## Commands
 - `/_taudotask` — Execute task from `2_inprogress/`
 - `/_taurearch` — Re-architecture step in dream cycle
@@ -96,3 +100,9 @@ See `skill('dream')` for details.
 python3 skills/task/task_verify.py                    # List all tasks
 python3 skills/task/task_verify.py tasks/3_done/TASK_01.md  # Verify implementation
 ```
+
+## Related Skills
+- `dream` — Orchestrator, cycle steps, self-improvement loop
+- `idea` — Idea capture before formalizing as tasks
+- `task_creation` — Creating new tasks
+- `_taudoc` — Documentation structure

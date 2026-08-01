@@ -61,7 +61,7 @@ All session artifacts live in `LOG_DIR` (default: `~/.local/tau/`):
 | File | Purpose |
 |------|---------|
 | `{prefix}.log` | Agent log (stdout/stderr) |
-| `{prefix}.audit.log` | Structured audit log |
+| `{prefix}.audit` | Structured audit log |
 | `{prefix}.context` | Conversation context (JSON) |
 | `tool_output/` | Full tool outputs (disk backup) |
 | `logerror/` | Failed test archives |
@@ -103,11 +103,23 @@ All session artifacts live in `LOG_DIR` (default: `~/.local/tau/`):
 
 | Pattern | Purpose | Example |
 |---------|---------|---------|
-| `agent_*.py` | Core agent modules | `agent_core.py`, `agent_llm.py` (facade) |
+| `agent_*.py` | Core agent modules | `agent_core.py`, `agent_llm_models.py`, `agent_llm_invoke.py`, etc. |
 | `tc_*.sh` | Test files | `tc_1.0.1_basic.sh` |
 | `TASK_##.md` | Task files | `TASK_01.md` |
 | `skills/*/SKILL.md` | Skill files | `skills/tau_testsuite/SKILL.md` |
 | `*.md`/`*.py` in `commands/` | Command files | `delegate.py`, `health.py`, `plan.py`, `ralph.py`, `pyprep.md` |
+
+### Path Convention
+
+**CRITICAL:** The agent runs from `src/` (cwd: `~/tau/src`). Task files and other project-level files must use **absolute paths** to avoid being created in the wrong location.
+
+| Context | Correct Path | Wrong Path | Why |
+|---------|-------------|------------|-----|
+| Task files (read/write) | `/home/alangeb/tau/tasks/1_todo/` | `tasks/1_todo/` | Relative `tasks/` resolves to `src/tasks/` (wrong) |
+| Task creation | `$HOME/tau/tasks/queue.sh` | `file_write(path="tasks/1_todo/...")` | `queue.sh` is self-aware; `file_write` with relative paths is not |
+| Task verification | `ls /home/alangeb/tau/tasks/1_todo/` | `ls tasks/1_todo/` | Must verify in the correct location |
+
+**Rule:** Always use absolute paths (`/home/alangeb/tau/tasks/...`) for ALL task file operations. Never use relative paths like `tasks/` or `../tasks/`.
 
 ### Agent Behavior (from AGENT.md)
 

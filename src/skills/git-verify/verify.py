@@ -2,7 +2,6 @@
 """Git verify helper - quick diff verification utilities."""
 
 import subprocess
-from typing import Optional
 
 
 def get_diff_stats(path: str = ".") -> dict:

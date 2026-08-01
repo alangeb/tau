@@ -1,6 +1,6 @@
 ---
 name: bug_investigation
-description: Systematically investigate bugs — pyscan, pyanalyze, grep, hypothesis testing, root cause, fix proposal. Debug, root cause, investigate, trace, why broken, why fails, diagnose, something wrong, error, crash, not working, find bug (also load: code-review-workflow, ast-grep, graphify, python_debugging, think)
+description: Systematically investigate bugs — pyscan, pyanalyze, grep, hypothesis testing, root cause, fix proposal (also load: ast-grep, code-review-workflow, context_management, graphify, python_debugging, think, error-recovery, performance)
 category: development
 keywords: debug, root cause, investigate, bug, trace, why, broken, fails, diagnose, error, crash, not working, hypothesis, fix
 ---
@@ -41,20 +41,10 @@ python3 skills/bug_investigation/investigate.py <path>  # Automated investigatio
 ```
 
 ## Related Skills
-- `swe_bench` — SWE-bench workflow
-- `docker` — container management
-- `python_debugging` — interactive debugging with background
-- `code-review-workflow` — automated code analysis
 - `ast-grep` — complex pattern search
-- `context_management` — delegate investigation
-- `plan_template` — structure investigation steps
-- `tau_audit` — analyze agent behavior patterns
-
-- `error-recovery` — Handle tool errors
-- `performance` — Performance
-- `git-advanced` — Advanced git
-- `security-audit` — Security checks
-- `idea` — Capture ideas for features
-- `think` — Deep reasoning tool
-- `graphify` — Turn codebases into persistent knowledge graphs
-- `agent-browser` — Browser automation CLI for AI agents
+- `code-review-workflow` — automated code analysis
+- `error-recovery` — handle tool errors
+- `graphify` — knowledge graph analysis
+- `performance` — profile bottlenecks
+- `python_debugging` — interactive debugging
+- `think` — deep reasoning tool

@@ -2,7 +2,6 @@
 """Error recovery helper - error pattern detection and recovery utilities."""
 
 import subprocess
-from typing import Optional
 
 
 def detect_errors(audit_file: str) -> dict:

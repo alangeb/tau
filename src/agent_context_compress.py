@@ -1,6 +1,8 @@
 """Context compression algorithms for LLM conversation management.
 
-Eleven sequential strategies applied until target size is reached:
+Eleven pipeline steps applied until target size is reached. Nine functions
+implement these steps — `compress_tool_pruning` and `compress_redact_blocks`
+each serve two steps via the `use_boundary` parameter.
 
 1. compress_prune_images — replace image content blocks with text placeholders
 2. compress_oversized_tool_redaction — redact single oversized tool results
@@ -8,8 +10,8 @@ Eleven sequential strategies applied until target size is reached:
 4. compress_last_transaction — LLM summarization of completed turns
 5. compress_tool_pruning — replace large tool outputs with placeholders (50% boundary)
 6. compress_redact_blocks — strip intermediate messages from completed blocks (50% boundary)
-7. compress_tool_pruning_full — same as #5 but scans entire context (no boundary)
-8. compress_redact_blocks_full — same as #6 but scans entire context (no boundary)
+7. compress_tool_pruning (use_boundary=False) — same as #5, scans entire context
+8. compress_redact_blocks (use_boundary=False) — same as #6, scans entire context
 9. compress_full_reset — full context rebuild (last resort)
 10. compress_conversation_summary — deterministic conversation restructuring (fallback)
 11. compress_blind_truncate — truncate summary from beginning (guaranteed fit)
@@ -30,20 +32,41 @@ LOGGING:
 - Errors/warnings: Continue via error() / warning() as before.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import json
 
+
+@dataclass
+class CompressionStep:
+    """Declarative registration for a compression pipeline step.
+
+    Stores the *impl_fn* (the core algorithm) and optional *kwargs* to forward
+    to the impl (e.g. ``use_boundary``).  The pipeline calls ``_compress_wrapper``
+    directly — no intermediate wrapper function needed.
+    """
+    name: str
+    impl_fn: Callable[..., tuple[list[dict], str]]
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
 # Import directly from leaf modules to break the diamond circular-import:
-# agent_context_compress → agent_console → agent_console_messages
-# agent_context_compress → agent_llm → agent_console → agent_console_messages
+# agent_context_compress → agent_console → agent_console.messages
+# agent_context_compress → agent_llm → agent_console → agent_console.messages
 # By importing error & compression_step_summary directly, agent_console is never
-# pulled in at module level, so agent_console_messages always finishes loading
+# pulled in at module level, so agent_console.messages always finishes loading
 # before any path tries to re-import it.
-from agent_console_messages import error
-from agent_console_display import compression_step_summary
-from agent_console_primitives import echo, verbose as _verbose
-from agent_llm import DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS, LLMCallConfig, LLMResponse, _invoke_llm_with_retry
+from agent_console import (
+    compression_step_summary,
+    echo,
+    error,
+    verbose as _verbose,
+)
+from agent_llm_models import DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS, LLMCallConfig, LLMResponse
+from agent_llm_invoke import _invoke_llm_with_retry
+from agent_message_utils import is_synthetic_message
 from agent_models import Colors
 
 # --- Constants ---
@@ -52,7 +75,6 @@ MAX_ITERATIONS = 100
 MIN_BLOCK_SIZE = 300
 OVERSIZED_THRESHOLD = 0.20
 PRUNE_THRESHOLD = 100
-COMPRESSION_SAFETY_FACTOR = 0.3
 # Maximum size for individual tool results in conversation summary (bytes)
 SUMMARY_TOOL_RESULT_MAX_BYTES = 4096
 
@@ -113,7 +135,7 @@ def _calculate_context_bytes(context: list[dict]) -> int:
 
 def compute_compression_target_bytes(
     current_bytes: int,
-    target_percentage: float,
+    compression_factor: float,
     last_known_tokens: int | None,
     max_context_tokens: int,
     max_output_tokens: int,
@@ -121,32 +143,39 @@ def compute_compression_target_bytes(
     """Return the byte target for compression.
 
     Uses the MINIMUM of:
-    1. Byte-based target: current_bytes × (1 - target_percentage)
-    2. Token-derived target: current_bytes × (1 - token_reduction_ratio) × safety_factor
+    1. Byte-based target: current_bytes × (1 - compression_factor)
+    2. Token-derived target: current_bytes × (1 - reduction_ratio)
 
-    The token-derived target accounts for the fact that compression removes
-    byte-heavy content first, leaving token-dense content behind.
+    The token-derived target is computed from the token budget:
+        target_tokens = max_context_tokens - max_output_tokens - compression_factor × max_context_tokens
+        reduction_ratio = (last_known_tokens - target_tokens) / last_known_tokens
+
+    The compression_factor (typically 0.3) serves dual purpose:
+    - Byte target: aims for 30% byte reduction
+    - Token budget: reserves 30% of context window as breathing room for new content
+
+    Assumes linear byte-to-token scaling. If compression removes byte-heavy,
+    token-cheap content first (ratio collapse), multiple compression rounds
+    may be needed.
     """
-    # --- Byte-based target (existing behavior) ---
-    byte_target = int(current_bytes * (1 - target_percentage))
+    # --- Byte-based target ---
+    byte_target = int(current_bytes * (1 - compression_factor))
 
-    # --- Token-derived target (new) ---
+    # --- Token-derived target ---
     token_target = byte_target  # default fallback
 
     if last_known_tokens is not None and last_known_tokens > 0:
-        # Target token count: leave room for output + safety margin
-        safety_margin = max(1000, int(max_context_tokens * 0.025))  # 2.5% or 1000
-        target_tokens = max_context_tokens - max_output_tokens - safety_margin
+        # Token budget: reserve breathing room (compression_factor × MCW) + output tokens
+        breathing_room = int(compression_factor * max_context_tokens)
+        target_tokens = max_context_tokens - max_output_tokens - breathing_room
+        target_tokens = max(0, target_tokens)  # Guard against negative
 
         if last_known_tokens > target_tokens:
             # Need to reduce tokens
-            token_reduction_ratio = (last_known_tokens - target_tokens) / last_known_tokens
+            reduction_ratio = (last_known_tokens - target_tokens) / last_known_tokens
 
-            # Safety factor: remaining content is more token-dense after pruning
-            # Empirical: ratio collapses 10-15×, so apply 0.3× safety
-            token_byte_target = int(
-                current_bytes * (1 - token_reduction_ratio) * COMPRESSION_SAFETY_FACTOR
-            )
+            # Apply reduction ratio directly to bytes (linear assumption)
+            token_byte_target = int(current_bytes * (1 - reduction_ratio))
 
             # Use the more aggressive (lower) target
             token_target = min(byte_target, token_byte_target)
@@ -217,14 +246,15 @@ def _find_user_assistant_block(context: list[dict], pointer: int) -> tuple[int |
 
     user_idx = None
     for i in range(assistant_idx - 1, -1, -1):
-        if context[i].get("role") == "user":
+        if context[i].get("role") == "user" and not is_synthetic_message(context[i]):
             user_idx = i
             break
     if user_idx is None:
         return None, None, pointer
 
     next_user_idx = next(
-        (i for i in range(assistant_idx + 1, len(context)) if context[i].get("role") == "user"),
+        (i for i in range(assistant_idx + 1, len(context))
+         if context[i].get("role") == "user" and not is_synthetic_message(context[i])),
         None,
     )
     block_end = next_user_idx if next_user_idx else len(context)
@@ -264,29 +294,75 @@ def _make_metadata(
     }
 
 
-# --- Algorithm 0: Image Pruning (most aggressive) ---
-
-
-def compress_prune_images(
+def _compress_wrapper(
+    step_name: str,
+    impl_fn: Callable[..., tuple[list[dict], str]],
     context: list[dict],
-    client,
-    model_name: str,
     target_size_bytes: int,
     verbose: bool = False,
     audit_writer: Any = None,
+    **impl_kwargs,
 ) -> tuple[list[dict], dict]:
-    """Replace image content blocks with text placeholders.
+    """Handle common boilerplate for compression algorithms.
 
-    Strategy: Scan right-to-left within 50% boundary. For each user message
-    with image blocks, replace all but the last image_url block with a text
-    placeholder.  This is the most aggressive step — images dominate context size.
+    The implementation function (impl_fn) should accept:
+        (current_context, target_size_bytes, verbose, audit_writer, actions, step_name, **kwargs)
+    And return:
+        (context, status)
+
+    The wrapper handles:
+        - original_size / msgs_before calculation
+        - final_size / msgs_after calculation
+        - audit logging (compress_start, compress_step_end)
+        - metadata generation
+        - system message preservation
+
+    *impl_kwargs* are forwarded to *impl_fn* to avoid closure boilerplate.
     """
-    step_name = "PRUNE_IMAGES"
     original_size = _calculate_context_bytes(context)
     msgs_before = len(context)
     current_context = list(context)
     actions: list[str] = []
 
+    # Preserve system message for restoration if compression loses it
+    system_msg = (
+        context[0] if context and context[0].get("role") == "system" else None
+    )
+
+    new_context, status = impl_fn(
+        current_context, target_size_bytes, verbose, audit_writer, actions, step_name, **impl_kwargs
+    )
+
+    # Ensure system message is preserved after compression
+    if system_msg and (not new_context or new_context[0].get("role") != "system"):
+        if verbose:
+            _verbose(f"  :: {step_name}: restoring lost system message")
+        new_context.insert(0, system_msg)
+
+    final_size = _calculate_context_bytes(new_context)
+    msgs_after = len(new_context)
+
+    if audit_writer is not None:
+        audit_writer.compress_start(step_name, original_size, msgs_before)
+        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
+
+    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
+    return new_context, metadata
+
+
+# --- Algorithm 0: Image Pruning (most aggressive) ---
+
+
+def _compress_prune_images_impl(
+    current_context: list[dict],
+    target_size_bytes: int,
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core image pruning algorithm — replace all but last image per user message."""
     boundary_50_bytes, boundary_idx = _compute_50_boundary(current_context)
 
     for i in range(boundary_idx, -1, -1):
@@ -335,38 +411,42 @@ def compress_prune_images(
             break
 
     final_size = _calculate_context_bytes(current_context)
-    msgs_after = len(current_context)
     status = "ACHIEVED" if final_size <= target_size_bytes else "PARTIAL"
-
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
-
-    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
-    return current_context, metadata
+    return current_context, status
 
 
-# --- Algorithm 1: Oversized Tool Redaction ---
-
-
-def compress_oversized_tool_redaction(
+def compress_prune_images(
     context: list[dict],
     client,
     model_name: str,
     target_size_bytes: int,
     verbose: bool = False,
     audit_writer: Any = None,
+    **kwargs,
 ) -> tuple[list[dict], dict]:
-    """Redact tool results >20% of remaining context bytes (within 50% boundary).
+    """Replace image content blocks with text placeholders.
 
-    Returns (context, metadata).
+    Strategy: Scan right-to-left within 50% boundary. For each user message
+    with image blocks, replace all but the last image_url block with a text
+    placeholder.  This is the most aggressive step — images dominate context size.
     """
-    step_name = "OVERSIZED_TOOL_REDACTION"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    current_context = list(context)
-    actions: list[str] = []
+    return _compress_wrapper("PRUNE_IMAGES", _compress_prune_images_impl, context, target_size_bytes, verbose, audit_writer, **kwargs)
 
+
+# --- Algorithm 1: Oversized Tool Redaction ---
+
+
+def _compress_oversized_tool_redaction_impl(
+    current_context: list[dict],
+    target_size_bytes: int,
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core oversized tool redaction — redact tool results >20% of context."""
+    original_size = _calculate_context_bytes(current_context)
     boundary_50_bytes, boundary_idx = _compute_50_boundary(current_context)
     limit = min(boundary_idx, len(current_context) - 1)
 
@@ -403,39 +483,40 @@ def compress_oversized_tool_redaction(
         i += 1
 
     final_size = _calculate_context_bytes(current_context)
-    msgs_after = len(current_context)
     status = "NO_REDUCTION" if final_size == original_size else "REDUCED"
-
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
-
-    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
-    return current_context, metadata
+    return current_context, status
 
 
-# --- Algorithm 1b: Drop Reasoning ---
-
-
-def compress_drop_reasoning(
+def compress_oversized_tool_redaction(
     context: list[dict],
     client,
     model_name: str,
     target_size_bytes: int,
     verbose: bool = False,
     audit_writer: Any = None,
+    **kwargs,
 ) -> tuple[list[dict], dict]:
-    """Drop ``reasoning`` fields from assistant messages within the 50% boundary.
+    """Redact tool results >20% of remaining context bytes (within 50% boundary).
 
-    Keeps all messages intact — only strips the reasoning content.
     Returns (context, metadata).
     """
-    step_name = "DROP_REASONING"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    current_context = list(context)
-    actions: list[str] = []
+    return _compress_wrapper("OVERSIZED_TOOL_REDACTION", _compress_oversized_tool_redaction_impl, context, target_size_bytes, verbose, audit_writer, **kwargs)
 
+
+# --- Algorithm 1b: Drop Reasoning ---
+
+
+def _compress_drop_reasoning_impl(
+    current_context: list[dict],
+    target_size_bytes: int,
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core reasoning drop — strip reasoning fields from assistant messages."""
+    original_size = _calculate_context_bytes(current_context)
     boundary_50_bytes, boundary_idx = _compute_50_boundary(current_context)
 
     for i in range(min(boundary_idx, len(current_context))):
@@ -452,15 +533,25 @@ def compress_drop_reasoning(
                 _verbose(f"  :: DROPPED reasoning@{i}: {reasoning_bytes:,} bytes")
 
     final_size = _calculate_context_bytes(current_context)
-    msgs_after = len(current_context)
     status = "NO_REDUCTION" if final_size == original_size else "REDUCED"
+    return current_context, status
 
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
 
-    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
-    return current_context, metadata
+def compress_drop_reasoning(
+    context: list[dict],
+    client,
+    model_name: str,
+    target_size_bytes: int,
+    verbose: bool = False,
+    audit_writer: Any = None,
+    **kwargs,
+) -> tuple[list[dict], dict]:
+    """Drop ``reasoning`` fields from assistant messages within the 50% boundary.
+
+    Keeps all messages intact — only strips the reasoning content.
+    Returns (context, metadata).
+    """
+    return _compress_wrapper("DROP_REASONING", _compress_drop_reasoning_impl, context, target_size_bytes, verbose, audit_writer, **kwargs)
 
 
 # --- Algorithm 2: Last Transaction Compression ---
@@ -546,28 +637,25 @@ COMPRESSION_PROMPT = """You are an expert conversation summarizer. Your task is 
 REPLY WITH SUMMARY ONLY - no tool calls, no extra text. DO NOT USE TOOLS! ONLY REPLY FROM MEMORY!"""
 
 
-def compress_last_transaction(
-    context: list[dict],
-    client,
-    model_name: str,
+def _compress_last_transaction_impl(
+    current_context: list[dict],
     target_size_bytes: int,
-    tools: list = None,
-    extra_kwargs: dict[str, Any] | None = None,
-    verbose: bool = False,
-    log_file: Path | None = None,
-    audit_writer: Any = None,
-    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
-    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
-) -> tuple[list[dict], dict]:
-    """Rewrite completed turns (right-to-left, within first 50%) via LLM summary.
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core last transaction compression — LLM summarization of completed turns."""
+    client = kwargs.get("client")
+    model_name = kwargs.get("model_name")
+    tools = kwargs.get("tools")
+    extra_kwargs = kwargs.get("extra_kwargs")
+    log_file = kwargs.get("log_file")
+    max_context_tokens = kwargs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
+    max_output_tokens = kwargs.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
 
-    Returns (context, metadata).
-    """
-    step_name = "LAST_TRANSACTION"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    current_context = list(context)
-    actions: list[str] = []
+    original_size = _calculate_context_bytes(current_context)
     blocks_compressed = 0
     blocks_skipped = 0
 
@@ -580,7 +668,7 @@ def compress_last_transaction(
             f"{Colors.CYAN}  target={target_size_bytes:,} bytes, current={_calculate_context_bytes(current_context):,} bytes, 50%={original_size // 2:,} bytes{Colors.RESET}"
         )
         echo(
-            f"{Colors.CYAN}  50% boundary at msg index {boundary_msg_idx} (of {len(context)-1}){Colors.RESET}"
+            f"{Colors.CYAN}  50% boundary at msg index {boundary_msg_idx} (of {len(current_context)-1}){Colors.RESET}"
         )
         echo(f"{Colors.CYAN}{'='*70}{Colors.RESET}")
 
@@ -705,22 +793,120 @@ def compress_last_transaction(
         pointer = user_idx
 
     final_size = _calculate_context_bytes(current_context)
-    msgs_after = len(current_context)
     status = "ACHIEVED" if final_size <= target_size_bytes else "NO_MORE_BLOCKS"
 
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
-
     if verbose:
-        compression_end_msg = f"[COMPRESS] LAST_TRANSACTION: {msgs_after} msgs, {final_size:,} bytes -> target {target_size_bytes / original_size * 100 if original_size > 0 else 0:.0f}% ({target_size_bytes:,} bytes) [{status}]"
+        compression_end_msg = f"[COMPRESS] LAST_TRANSACTION: {len(current_context)} msgs, {final_size:,} bytes -> target {target_size_bytes / original_size * 100 if original_size > 0 else 0:.0f}% ({target_size_bytes:,} bytes) [{status}]"
         _verbose(compression_end_msg)
 
-    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
-    return current_context, metadata
+    return current_context, status
 
 
-# --- Algorithm 2b: Tool Pruning (with 50% boundary) ---
+def compress_last_transaction(
+    context: list[dict],
+    client,
+    model_name: str,
+    target_size_bytes: int,
+    tools: list | None = None,
+    extra_kwargs: dict[str, Any] | None = None,
+    verbose: bool = False,
+    log_file: Path | None = None,
+    audit_writer: Any = None,
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+) -> tuple[list[dict], dict]:
+    """Rewrite completed turns (right-to-left, within first 50%) via LLM summary.
+
+    Returns (context, metadata).
+    """
+    return _compress_wrapper(
+        "LAST_TRANSACTION", _compress_last_transaction_impl, context, target_size_bytes, verbose, audit_writer,
+        client=client, model_name=model_name, tools=tools, extra_kwargs=extra_kwargs,
+        log_file=log_file, max_context_tokens=max_context_tokens, max_output_tokens=max_output_tokens,
+    )
+
+
+# --- Algorithm 2b/6: Tool Pruning (unified with boundary parameter) ---
+
+
+def _compress_tool_pruning_impl(
+    current_context: list[dict],
+    target_size_bytes: int,
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    use_boundary: bool,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core tool pruning logic.
+
+    Args:
+        use_boundary: If True, prune only within 50% boundary. If False, prune entire context.
+    """
+    if use_boundary:
+        _, boundary_idx = _compute_50_boundary(current_context)
+
+    iteration = 0
+    while _calculate_context_bytes(current_context) > target_size_bytes:
+        iteration += 1
+        if iteration > MAX_ITERATIONS:
+            if verbose:
+                error("  :: ITERATION LIMIT REACHED (100), STOPPING")
+            break
+
+        if verbose:
+            echo(f"{Colors.YELLOW}{'-'*70}{Colors.RESET}")
+            echo(
+                f"  :: ITERATION #{iteration} START: current_size={_calculate_context_bytes(current_context):,} bytes, target={target_size_bytes:,} bytes"
+            )
+
+        # Recompute scan limit each iteration (context shrinks as tools are pruned)
+        if use_boundary:
+            _, boundary_idx = _compute_50_boundary(current_context)
+            scan_limit = boundary_idx + 1
+        else:
+            scan_limit = len(current_context)
+
+        for i in range(scan_limit):
+            msg = current_context[i]
+            if msg.get("role") == "tool":
+                tool_content = msg.get("content", "")
+                tool_bytes = len(str(tool_content))
+
+                if tool_bytes > PRUNE_THRESHOLD:
+                    tool_name = msg.get("name", "unknown")
+                    if verbose:
+                        _verbose(f"  :: Found prunable tool at msg #{i}, content_size={tool_bytes:,} bytes")
+
+                    current_context[i] = {
+                        "role": "tool",
+                        "content": "COMPRESSION: CALL RESULT NO LONGER AVAILABLE",
+                        "tool_call_id": current_context[i].get("tool_call_id", ""),
+                        "name": current_context[i].get("name", ""),
+                    }
+
+                    new_bytes = len("COMPRESSION: CALL RESULT NO LONGER AVAILABLE")
+                    savings = tool_bytes - new_bytes
+                    action_desc = f"pruned tool '{tool_name}' at msg {i}: {tool_bytes}B → {new_bytes}B"
+                    actions.append(action_desc)
+                    if audit_writer is not None:
+                        audit_writer.compress_action(step_name, "prune_tool", action_desc)
+
+                    if verbose:
+                        _verbose(f"  :: TOOL_PRUNED msg #{i}: SAVED {savings:,} bytes")
+
+                    break
+        else:
+            # No prunable tool found in this iteration
+            if verbose:
+                boundary_msg = "within boundary" if use_boundary else "in context"
+                _verbose(f"  :: No more tools with content > 100 bytes found {boundary_msg}")
+            break
+
+    final_size = _calculate_context_bytes(current_context)
+    status = "ACHIEVED" if final_size <= target_size_bytes else "NO_MORE_TOOLS"
+    return current_context, status
 
 
 def compress_tool_pruning(
@@ -730,105 +916,42 @@ def compress_tool_pruning(
     target_size_bytes: int,
     verbose: bool = False,
     audit_writer: Any = None,
+    use_boundary: bool = True,
+    **kwargs,
 ) -> tuple[list[dict], dict]:
-    """Replace tool outputs >100 bytes (within 50% boundary) with a placeholder.
+    """Replace tool outputs >100 bytes with a placeholder.
+
+    Args:
+        use_boundary: If True, prune only within 50% boundary. If False, prune entire context.
 
     Returns (context, metadata).
     """
-    step_name = "TOOL_PRUNING"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    current_context = list(context)
-    actions: list[str] = []
-    tools_pruned = 0
-
-    boundary_50_bytes, boundary_idx = _compute_50_boundary(current_context)
-
-    iteration = 0
-    while _calculate_context_bytes(current_context) > target_size_bytes:
-        iteration += 1
-        if iteration > MAX_ITERATIONS:
-            if verbose:
-                error("  :: ITERATION LIMIT REACHED (100), STOPPING")
-            break
-
-        if verbose:
-            echo(f"{Colors.YELLOW}{'-'*70}{Colors.RESET}")
-            echo(
-                f"  :: ITERATION #{iteration} START: current_size={_calculate_context_bytes(current_context):,} bytes, target={target_size_bytes:,} bytes"
-            )
-
-        for i in range(boundary_idx + 1):
-            msg = current_context[i]
-            if msg.get("role") == "tool":
-                tool_content = msg.get("content", "")
-                tool_bytes = len(str(tool_content))
-
-                if tool_bytes > PRUNE_THRESHOLD:
-                    tool_name = msg.get("name", "unknown")
-                    if verbose:
-                        _verbose(f"  :: Found prunable tool at msg #{i}, content_size={tool_bytes:,} bytes")
-
-                    current_context[i] = {
-                        "role": "tool",
-                        "content": "COMPRESSION: CALL RESULT NO LONGER AVAILABLE",
-                        "tool_call_id": current_context[i].get("tool_call_id", ""),
-                        "name": current_context[i].get("name", ""),
-                    }
-
-                    new_bytes = len("COMPRESSION: CALL RESULT NO LONGER AVAILABLE")
-                    savings = tool_bytes - new_bytes
-                    tools_pruned += 1
-                    action_desc = f"pruned tool '{tool_name}' at msg {i}: {tool_bytes}B → {new_bytes}B"
-                    actions.append(action_desc)
-                    if audit_writer is not None:
-                        audit_writer.compress_action(step_name, "prune_tool", action_desc)
-
-                    if verbose:
-                        _verbose(f"  :: TOOL_PRUNED msg #{i}: SAVED {savings:,} bytes")
-
-                    break
-        else:
-            # No prunable tool found in this iteration
-            if verbose:
-                _verbose("  :: No more tools with content > 100 bytes found within boundary")
-            break
-
-    final_size = _calculate_context_bytes(current_context)
-    msgs_after = len(current_context)
-    status = "ACHIEVED" if final_size <= target_size_bytes else "NO_MORE_TOOLS"
-
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
-
-    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
-    return current_context, metadata
+    step_name = "TOOL_PRUNING" if use_boundary else "TOOL_PRUNING_FULL"
+    return _compress_wrapper(
+        step_name, _compress_tool_pruning_impl,
+        context, target_size_bytes, verbose, audit_writer,
+        use_boundary=use_boundary,
+    )
 
 
-# --- Algorithm 6: Tool Pruning Full (no boundary) ---
+# --- Algorithm 3/7: Redact Blocks (unified with boundary parameter) ---
 
 
-def compress_tool_pruning_full(
-    context: list[dict],
-    client,
-    model_name: str,
+def _compress_redact_blocks_impl(
+    current_context: list[dict],
     target_size_bytes: int,
-    verbose: bool = False,
-    audit_writer: Any = None,
-) -> tuple[list[dict], dict]:
-    """Replace tool outputs >100 bytes across the ENTIRE context (no 50% boundary).
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    use_boundary: bool,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core block redaction logic.
 
-    Same logic as compress_tool_pruning but scans all the way to the end.
-    Returns (context, metadata).
+    Args:
+        use_boundary: If True, redact only within 50% boundary. If False, redact entire context.
     """
-    step_name = "TOOL_PRUNING_FULL"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    current_context = list(context)
-    actions: list[str] = []
-    tools_pruned = 0
-
     iteration = 0
     while _calculate_context_bytes(current_context) > target_size_bytes:
         iteration += 1
@@ -843,55 +966,86 @@ def compress_tool_pruning_full(
                 f"  :: ITERATION #{iteration} START: current_size={_calculate_context_bytes(current_context):,} bytes, target={target_size_bytes:,} bytes"
             )
 
-        for i in range(len(current_context)):
-            msg = current_context[i]
-            if msg.get("role") == "tool":
-                tool_content = msg.get("content", "")
-                tool_bytes = len(str(tool_content))
+        # Recompute scan limit each iteration (context shrinks as blocks are redacted)
+        if use_boundary:
+            _, boundary_idx = _compute_50_boundary(current_context)
+            scan_limit = boundary_idx
+        else:
+            scan_limit = len(current_context)
 
-                if tool_bytes > PRUNE_THRESHOLD:
-                    tool_name = msg.get("name", "unknown")
-                    if verbose:
-                        _verbose(f"  :: Found prunable tool at msg #{i}, content_size={tool_bytes:,} bytes")
+        found_block = False
+        i = 0
+        while i <= scan_limit:
+            # Safety: break if i exceeds current context length (can happen after redaction)
+            if i >= len(current_context):
+                break
+            if current_context[i].get("role") == "user" and not is_synthetic_message(current_context[i]):
+                user_idx = i
+                assistant_idx = None
 
-                    current_context[i] = {
-                        "role": "tool",
-                        "content": "COMPRESSION: CALL RESULT NO LONGER AVAILABLE",
-                        "tool_call_id": current_context[i].get("tool_call_id", ""),
-                        "name": current_context[i].get("name", ""),
-                    }
+                for j in range(i + 1, scan_limit):
+                    if current_context[j].get("role") == "user" and not is_synthetic_message(current_context[j]):
+                        break
+                    if current_context[j].get("role") == "assistant" and not current_context[j].get("tool_calls"):
+                        assistant_idx = j
+                        break
 
-                    new_bytes = len("COMPRESSION: CALL RESULT NO LONGER AVAILABLE")
-                    savings = tool_bytes - new_bytes
-                    tools_pruned += 1
-                    action_desc = f"pruned tool '{tool_name}' at msg {i}: {tool_bytes}B → {new_bytes}B"
+                if assistant_idx is not None:
+                    block = current_context[user_idx:assistant_idx + 1]
+                    block_bytes = _calculate_context_bytes(block)
+
+                    if block_bytes < MIN_BLOCK_SIZE:
+                        if verbose:
+                            _verbose(f"     ✗ Block too small (< {MIN_BLOCK_SIZE} bytes) - SKIP")
+                        i = assistant_idx + 1
+                        continue
+
+                    if _has_unresolved_tool_calls(block):
+                        if verbose:
+                            _verbose("     ✗ Block contains unresolved tool calls - SKIP")
+                        i = assistant_idx + 1
+                        continue
+
+                    if _has_orphaned_tool_results(block):
+                        if verbose:
+                            _verbose("     ✗ Block contains orphaned tool results - SKIP")
+                        i = assistant_idx + 1
+                        continue
+
+                    removed_count = len(block) - 2
+                    new_block = [
+                        current_context[user_idx],
+                        current_context[assistant_idx],
+                    ]
+                    new_bytes = _calculate_context_bytes(new_block)
+                    savings = block_bytes - new_bytes
+                    action_desc = f"redacted block [{user_idx}:{assistant_idx}]: {block_bytes}B → {new_bytes}B (removed {removed_count} intermediates)"
                     actions.append(action_desc)
                     if audit_writer is not None:
-                        audit_writer.compress_action(step_name, "prune_tool", action_desc)
+                        audit_writer.compress_action(step_name, "redact_block", action_desc)
 
                     if verbose:
-                        _verbose(f"  :: TOOL_PRUNED msg #{i}: SAVED {savings:,} bytes")
+                        _verbose(f"  :: BLOCK #{user_idx}-{assistant_idx} REDACTED: SAVED {savings:,} bytes (removed {removed_count} intermediates)")
 
+                    current_context = (
+                        current_context[:user_idx]
+                        + new_block
+                        + current_context[assistant_idx + 1:]
+                    )
+                    found_block = True
                     break
-        else:
-            # No prunable tool found in this iteration
+
+            i += 1
+
+        if not found_block:
             if verbose:
-                _verbose("  :: No more tools with content > 100 bytes found in context")
+                boundary_msg = "within boundary" if use_boundary else "in context"
+                _verbose(f"  :: No more completed blocks to redact {boundary_msg}")
             break
 
     final_size = _calculate_context_bytes(current_context)
-    msgs_after = len(current_context)
-    status = "ACHIEVED" if final_size <= target_size_bytes else "NO_MORE_TOOLS"
-
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
-
-    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
-    return current_context, metadata
-
-
-# --- Algorithm 3: Redact Blocks (with 50% boundary) ---
+    status = "ACHIEVED" if final_size <= target_size_bytes else "NO_MORE_BLOCKS"
+    return current_context, status
 
 
 def compress_redact_blocks(
@@ -901,227 +1055,22 @@ def compress_redact_blocks(
     target_size_bytes: int,
     verbose: bool = False,
     audit_writer: Any = None,
+    use_boundary: bool = True,
+    **kwargs,
 ) -> tuple[list[dict], dict]:
     """Strip intermediate messages from completed blocks, keeping only USER + ASSISTANT.
 
+    Args:
+        use_boundary: If True, redact only within 50% boundary. If False, redact entire context.
+
     Returns (context, metadata).
     """
-    step_name = "REDACT_BLOCKS"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    current_context = list(context)
-    actions: list[str] = []
-    blocks_redacted = 0
-
-    boundary_50_bytes, boundary_idx = _compute_50_boundary(current_context)
-
-    iteration = 0
-    while _calculate_context_bytes(current_context) > target_size_bytes:
-        iteration += 1
-        if iteration > MAX_ITERATIONS:
-            if verbose:
-                error("  :: ITERATION LIMIT REACHED (100), STOPPING")
-            break
-
-        if verbose:
-            echo(f"{Colors.YELLOW}{'-'*70}{Colors.RESET}")
-            echo(
-                f"  :: ITERATION #{iteration} START: current_size={_calculate_context_bytes(current_context):,} bytes, target={target_size_bytes:,} bytes"
-            )
-
-        found_block = False
-        i = 0
-        while i <= boundary_idx:
-            if current_context[i].get("role") == "user":
-                user_idx = i
-                assistant_idx = None
-
-                for j in range(i + 1, boundary_idx):
-                    if current_context[j].get("role") == "user":
-                        break
-                    if current_context[j].get("role") == "assistant" and not current_context[j].get("tool_calls"):
-                        assistant_idx = j
-                        break
-
-                if assistant_idx is not None:
-                    block = current_context[user_idx:assistant_idx + 1]
-                    block_bytes = _calculate_context_bytes(block)
-
-                    if block_bytes < MIN_BLOCK_SIZE:
-                        if verbose:
-                            _verbose(f"     ✗ Block too small (< {MIN_BLOCK_SIZE} bytes) - SKIP")
-                        i = assistant_idx + 1
-                        continue
-
-                    if _has_unresolved_tool_calls(block):
-                        if verbose:
-                            _verbose("     ✗ Block contains unresolved tool calls - SKIP")
-                        i = assistant_idx + 1
-                        continue
-
-                    if _has_orphaned_tool_results(block):
-                        if verbose:
-                            _verbose("     ✗ Block contains orphaned tool results - SKIP")
-                        i = assistant_idx + 1
-                        continue
-
-                    removed_count = len(block) - 2
-                    blocks_redacted += 1
-                    new_block = [
-                        current_context[user_idx],
-                        current_context[assistant_idx],
-                    ]
-                    new_bytes = _calculate_context_bytes(new_block)
-                    savings = block_bytes - new_bytes
-                    action_desc = f"redacted block [{user_idx}:{assistant_idx}]: {block_bytes}B → {new_bytes}B (removed {removed_count} intermediates)"
-                    actions.append(action_desc)
-                    if audit_writer is not None:
-                        audit_writer.compress_action(step_name, "redact_block", action_desc)
-
-                    if verbose:
-                        _verbose(f"  :: BLOCK #{user_idx}-{assistant_idx} REDACTED: SAVED {savings:,} bytes (removed {removed_count} intermediates)")
-
-                    current_context = (
-                        current_context[:user_idx]
-                        + new_block
-                        + current_context[assistant_idx + 1:]
-                    )
-                    found_block = True
-                    break
-
-            i += 1
-
-        if not found_block:
-            if verbose:
-                _verbose("  :: No more completed blocks to redact within boundary")
-            break
-
-    final_size = _calculate_context_bytes(current_context)
-    msgs_after = len(current_context)
-    status = "ACHIEVED" if final_size <= target_size_bytes else "NO_MORE_BLOCKS"
-
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
-
-    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
-    return current_context, metadata
-
-
-# --- Algorithm 7: Redact Blocks Full (no boundary) ---
-
-
-def compress_redact_blocks_full(
-    context: list[dict],
-    client,
-    model_name: str,
-    target_size_bytes: int,
-    verbose: bool = False,
-    audit_writer: Any = None,
-) -> tuple[list[dict], dict]:
-    """Strip intermediate messages from completed blocks across the ENTIRE context (no 50% boundary).
-
-    Same logic as compress_redact_blocks but scans all the way to the end.
-    Returns (context, metadata).
-    """
-    step_name = "REDACT_BLOCKS_FULL"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    current_context = list(context)
-    actions: list[str] = []
-    blocks_redacted = 0
-
-    iteration = 0
-    while _calculate_context_bytes(current_context) > target_size_bytes:
-        iteration += 1
-        if iteration > MAX_ITERATIONS:
-            if verbose:
-                error("  :: ITERATION LIMIT REACHED (100), STOPPING")
-            break
-
-        if verbose:
-            echo(f"{Colors.YELLOW}{'-'*70}{Colors.RESET}")
-            echo(
-                f"  :: ITERATION #{iteration} START: current_size={_calculate_context_bytes(current_context):,} bytes, target={target_size_bytes:,} bytes"
-            )
-
-        found_block = False
-        i = 0
-        while i < len(current_context):
-            if current_context[i].get("role") == "user":
-                user_idx = i
-                assistant_idx = None
-
-                for j in range(i + 1, len(current_context)):
-                    if current_context[j].get("role") == "user":
-                        break
-                    if current_context[j].get("role") == "assistant" and not current_context[j].get("tool_calls"):
-                        assistant_idx = j
-                        break
-
-                if assistant_idx is not None:
-                    block = current_context[user_idx:assistant_idx + 1]
-                    block_bytes = _calculate_context_bytes(block)
-
-                    if block_bytes < MIN_BLOCK_SIZE:
-                        if verbose:
-                            _verbose(f"     ✗ Block too small (< {MIN_BLOCK_SIZE} bytes) - SKIP")
-                        i = assistant_idx + 1
-                        continue
-
-                    if _has_unresolved_tool_calls(block):
-                        if verbose:
-                            _verbose("     ✗ Block contains unresolved tool calls - SKIP")
-                        i = assistant_idx + 1
-                        continue
-
-                    if _has_orphaned_tool_results(block):
-                        if verbose:
-                            _verbose("     ✗ Block contains orphaned tool results - SKIP")
-                        i = assistant_idx + 1
-                        continue
-
-                    removed_count = len(block) - 2
-                    blocks_redacted += 1
-                    new_block = [
-                        current_context[user_idx],
-                        current_context[assistant_idx],
-                    ]
-                    new_bytes = _calculate_context_bytes(new_block)
-                    savings = block_bytes - new_bytes
-                    action_desc = f"redacted block [{user_idx}:{assistant_idx}]: {block_bytes}B → {new_bytes}B (removed {removed_count} intermediates)"
-                    actions.append(action_desc)
-                    if audit_writer is not None:
-                        audit_writer.compress_action(step_name, "redact_block", action_desc)
-
-                    if verbose:
-                        _verbose(f"  :: BLOCK #{user_idx}-{assistant_idx} REDACTED: SAVED {savings:,} bytes (removed {removed_count} intermediates)")
-
-                    current_context = (
-                        current_context[:user_idx]
-                        + new_block
-                        + current_context[assistant_idx + 1:]
-                    )
-                    found_block = True
-                    break
-
-            i += 1
-
-        if not found_block:
-            if verbose:
-                _verbose("  :: No more completed blocks to redact in context")
-            break
-
-    final_size = _calculate_context_bytes(current_context)
-    msgs_after = len(current_context)
-    status = "ACHIEVED" if final_size <= target_size_bytes else "NO_MORE_BLOCKS"
-
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_step_end(step_name, final_size, msgs_after, status)
-
-    metadata = _make_metadata(step_name, original_size, final_size, msgs_before, msgs_after, actions, status)
-    return current_context, metadata
+    step_name = "REDACT_BLOCKS" if use_boundary else "REDACT_BLOCKS_FULL"
+    return _compress_wrapper(
+        step_name, _compress_redact_blocks_impl,
+        context, target_size_bytes, verbose, audit_writer,
+        use_boundary=use_boundary,
+    )
 
 
 # --- Algorithm 4: Full Reset (Last Resort) ---
@@ -1148,48 +1097,47 @@ PLAN_PROMPT = """Based on the conversation history, what are the next steps need
 Provide a clear plan with concrete actions."""
 
 
-def compress_full_reset(
-    context: list[dict],
-    client,
-    model_name: str,
+def _compress_full_reset_impl(
+    current_context: list[dict],
     target_size_bytes: int,
-    tools: list = None,
-    extra_kwargs: dict[str, Any] | None = None,
-    verbose: bool = False,
-    log_file: Path | None = None,
-    audit_writer: Any = None,
-    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
-    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
-) -> tuple[list[dict], dict]:
-    """Full context rebuild: LLM generates summary + plan, replaces entire context.
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core full reset — LLM generates summary + plan, replaces entire context."""
+    client = kwargs.get("client")
+    model_name = kwargs.get("model_name")
+    tools = kwargs.get("tools")
+    extra_kwargs = kwargs.get("extra_kwargs")
+    log_file = kwargs.get("log_file")
+    max_context_tokens = kwargs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
+    max_output_tokens = kwargs.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
 
-    Returns (context, metadata).
-    """
-    step_name = "FULL_RESET"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    actions: list[str] = []
+    original_size = _calculate_context_bytes(current_context)
 
-    system_msg = context[0] if context and context[0].get("role") == "system" else None
+    system_msg = current_context[0] if current_context and current_context[0].get("role") == "system" else None
 
-    first_user_idx = next((i for i, msg in enumerate(context) if msg.get("role") == "user"), None)
-    if first_user_idx is None:
+    # Find the last real (non-synthetic) user message — the most recent turn's request
+    last_real_user_idx = None
+    for i in range(len(current_context) - 1, -1, -1):
+        if current_context[i].get("role") == "user" and not is_synthetic_message(current_context[i]):
+            last_real_user_idx = i
+            break
+
+    if last_real_user_idx is None:
         if verbose:
-            error("  :: No user prompt found! Returning unchanged context.")
-        metadata = _make_metadata(step_name, original_size, original_size, msgs_before, msgs_before, [], "FAILED_NO_USER")
-        if audit_writer is not None:
-            audit_writer.compress_start(step_name, original_size, msgs_before)
-            audit_writer.compress_step_end(step_name, original_size, msgs_before, "FAILED_NO_USER")
-        return context, metadata
+            error("  :: No real user prompt found! Returning unchanged context.")
+        return current_context, "FAILED_NO_USER"
 
-    first_user_content = _extract_text_from_content(context[first_user_idx].get("content", ""))
+    last_real_user_content = _extract_text_from_content(current_context[last_real_user_idx].get("content", ""))
 
-    # LLM Request 1: summary
+    # LLM Request 1: summary — include everything up to and including the last real user message
     context_for_summary = (
         [{"role": "system", "content": SUMMARY_PROMPT},
          {"role": "user", "content": "Summarize everything you have done so far:"}]
-        + context[1:first_user_idx]
-        + [context[first_user_idx]]
+        + current_context[1:last_real_user_idx + 1]
     )
 
     try:
@@ -1239,18 +1187,14 @@ def compress_full_reset(
 
 {plan}
 
-# ORIGINAL USER REQUEST
+# CURRENT USER REQUEST
 
-{first_user_content}"""
+{last_real_user_content}"""
 
     if not summary and not plan:
         if verbose:
             error("  :: FULL_RESET FAILED - Both summary and plan empty. Returning unchanged context.")
-        metadata = _make_metadata(step_name, original_size, original_size, msgs_before, msgs_before, [], "FAILED_EMPTY")
-        if audit_writer is not None:
-            audit_writer.compress_start(step_name, original_size, msgs_before)
-            audit_writer.compress_step_end(step_name, original_size, msgs_before, "FAILED_EMPTY")
-        return context, metadata
+        return current_context, "FAILED_EMPTY"
 
     new_context = []
     if system_msg:
@@ -1259,21 +1203,37 @@ def compress_full_reset(
 
     new_bytes = _calculate_context_bytes(new_context)
     msgs_after = len(new_context)
-    action_desc = f"full reset: {msgs_before} msgs ({original_size}B) → {msgs_after} msgs ({new_bytes}B)"
+    action_desc = f"full reset: {len(current_context)} msgs ({original_size}B) → {msgs_after} msgs ({new_bytes}B)"
     actions.append(action_desc)
 
     if verbose:
-        _verbose(f"  :: NEW CONTEXT: {len(new_context)} msgs, {new_bytes:,} bytes (from {len(context)} msgs)")
+        _verbose(f"  :: NEW CONTEXT: {len(new_context)} msgs, {new_bytes:,} bytes (from {len(current_context)} msgs)")
 
-    status = "RESET"
+    return new_context, "RESET"
 
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_action(step_name, "full_reset", action_desc)
-        audit_writer.compress_step_end(step_name, new_bytes, msgs_after, status)
 
-    metadata = _make_metadata(step_name, original_size, new_bytes, msgs_before, msgs_after, actions, status)
-    return new_context, metadata
+def compress_full_reset(
+    context: list[dict],
+    client,
+    model_name: str,
+    target_size_bytes: int,
+    tools: list | None = None,
+    extra_kwargs: dict[str, Any] | None = None,
+    verbose: bool = False,
+    log_file: Path | None = None,
+    audit_writer: Any = None,
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+) -> tuple[list[dict], dict]:
+    """Full context rebuild: LLM generates summary + plan, replaces entire context.
+
+    Returns (context, metadata).
+    """
+    return _compress_wrapper(
+        "FULL_RESET", _compress_full_reset_impl, context, target_size_bytes, verbose, audit_writer,
+        client=client, model_name=model_name, tools=tools, extra_kwargs=extra_kwargs,
+        log_file=log_file, max_context_tokens=max_context_tokens, max_output_tokens=max_output_tokens,
+    )
 
 
 # --- Orchestrator ---
@@ -1283,7 +1243,7 @@ def _format_success(
     name: str,
     size: int,
     original_size: int,
-    target_percentage: float,
+    compression_factor: float,
     msg_count: int,
     algorithms_used: list[str],
     verbose: bool,
@@ -1298,7 +1258,7 @@ def _format_success(
             f"{Colors.GREEN}    Original: {original_size:,} bytes -> {size:,} bytes{Colors.RESET}"
         )
         echo(
-            f"{Colors.GREEN}    Reduction: {(1 - size / original_size) * 100 if original_size > 0 else 0:.1f}% (target was {target_percentage*100:.0f}%) {Colors.RESET}"
+            f"{Colors.GREEN}    Reduction: {(1 - size / original_size) * 100 if original_size > 0 else 0:.1f}% (target was {compression_factor*100:.0f}%) {Colors.RESET}"
         )
         echo(
             f"{Colors.GREEN}    Algorithms used: {' + '.join(algorithms_used)}{Colors.RESET}"
@@ -1325,27 +1285,34 @@ def _build_action_summary(actions: list[str]) -> str:
 # --- Algorithm 9: Conversation Summary (deterministic, no LLM) ---
 
 
-def _is_synthetic_message_local(msg: dict) -> bool:
-    """Local check for synthetic messages (avoids import cycle)."""
-    prefix = "[SYNTHETIC:"
+def _extract_synthetic_category(msg: dict) -> str:
+    """Extract category from synthetic message prefix.
+
+    Handles both formats:
+    - Legacy: [SYSTEM-SYNTHETIC: CATEGORY] content
+    - New: [U:TYPE | N:stack] content (extracts TYPE)
+    """
     content = msg.get("content", "")
+    text = ""
     if isinstance(content, str):
-        return content.startswith(prefix)
-    if isinstance(content, list):
+        text = content
+    elif isinstance(content, list):
         for part in content:
             if isinstance(part, dict) and part.get("type") == "text":
-                if part.get("text", "").startswith(prefix):
-                    return True
-    return False
+                text = part.get("text", "")
+                break
 
-
-def _extract_synthetic_category(msg: dict) -> str:
-    """Extract category from synthetic message prefix."""
-    content = msg.get("content", "")
-    if isinstance(content, str) and content.startswith("[SYNTHETIC:"):
-        end = content.find("]", 11)
+    # New format: [U:TYPE | N:stack]
+    if text.startswith("[U:"):
+        end = text.find("|", 3)
         if end > 0:
-            return content[11:end]
+            return text[3:end].strip()
+    # Legacy format: [SYSTEM-SYNTHETIC: CATEGORY]
+    prefix = "[SYSTEM-SYNTHETIC: "
+    if text.startswith(prefix):
+        end = text.find("]", len(prefix))
+        if end > 0:
+            return text[len(prefix):end]
     return "unknown"
 
 
@@ -1378,29 +1345,20 @@ def _is_within_turn(context: list[dict]) -> bool:
     return False
 
 
-def compress_conversation_summary(
-    context: list[dict],
-    client,
-    model_name: str,
+def _compress_conversation_summary_impl(
+    current_context: list[dict],
     target_size_bytes: int,
-    verbose: bool = False,
-    audit_writer: Any = None,
-) -> tuple[list[dict], dict]:
-    """Condense entire conversation into a single summary user message.
-
-    Deterministic restructuring — no LLM call required.
-    Preserves ALL interaction history in a compact structured format.
-    Result is always OpenAI-alternation-compliant:
-        [system_msg, summary_user_msg] or
-        [system_msg, summary_user_msg, synthetic_assistant_msg]
-    """
-    step_name = "CONVERSATION_SUMMARY"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    actions: list[str] = []
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core conversation summary — condense entire conversation into a single summary message."""
+    original_size = _calculate_context_bytes(current_context)
 
     # Extract system message
-    system_msg = context[0] if context and context[0].get("role") == "system" else None
+    system_msg = current_context[0] if current_context and current_context[0].get("role") == "system" else None
 
     # Build interaction pairs
     interactions: list[str] = []
@@ -1411,11 +1369,11 @@ def compress_conversation_summary(
 
     i = 0
     # Skip system message
-    if context and context[0].get("role") == "system":
+    if current_context and current_context[0].get("role") == "system":
         i = 1
 
-    while i < len(context):
-        msg = context[i]
+    while i < len(current_context):
+        msg = current_context[i]
         role = msg.get("role", "")
 
         if role == "user":
@@ -1424,7 +1382,7 @@ def compress_conversation_summary(
                 interaction_num += 1
                 interaction_lines = [f"### INTERACTION {interaction_num}"]
                 # Check if synthetic
-                if _is_synthetic_message_local(msg):
+                if is_synthetic_message(msg):
                     cat = _extract_synthetic_category(msg)
                     interaction_lines.append(f"**USER:** [SYSTEM: {cat}]")
                 else:
@@ -1437,7 +1395,7 @@ def compress_conversation_summary(
                 interactions.append("\n".join(interaction_lines))
 
             # Start new interaction
-            if _is_synthetic_message_local(msg):
+            if is_synthetic_message(msg):
                 cat = _extract_synthetic_category(msg)
                 current_user_content = f"[SYSTEM: {cat}]"
             else:
@@ -1481,7 +1439,7 @@ def compress_conversation_summary(
         if current_tool_lines:
             summary_parts.append("**TOOLS:**\n" + "\n".join(current_tool_lines) + "\n")
         # Check if within a turn
-        if _is_within_turn(context):
+        if _is_within_turn(current_context):
             summary_parts.append("**STATUS:** in-progress\n")
         else:
             summary_parts.append("**STATUS:** awaiting response\n")
@@ -1498,7 +1456,7 @@ def compress_conversation_summary(
     new_context.append({"role": "user", "content": summary_content})
 
     # If not within a turn, add synthetic assistant message
-    if not _is_within_turn(context):
+    if not _is_within_turn(current_context):
         new_context.append({
             "role": "assistant",
             "content": "I've summarized our conversation above. What would you like to do next?",
@@ -1506,69 +1464,71 @@ def compress_conversation_summary(
 
     new_bytes = _calculate_context_bytes(new_context)
     msgs_after = len(new_context)
-    action_desc = f"conversation summary: {msgs_before} msgs ({original_size}B) → {msgs_after} msgs ({new_bytes}B)"
+    action_desc = f"conversation summary: {len(current_context)} msgs ({original_size}B) → {msgs_after} msgs ({new_bytes}B)"
     actions.append(action_desc)
 
-    status = "SUMMARIZED"
-
     if verbose:
-        _verbose(f"  :: CONVERSATION SUMMARY: {msgs_before} msgs → {msgs_after} msgs, {original_size:,}B → {new_bytes:,}B")
+        _verbose(f"  :: CONVERSATION SUMMARY: {len(current_context)} msgs → {msgs_after} msgs, {original_size:,}B → {new_bytes:,}B")
 
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_action(step_name, "conversation_summary", action_desc)
-        audit_writer.compress_step_end(step_name, new_bytes, msgs_after, status)
-
-    metadata = _make_metadata(step_name, original_size, new_bytes, msgs_before, msgs_after, actions, status)
-    return new_context, metadata
+    return new_context, "SUMMARIZED"
 
 
-# --- Algorithm 10: Blind Truncation (guaranteed to fit) ---
-
-
-def compress_blind_truncate(
+def compress_conversation_summary(
     context: list[dict],
     client,
     model_name: str,
     target_size_bytes: int,
     verbose: bool = False,
     audit_writer: Any = None,
+    **kwargs,
 ) -> tuple[list[dict], dict]:
-    """Last-resort: truncate summary message from the beginning.
+    """Condense entire conversation into a single summary user message.
 
-    Guaranteed to produce a context that fits within target_size_bytes.
-    Preserves the most recent information (right side).
-    Adds a marker indicating truncation occurred.
+    Deterministic restructuring — no LLM call required.
+    Preserves ALL interaction history in a compact structured format.
+    Result is always OpenAI-alternation-compliant:
+        [system_msg, summary_user_msg] or
+        [system_msg, summary_user_msg, synthetic_assistant_msg]
     """
-    step_name = "BLIND_TRUNCATE"
-    original_size = _calculate_context_bytes(context)
-    msgs_before = len(context)
-    actions: list[str] = []
+    return _compress_wrapper("CONVERSATION_SUMMARY", _compress_conversation_summary_impl, context, target_size_bytes, verbose, audit_writer, **kwargs)
 
-    # Find the summary user message (should be the only user message after conversation_summary)
+
+# --- Algorithm 10: Blind Truncation (guaranteed to fit) ---
+
+
+def _compress_blind_truncate_impl(
+    current_context: list[dict],
+    target_size_bytes: int,
+    verbose: bool,
+    audit_writer: Any,
+    actions: list[str],
+    step_name: str,
+    **kwargs,
+) -> tuple[list[dict], str]:
+    """Core blind truncation — truncate summary message from the beginning."""
+    original_size = _calculate_context_bytes(current_context)
+
+    # Find the summary user message
     user_msg_idx = None
-    for i, msg in enumerate(context):
+    for i, msg in enumerate(current_context):
         if msg.get("role") == "user":
             user_msg_idx = i
             break
 
     if user_msg_idx is None:
-        # No user message to truncate — return as-is
-        metadata = _make_metadata(step_name, original_size, original_size, msgs_before, msgs_before, [], "NO_USER_MSG")
-        return context, metadata
+        return current_context, "NO_USER_MSG"
 
-    user_msg = context[user_msg_idx]
+    user_msg = current_context[user_msg_idx]
     content = user_msg.get("content", "")
     if not isinstance(content, str):
-        metadata = _make_metadata(step_name, original_size, original_size, msgs_before, msgs_before, [], "NOT_STRING")
-        return context, metadata
+        return current_context, "NOT_STRING"
 
     # Find the CURRENT TASK section
     current_task_marker = "### CURRENT TASK"
     current_task_pos = content.find(current_task_marker)
 
     # Calculate system message size (if exists)
-    system_msg = context[0] if context and context[0].get("role") == "system" else None
+    system_msg = current_context[0] if current_context and current_context[0].get("role") == "system" else None
     system_bytes = _calculate_context_bytes([system_msg]) if system_msg else 0
 
     # Target for the user message content (subtract system and overhead)
@@ -1578,9 +1538,7 @@ def compress_blind_truncate(
     # Truncate from the beginning if needed
     content_bytes = len(content.encode("utf-8"))
     if content_bytes <= user_target:
-        # Already fits
-        metadata = _make_metadata(step_name, original_size, original_size, msgs_before, msgs_before, [], "ALREADY_FITS")
-        return context, metadata
+        return current_context, "ALREADY_FITS"
 
     # Need to truncate — preserve CURRENT TASK section
     current_task_section = ""
@@ -1598,45 +1556,73 @@ def compress_blind_truncate(
     available_for_history = max(0, user_target - current_task_bytes - marker_bytes)
 
     if available_for_history <= 0:
-        # Can't keep any history, just keep current task
         new_content = current_task_section
     else:
-        # Truncate from the end of the history portion using byte-slice
-        # (O(1) instead of character-by-character loop)
+        # Truncate from the end of the history portion using byte-slice (O(1))
         truncation_point = min(available_for_history, len(content_to_truncate.encode("utf-8")))
         truncated = content_to_truncate.encode("utf-8")[:truncation_point].decode("utf-8", errors="ignore")
         new_content = truncated + truncation_marker + current_task_section
 
     # Update the message
-    new_context = list(context)
+    new_context = list(current_context)
     new_context[user_msg_idx] = {**user_msg, "content": new_content}
 
     new_bytes = _calculate_context_bytes(new_context)
-    msgs_after = len(new_context)
     chars_removed = len(content) - len(new_content)
     action_desc = f"blind truncate: removed {chars_removed} chars from beginning, {original_size}B → {new_bytes}B"
     actions.append(action_desc)
 
-    status = "TRUNCATED"
-
     if verbose:
         _verbose(f"  :: BLIND TRUNCATE: {chars_removed} chars removed, {original_size:,}B → {new_bytes:,}B")
 
-    if audit_writer is not None:
-        audit_writer.compress_start(step_name, original_size, msgs_before)
-        audit_writer.compress_action(step_name, "blind_truncate", action_desc)
-        audit_writer.compress_step_end(step_name, new_bytes, msgs_after, status)
+    return new_context, "TRUNCATED"
 
-    metadata = _make_metadata(step_name, original_size, new_bytes, msgs_before, msgs_after, actions, status)
-    return new_context, metadata
 
+def compress_blind_truncate(
+    context: list[dict],
+    client,
+    model_name: str,
+    target_size_bytes: int,
+    verbose: bool = False,
+    audit_writer: Any = None,
+    **kwargs,
+) -> tuple[list[dict], dict]:
+    """Last-resort: truncate summary message from the beginning.
+
+    Guaranteed to produce a context that fits within target_size_bytes.
+    Preserves the most recent information (right side).
+    Adds a marker indicating truncation occurred.
+    """
+    return _compress_wrapper("BLIND_TRUNCATE", _compress_blind_truncate_impl, context, target_size_bytes, verbose, audit_writer, **kwargs)
+
+
+
+# --- Pipeline Registry ---
+
+# Pipeline references impl functions directly.  ``_compress_wrapper`` is called
+# in the orchestrator loop, forwarding ``step.kwargs`` to each impl.  The public
+# wrapper functions (``compress_*``) are kept for backward-compatible testing.
+
+_COMPRESSION_PIPELINE: tuple[CompressionStep, ...] = (
+    CompressionStep("PRUNE_IMAGES", _compress_prune_images_impl),
+    CompressionStep("OVERSIZED_TOOL_REDACTION", _compress_oversized_tool_redaction_impl),
+    CompressionStep("DROP_REASONING", _compress_drop_reasoning_impl),
+    CompressionStep("LAST_TRANSACTION", _compress_last_transaction_impl),
+    CompressionStep("TOOL_PRUNING", _compress_tool_pruning_impl, kwargs={"use_boundary": True}),
+    CompressionStep("REDACT_BLOCKS", _compress_redact_blocks_impl, kwargs={"use_boundary": True}),
+    CompressionStep("TOOL_PRUNING_FULL", _compress_tool_pruning_impl, kwargs={"use_boundary": False}),
+    CompressionStep("REDACT_BLOCKS_FULL", _compress_redact_blocks_impl, kwargs={"use_boundary": False}),
+    CompressionStep("FULL_RESET", _compress_full_reset_impl),
+    CompressionStep("CONVERSATION_SUMMARY", _compress_conversation_summary_impl),
+    CompressionStep("BLIND_TRUNCATE", _compress_blind_truncate_impl),
+)
 
 # --- Orchestrator ---
 def compress_context(
     context: list[dict],
     client,
     model_name: str,
-    target_percentage: float,
+    compression_factor: float,
     tools: list,
     extra_kwargs: dict | None = None,
     verbose: bool = False,
@@ -1667,43 +1653,39 @@ def compress_context(
     original_message_count = len(context)
     target_size = compute_compression_target_bytes(
         original_size,
-        target_percentage,
+        compression_factor,
         last_known_tokens,
         max_context_tokens,
         max_output_tokens,
     )
 
+    if audit_writer is not None:
+        audit_writer.compress_pipeline_start(original_size, target_size, compression_factor, last_known_tokens)
+
     if verbose:
-        byte_target = int(original_size * (1 - target_percentage))
+        byte_target = int(original_size * (1 - compression_factor))
         if last_known_tokens is not None and last_known_tokens > 0:
-            echo(f"[COMPRESS] ORCHESTRATOR: {original_message_count} msgs, {original_size:,} bytes → target {target_percentage*100:.0f}% ({byte_target:,} bytes), token-aware target: {target_size:,} bytes (tokens: {last_known_tokens})")
+            echo(f"[COMPRESS] ORCHESTRATOR: {original_message_count} msgs, {original_size:,} bytes → target {compression_factor*100:.0f}% ({byte_target:,} bytes), token-aware target: {target_size:,} bytes (tokens: {last_known_tokens})")
         else:
-            echo(f"[COMPRESS] ORCHESTRATOR: {original_message_count} msgs, {original_size:,} bytes → target {target_percentage*100:.0f}% ({target_size:,} bytes)")
+            echo(f"[COMPRESS] ORCHESTRATOR: {original_message_count} msgs, {original_size:,} bytes → target {compression_factor*100:.0f}% ({target_size:,} bytes)")
 
     result = list(context)
     algorithms_used: list[str] = []
     bytes_per_algo: dict[str, int] = {}
 
-    # Define compression pipeline with consistent signatures.
-    # Each function returns (context, metadata).
-    pipeline = [
-        ("PRUNE_IMAGES", lambda ctx: compress_prune_images(ctx, client, model_name, target_size, verbose, audit_writer)),
-        ("OVERSIZED_TOOL_REDACTION", lambda ctx: compress_oversized_tool_redaction(ctx, client, model_name, target_size, verbose, audit_writer)),
-        ("DROP_REASONING", lambda ctx: compress_drop_reasoning(ctx, client, model_name, target_size, verbose, audit_writer)),
-        ("LAST_TRANSACTION", lambda ctx: compress_last_transaction(ctx, client, model_name, target_size, tools, extra_kwargs, verbose, log_file=log_file, audit_writer=audit_writer, max_context_tokens=max_context_tokens, max_output_tokens=max_output_tokens)),
-        ("TOOL_PRUNING", lambda ctx: compress_tool_pruning(ctx, client, model_name, target_size, verbose, audit_writer)),
-        ("REDACT_BLOCKS", lambda ctx: compress_redact_blocks(ctx, client, model_name, target_size, verbose, audit_writer)),
-        ("TOOL_PRUNING_FULL", lambda ctx: compress_tool_pruning_full(ctx, client, model_name, target_size, verbose, audit_writer)),
-        ("REDACT_BLOCKS_FULL", lambda ctx: compress_redact_blocks_full(ctx, client, model_name, target_size, verbose, audit_writer)),
-        ("FULL_RESET", lambda ctx: compress_full_reset(ctx, client, model_name, target_size, tools, extra_kwargs, verbose, log_file=log_file, audit_writer=audit_writer, max_context_tokens=max_context_tokens, max_output_tokens=max_output_tokens)),
-        ("CONVERSATION_SUMMARY", lambda ctx: compress_conversation_summary(ctx, client, model_name, target_size, verbose, audit_writer)),
-        ("BLIND_TRUNCATE", lambda ctx: compress_blind_truncate(ctx, client, model_name, target_size, verbose, audit_writer)),
-    ]
+    total_steps = len(_COMPRESSION_PIPELINE)
 
-    total_steps = len(pipeline)
-
-    for idx, (name, run_algo) in enumerate(pipeline, 1):
-        result, step_metadata = run_algo(result)
+    for idx, step in enumerate(_COMPRESSION_PIPELINE, 1):
+        # Forward all params so LLM-based steps (last_transaction, full_reset)
+        # can reach _invoke_llm_with_retry_compression via kwargs
+        result, step_metadata = _compress_wrapper(
+            step.name, step.impl_fn, result, target_size, verbose, audit_writer,
+            client=client, model_name=model_name, tools=tools,
+            extra_kwargs=extra_kwargs, log_file=log_file,
+            max_context_tokens=max_context_tokens,
+            max_output_tokens=max_output_tokens,
+            **step.kwargs,
+        )
         size = step_metadata["bytes_after"]
         msg_count = step_metadata["msgs_after"]
         action_summary = _build_action_summary(step_metadata["actions"])
@@ -1722,20 +1704,23 @@ def compress_context(
         )
 
         if verbose:
-            _verbose(f"[STEP {idx}/{total_steps} {name}] Entry: {step_metadata['msgs_before']} msgs, {step_metadata['bytes_before']:,} bytes")
-            _verbose(f"[STEP {idx}/{total_steps} {name}] Exit: {msg_count} msgs, {size:,} bytes")
+            _verbose(f"[STEP {idx}/{total_steps} {step.name}] Entry: {step_metadata['msgs_before']} msgs, {step_metadata['bytes_before']:,} bytes")
+            _verbose(f"[STEP {idx}/{total_steps} {step.name}] Exit: {msg_count} msgs, {size:,} bytes")
 
-        algorithms_used.append(name)
-        bytes_per_algo[name] = step_metadata["bytes_before"] - step_metadata["bytes_after"]
+        algorithms_used.append(step.name)
+        bytes_per_algo[step.name] = step_metadata["bytes_before"] - step_metadata["bytes_after"]
 
         if size <= target_size:
+            # Debug: log why we're exiting early
+            echo(f"[COMPRESS] EARLY EXIT at step {idx}/{total_steps} ({step.name}): size={size:,} <= target={target_size:,} (reduction={(1-size/original_size)*100:.1f}%, target={compression_factor*100:.0f}%)")
             summary, metadata = _format_success(
-                name, size, original_size, target_percentage, msg_count,
+                step.name, size, original_size, compression_factor, msg_count,
                 algorithms_used, verbose,
             )
             return result, summary, metadata
 
     # All steps exhausted — return final result
+    echo(f"[COMPRESS] ALL STEPS EXHAUSTED: size={size:,} > target={target_size:,} (reduction={(1-size/original_size)*100:.1f}%, target={compression_factor*100:.0f}%)")
     if verbose and bytes_per_algo:
         for algo_name, saved in bytes_per_algo.items():
             _verbose(f"  :: {algo_name}: saved {saved:,} bytes")
@@ -1748,7 +1733,7 @@ def compress_context(
         echo(f"{'='*70}\n")
         reduction_pct = (1 - size / original_size) * 100 if original_size > 0 else 0
         _verbose(f"    Original: {original_size:,} bytes -> {size:,} bytes")
-        _verbose(f"    Reduction: {reduction_pct:.1f}% (target was {target_percentage*100:.0f}%)")
+        _verbose(f"    Reduction: {reduction_pct:.1f}% (target was {compression_factor*100:.0f}%)")
         _verbose(f"    Algorithms used: {' + '.join(algorithms_used)}")
         _verbose(f"    Final context: {size:,} bytes, {msg_count} messages\n")
 
@@ -1758,4 +1743,23 @@ def compress_context(
         "algorithms_used": algorithms_used,
         "bytes_per_algo": bytes_per_algo,
     }
+
+    # --- Final verification: print error if target not achieved ---
+    if size > target_size:
+        echo(
+            f"\n{'='*70}\n"
+            f"  COMPRESSION TARGET NOT MET — ROOT CAUSE INVESTIGATION\n"
+            f"{'='*70}\n"
+            f"  Original size:   {original_size:,} bytes\n"
+            f"  Target size:     {target_size:,} bytes (compression_factor={compression_factor})\n"
+            f"  Achieved size:   {size:,} bytes\n"
+            f"  Reduction:       {(1-size/original_size)*100:.1f}% (need {compression_factor*100:.0f}%)\n"
+            f"  Gap:             {size - target_size:,} bytes above target\n"
+            f"  Algorithms used: {' + '.join(algorithms_used)}\n"
+            f"  Bytes saved:     {sum(bytes_per_algo.values()):,} bytes\n"
+            f"{'='*70}\n"
+        )
+        if audit_writer is not None:
+            audit_writer.compress_pipeline_end(size, algorithms_used, sum(bytes_per_algo.values()))
+
     return result, final_summary, metadata

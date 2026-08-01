@@ -271,7 +271,7 @@ class TestPathConsistency:
             initial_ctx = agent.context_file
 
             # Clear context
-            agent.clear_context()
+            agent._context_manager.clear()
 
             # Paths should remain the same
             assert agent.audit_file == initial_audit

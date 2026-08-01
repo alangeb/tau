@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 from tools.lib.cache import FileCache
 
 import json
@@ -26,6 +26,7 @@ metadata = ToolMetadata(
         "Supports time filtering: 'd' (day), 'w' (week), 'm' (month), 'y' (year). "
         "For definitions and factual lookups, use 'lookup' instead."
     ),
+    aliases_arg={"time_limit": "timelimit"},
     max_size=32768,
     timeout=30,
 )
@@ -239,13 +240,12 @@ class Args:
 # ── Execution ────────────────────────────────────────────────────
 
 def run(
-    query: str,
-    agent: "TauErgon",
-    tool_call_id: str | None = None,
-    limit: int = 10,
-    cache: bool = True,
-    timelimit: str = "",
+    query: str, limit: int = 10, cache: bool = True, timelimit: str = "",
+    _ctx: ToolContext | None = None,
 ) -> str:
+    """Execute a web search."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     tl = _normalize_timelimit(timelimit) if timelimit else None
 
     if cache:

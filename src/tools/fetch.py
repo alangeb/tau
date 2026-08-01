@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 from tools.lib.cache import FileCache
 
@@ -12,13 +12,9 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
-
-if TYPE_CHECKING:
-    from agent_core import TauErgon
 
 from .lib.html_to_md import extract_main_content, html_to_markdown, strip_noise
 # ── Tool interface ────────────────────────────────────────────────
@@ -286,12 +282,14 @@ def _format_result(result: dict, links: bool, metadata_only: bool) -> dict:
 
 
 def run(
-    url: str, agent: "TauErgon", tool_call_id: str | None = None,
-    filter_type: str = "fit", query: str = "extract main content",
+    url: str, filter_type: str = "fit", query: str = "extract main content",
     timeout: int = 15, cache: bool = True, links: bool = False,
     metadata_only: bool = False, max_length: int = 30000,
+    _ctx: ToolContext | None = None,
 ) -> str:
     """Fetch and process one or more URLs with optional Crawl4AI first-attempt."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     urls = [u.strip() for u in url.split(",") if u.strip()]
 
     # Multi-URL batch

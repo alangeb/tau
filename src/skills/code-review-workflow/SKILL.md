@@ -1,6 +1,6 @@
 ---
 name: code-review-workflow
-description: Complete code review pipeline — pyscan, pyanalyze, ruff, black, summary. Review code, check quality, audit codebase (also load: review, python_best_practices, ast-grep, code-simplifier)
+description: Complete code review pipeline — pyscan, pyanalyze, pygraph, pycheck, ruff, black, summary (also load: ast-grep, code-simplifier, context_management, documentation, file-ops, git-advanced, graphify, python_best_practices, review, bug_investigation, git-verify, performance)
 category: code-quality
 keywords: review pipeline, automated review, code quality, lint, format, type check, full review
 ---
@@ -16,6 +16,8 @@ python3 skills/code-review-workflow/review_pipeline.py <path>  # Full pipeline
 # Or manual:
 pyscan(path=".")                          # Structural inventory
 pyanalyze(path=".")                        # Usage analysis, unused code
+pygraph(path=".")                          # Cross-file call graphs
+pycheck(path=".")                          # Missing imports check
 ruff check --fix <file>                   # Auto-fix linting
 ruff check <file>                          # Verify remaining issues
 black <file>                                # Format
@@ -27,27 +29,23 @@ black <file>                                # Format
 === CODE REVIEW: <file> ===
 ## Structural Issues: [pyscan findings]
 ## Usage Issues: [pyanalyze findings]
+## Call Graph: [pygraph findings]
+## Import Issues: [pycheck findings]
 ## Linting: [ruff findings]
 ## Formatting: [black applied]
 ## Summary: [issues found, severity, recommendations]
 ```
 
+## Helper
+```bash
+python3 skills/code-review-workflow/review_pipeline.py <path>  # Full pipeline
+```
+
 ## Related Skills
-- `review` — detailed manual review process
-- `python_best_practices` — linting/formatting sequence
 - `ast-grep` — complex search/rewrite
-- `git` — commit changes after review
 - `code-simplifier` — code clarity improvements
+- `python_best_practices` — linting/formatting sequence
+- `review` — detailed manual review process
 - `bug_investigation` — systematic bug analysis
-- `graphify` — knowledge graph for architecture overview
-- `context_management` — delegate review
-- `documentation` — docstring patterns
-- `file-ops` — file operations
-- `git-advanced` — advanced git operations
-- `git-verify` — git verification
-- `performance` — performance analysis
-- `plan_template` — plan structure
-- `project-onboard` — project context
-- `python_debugging` — debugging
-- `search-replace` — search and replace
-- `security-audit` — security analysis
+- `git-verify` — verify code changes
+- `performance` — profile bottlenecks

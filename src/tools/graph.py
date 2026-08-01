@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -319,15 +320,26 @@ class _SymbolCollector(ast.NodeVisitor):
         ))
 
     def _type_name(self, node) -> str:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return f"{self._type_name(node.value)}.{node.attr}"
-        if isinstance(node, ast.Constant):
-            return repr(node.value)
-        if isinstance(node, ast.Subscript):
-            return f"{self._type_name(node.value)}[...]"
-        return "Any"
+        # Iterative to avoid recursion on deeply nested type annotations
+        parts = []
+        current = node
+        while current is not None:
+            if isinstance(current, ast.Name):
+                parts.append(current.id)
+                current = None
+            elif isinstance(current, ast.Attribute):
+                parts.append(current.attr)
+                current = current.value
+            elif isinstance(current, ast.Constant):
+                parts.append(repr(current.value))
+                current = None
+            elif isinstance(current, ast.Subscript):
+                parts.append("[...]")
+                current = current.value
+            else:
+                parts.append("Any")
+                current = None
+        return ".".join(reversed(parts)) if parts else "Any"
 
 
 class _CallCollector(ast.NodeVisitor):
@@ -454,21 +466,27 @@ class GraphBuilder:
         self._raw_imports: List[Tuple[str, str, int, str]] = []  # (source_module, local_name, line, source_file)
 
     def build(self) -> Graph:
-        if self.is_single_file:
-            self._process_file(self.target_path, os.path.basename(self.target_path))
-        else:
-            for root, dirs, files in os.walk(self.target_path):
-                dirs[:] = [d for d in dirs if d not in self.exclude_dirs]
-                for filename in sorted(files):
-                    if not filename.endswith(".py"):
-                        continue
-                    filepath = os.path.join(root, filename)
-                    rel = os.path.relpath(filepath, self.target_path)
-                    self._process_file(filepath, rel)
+        # Prevent RecursionError on large/deeply-nested codebases
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(max(old_limit, 2000))
+        try:
+            if self.is_single_file:
+                self._process_file(self.target_path, os.path.basename(self.target_path))
+            else:
+                for root, dirs, files in os.walk(self.target_path):
+                    dirs[:] = [d for d in dirs if d not in self.exclude_dirs]
+                    for filename in sorted(files):
+                        if not filename.endswith(".py"):
+                            continue
+                        filepath = os.path.join(root, filename)
+                        rel = os.path.relpath(filepath, self.target_path)
+                        self._process_file(filepath, rel)
 
-        self._resolve_calls()
-        self._resolve_imports()
-        return self.graph
+            self._resolve_calls()
+            self._resolve_imports()
+            return self.graph
+        finally:
+            sys.setrecursionlimit(old_limit)
 
     def _process_file(self, filepath: str, rel_path: str):
         source = self._read_file(filepath)

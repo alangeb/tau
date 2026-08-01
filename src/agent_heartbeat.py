@@ -99,7 +99,7 @@ class HeartbeatManager:
         self,
         enabled: bool,
         interval_seconds: int | None,
-        agent: "TauErgon",
+        agent: TauErgon,
     ):
         """Initialize the heartbeat manager.
 
@@ -125,7 +125,6 @@ class HeartbeatManager:
     def _fork_and_validate(
         self,
         prompt: str,
-        nesting_count: int,
     ) -> HeartbeatResponse | None:
         """Fork a heartbeat check and validate the response.
 
@@ -154,7 +153,10 @@ class HeartbeatManager:
                     prompt=current_prompt,
                     parent_context=agent.context,
                     parent_agent=agent,
-                    nesting_count=nesting_count,
+                    nesting_stack=agent.nesting_stack,
+                    nesting_type="H",
+                    config=agent.config,
+                    nesting_threshold=agent.config.nesting.depth_threshold,
                 )
             except Exception as e:
                 error(f"Heartbeat fork failed: {e}")
@@ -219,4 +221,4 @@ class HeartbeatManager:
         status(f"[HEARTBEAT] Idle {int(idle_seconds)}s, forking check-in...")
         blank_line()
 
-        return self._fork_and_validate(prompt, agent.nesting_count)
+        return self._fork_and_validate(prompt)

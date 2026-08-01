@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import json
 import os
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agent_core import TauErgon
 
-__all__ = ["name", "description", "Args", "run"]
+__all__ = ["Args", "run"]
 
 # ── Tool metadata ────────────────────────────────────────────────
 
@@ -41,6 +41,7 @@ ALL OTHER actions — task_id identifies the TARGET task:
   clear()                                  → removes all tasks
 """,
     max_size=32768,
+    aliases_arg={"task": "description"},
 )
 
 # ── Args schema ──────────────────────────────────────────────────
@@ -53,6 +54,9 @@ class Args:
     priority: str | None = None
     blocker_reason: str | None = None
     notes: str | None = None
+    # Deprecated — accepted for backward compatibility but ignored.
+    # Agent historically used this; dotted task_id (e.g. "1.1") is the correct approach.
+    parent_task_id: str | None = None
 
 
 
@@ -126,73 +130,43 @@ def _get_all_task_ids(tasks: list[dict]) -> list[str]:
 
 # ── Task traversal ───────────────────────────────────────────────
 
-def _find_task_by_id(tasks: list[dict], task_id: str) -> tuple[dict | None, list[dict] | None]:
+def _walk_to_task(tasks: list[dict], task_id: str):
+    """Walk the dotted task_id path and return (task, container_list, index) or (None, None, -1)."""
     parts = task_id.split(".")
-
-    if len(parts) == 1:
-        for task in tasks:
-            if task.get("id") == task_id:
-                return task, tasks
-        return None, None
-
     current_tasks = tasks
     current_id = ""
 
     for i, part in enumerate(parts):
         current_id = part if i == 0 else f"{current_id}.{part}"
-        found = None
-        for task in current_tasks:
-            if task.get("id") == current_id:
-                found = task
-                break
-
-        if found is None:
-            return None, None
-
-        if i < len(parts) - 1:
-            current_tasks = found.get("subtasks", [])
-        else:
-            return found, current_tasks
-
-    return None, None
-
-
-def _delete_task_by_id(tasks: list[dict], task_id: str) -> int:
-    parts = task_id.split(".")
-
-    if len(parts) == 1:
-        for i, task in enumerate(tasks):
-            if task.get("id") == task_id:
-                count = 1 + len(_get_all_task_ids(task.get("subtasks", [])))
-                tasks.pop(i)
-                return count
-        return 0
-
-    current_tasks = tasks
-    current_id = ""
-
-    for i, part in enumerate(parts):
-        current_id = part if i == 0 else f"{current_id}.{part}"
-        found_idx = None
-        found_task = None
-
+        found_idx = -1
         for idx, task in enumerate(current_tasks):
             if task.get("id") == current_id:
                 found_idx = idx
-                found_task = task
                 break
 
-        if found_task is None:
-            return 0
+        if found_idx == -1:
+            return None, None, -1
 
         if i < len(parts) - 1:
-            current_tasks = found_task.get("subtasks", [])
+            current_tasks = current_tasks[found_idx].get("subtasks", [])
         else:
-            count = 1 + len(_get_all_task_ids(found_task.get("subtasks", [])))
-            current_tasks.pop(found_idx)
-            return count
+            return current_tasks[found_idx], current_tasks, found_idx
 
-    return 0
+    return None, None, -1
+
+
+def _find_task_by_id(tasks: list[dict], task_id: str) -> tuple[dict | None, list[dict] | None]:
+    task, container, _ = _walk_to_task(tasks, task_id)
+    return task, container
+
+
+def _delete_task_by_id(tasks: list[dict], task_id: str) -> int:
+    task, container, idx = _walk_to_task(tasks, task_id)
+    if task is None:
+        return 0
+    count = 1 + len(_get_all_task_ids(task.get("subtasks", [])))
+    container.pop(idx)
+    return count
 
 
 # ── Auto-create parent chain ─────────────────────────────────────
@@ -240,10 +214,7 @@ def _ensure_parent_chain(tasks: list[dict], task_id: str) -> list[dict]:
             }
             current_list.append(parent)
 
-        current_list = parent.get("subtasks", [])
-        if not current_list:
-            parent["subtasks"] = []
-            current_list = parent["subtasks"]
+        current_list = parent["subtasks"]
 
     return current_list
 
@@ -285,9 +256,8 @@ def _count_tasks(tasks: list[dict]) -> dict[str, int]:
         counts["total"] += 1
 
         sub_counts = _count_tasks(task.get("subtasks", []))
-        for key in counts:
-            if key != "total":
-                counts[key] += sub_counts.get(key, 0)
+        for status in ("pending", "in_progress", "completed", "blocked"):
+            counts[status] += sub_counts.get(status, 0)
         counts["total"] += sub_counts["total"]
 
     return counts
@@ -603,15 +573,13 @@ ACTION_HANDLERS = {
 
 
 def run(
-    action: str,
-    task_id: str | None = None,
-    description: str | None = None,
-    priority: str | None = None,
-    blocker_reason: str | None = None,
-    notes: str | None = None,
-    agent: TauErgon | None = None,
-    tool_call_id: str | None = None,
+    action: str, task_id: str | None = None, description: str | None = None,
+    priority: str | None = None, blocker_reason: str | None = None,
+    notes: str | None = None, parent_task_id: str | None = None,
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     plan_file = _get_plan_file_path()
 
     if action not in ACTION_HANDLERS:
@@ -625,4 +593,5 @@ def run(
         priority=priority,
         blocker_reason=blocker_reason,
         notes=notes,
+        parent_task_id=parent_task_id,
     ), plan_file)

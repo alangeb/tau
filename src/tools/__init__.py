@@ -17,9 +17,28 @@ from typing import TYPE_CHECKING, Any, Protocol
 from agent_plugin_loader import discover_modules, validate_module_has
 
 from agent_console import warning
-
 if TYPE_CHECKING:
-    import types
+    from agent_core import TauErgon
+
+
+# ── Tool Execution Context ─────────────────────────────────────────────────
+
+@dataclass(frozen=True, kw_only=True)
+class ToolContext:
+    """Execution context passed to every tool.
+
+    Bundles the agent reference and tool call identifier that every tool
+    receives.  Tools that need the agent or call ID access them via this
+    single parameter instead of two separate ones.
+
+    Attributes:
+        agent: The TauErgon agent instance (may be None for system tools).
+        tool_call_id: The unique identifier for this tool invocation.
+    """
+
+    agent: "TauErgon | None" = None
+    tool_call_id: str | None = None
+
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -82,6 +101,14 @@ _COMMON_ALIASES: dict[str, str] = {
     "test": "bash",       # Most common hallucination — audit showed 4 calls
     "read": "file_read",  "write": "file_write", "cat": "file_read",
     "rm": "bash", "mkdir": "bash", "cp": "bash", "mv": "bash",
+    # Additional aliases from log analysis (TOOL_NOT_FOUND errors)
+    "action": "bash",
+    "echo": "bash",
+    "pwd": "bash",
+    "tail": "bash",
+    "diff": "bash",
+    "find": "glob",
+    "locate": "grep",
 }
 
 TOOLS_DIR = Path(__file__).resolve().parent

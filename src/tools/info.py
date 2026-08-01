@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import os
 import subprocess
@@ -68,9 +68,11 @@ def _get_git_info() -> list[str]:
     return lines
 
 
-# ── Execution ──
-
-def run(agent: TauErgon, tool_call_id: str | None) -> str:
+def run(
+    _ctx: ToolContext | None = None,
+) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     def safe(label: str, value_fn) -> str:
         try:
             return f"{label}: {value_fn()}"

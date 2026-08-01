@@ -19,7 +19,7 @@ TauErgon is a self-contained AI agent framework with tool calling, context compr
 - **33 tools** — file ops, shell, web search, code analysis, background processes, and more
 - **Agent delegation** — fork (inherits context), subagent (blank slate), delegate (orchestrator)
 - **Context compression** — automatic when approaching token limits
-- **Agent-to-Agent (A2A)** — inter-agent communication via Unix domain sockets
+- **Agent-to-Agent (A2A)** — inter-agent communication via Unix domain sockets. See [`A2A_PROTOCOL.md`](src/designs/A2A_PROTOCOL.md) for the full v1.0 contract.
 - **Loadable skills** — specialized task instructions
 - **Extensible commands** — built-in, Python, and Markdown commands
 - **Skills system** — 23 pre-built skills for common workflows
@@ -70,6 +70,9 @@ python src/tau.py "X=1" "/fork what is the value of X"
 # Continue from previous session
 python src/tau.py --continue
 
+# Continue from a specific context file
+python src/tau.py --continue-from /path/to/context.context
+
 # Use a specific LLM group
 python src/tau.py --llm cuda "Explain quantum computing"
 ```
@@ -106,6 +109,8 @@ python src/tau.py --keep-alive "Monitor process PID 1234"
 # Query from another terminal
 python src/tau.py --pid 1234 --query "What's the status?"
 ```
+
+See [A2A_PROTOCOL.md](src/designs/A2A_PROTOCOL.md) for the full inter-agent communication contract.
 
 ---
 
@@ -175,6 +180,7 @@ Detailed design documents live in `src/designs/`:
 
 | Document | Content |
 |----------|---------|
+| [A2A_PROTOCOL.md](src/designs/A2A_PROTOCOL.md) | Agent-to-agent communication via Unix sockets: message types, constants, session discovery |
 | [ARCHITECTURE.md](src/designs/ARCHITECTURE.md) | Request flow, module dependencies, pipelines |
 | [DECISIONS.md](src/designs/DECISIONS.md) | 167 design decisions across 20 categories |
 | [CONTEXT.md](src/designs/CONTEXT.md) | Context management patterns |

@@ -6,7 +6,8 @@ operations (file ops, git, testing, timeout, logging) and invokes tau.py only
 for LLM-driven work.
 
 Usage:
-    dream.py [--n N] [--llm MODEL] [--dry-run]
+    ./dream.sh [--n N] [--llm MODEL] [--dry-run]    ← via tmux wrapper (recommended)
+    python3 dream.py [--n N] [--llm MODEL]          ← direct (no tmux, not recommended)
 
 Options:
     --n N          Number of cycles (0 = infinite, default)
@@ -34,10 +35,44 @@ TAU_BIN = SRC_DIR / "tau.py"
 TASKS_DIR = SCRIPT_DIR / "tasks"
 LOG_FILE = SCRIPT_DIR / "dream.log"
 STOP_FILE = SCRIPT_DIR / "dream.stop"
+PID_FILE = SCRIPT_DIR / "dream.pid"
 
 TIMEOUT_SECONDS = 6 * 3600  # 6 hours per step
-PYTEST_CMD = "python3 -m pytest tests/ --tb=short -q"
-SANITY_CMD = "./sanity.sh"
+
+# ─── Single-instance lock ────────────────────────────────────────────────────
+
+def _pid_exists(pid: int) -> bool:
+    """Return True if a process with the given PID is running."""
+    try:
+        os.kill(pid, 0)  # sends no signal, just checks existence
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def acquire_lock() -> bool:
+    """Acquire single-instance lock. Returns True if acquired, False if another instance is running."""
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            if _pid_exists(pid):
+                print(f"ERROR: dream.py already running (PID {pid})", file=sys.stderr)
+                return False
+            # Stale PID file — clean up
+            PID_FILE.unlink(missing_ok=True)
+        except (ValueError, FileNotFoundError):
+            # Corrupted or race condition — try to clean up
+            PID_FILE.unlink(missing_ok=True)
+
+    # Write my PID
+    PID_FILE.write_text(str(os.getpid()))
+    return True
+
+
+def release_lock():
+    """Release single-instance lock."""
+    PID_FILE.unlink(missing_ok=True)
+
 
 # ─── Signal Handling ─────────────────────────────────────────────────────────
 
@@ -150,14 +185,6 @@ class GitHelper:
         except Exception:
             return False
 
-    def has_changes(self) -> bool:
-        """Check if there are uncommitted changes."""
-        try:
-            r = self._run(["git", "diff", "--quiet"], capture=False)
-            return r.returncode != 0
-        except Exception:
-            return False
-
     def get_status_short(self) -> str:
         r = self._run(["git", "status", "--short"])
         return r.stdout.strip()
@@ -180,16 +207,7 @@ class GitHelper:
         self._run(["git", "clean", "-fd"])
         self.log.log("[git]", "reverted all changes")
 
-    def assert_clean(self, step_name: str) -> bool:
-        """Assert working tree is clean. Return False if not."""
-        if not self.is_clean():
-            status = self.get_status_short()
-            self.log.log("[WARN]", f"Git not clean before {step_name}: {status}")
-            return False
-        return True
-
-
-# ─── Step Result ─────────────────────────────────────────────────────────────
+    # ─── Step Result ─────────────────────────────────────────────────────────────
 
 @dataclass
 class StepResult:
@@ -347,6 +365,9 @@ def step_process_tasks(logger: Logger, git: GitHelper, llm_group: str, dry_run: 
         # Move to inprogress (skip in dry-run to avoid side effects)
         logger.log("[tasks]", f"picking up: {f.name}")
         if not dry_run:
+            if not f.exists():
+                logger.log("[tasks]", f"{f.name} no longer in 1_todo — skipping (already handled)")
+                continue
             move_task(f, "2_inprogress")
 
         # Run tau
@@ -497,10 +518,15 @@ def step_log_review(logger: Logger, git: GitHelper, llm_group: str, dry_run: boo
     return step_single(logger, git, llm_group, dry_run, "/_taulogreview", "log_review")
 
 
+def step_wiki(logger: Logger, git: GitHelper, llm_group: str, dry_run: bool) -> StepResult:
+    """Wiki maintenance: ingest unprocessed sessions, maintain structure."""
+    return step_single(logger, git, llm_group, dry_run, "/_tauwiki", "wiki")
+
+
 # ─── Cycle ───────────────────────────────────────────────────────────────────
 
 def run_cycle(cycle_num: int, logger: Logger, git: GitHelper, llm_group: str, dry_run: bool) -> List[StepResult]:
-    """Run one complete cycle of all 7 steps."""
+    """Run one complete cycle of all 8 steps."""
     t0 = time.time()
     logger.header(f"━━━ Cycle {cycle_num} ━━━")
     all_results = []
@@ -538,6 +564,9 @@ def run_cycle(cycle_num: int, logger: Logger, git: GitHelper, llm_group: str, dr
     # 7. Log review
     all_results.append(step_log_review(logger, git, llm_group, dry_run))
 
+    # 8. Wiki maintenance
+    all_results.append(step_wiki(logger, git, llm_group, dry_run))
+
     elapsed = time.time() - t0
     h, rem = divmod(int(elapsed), 3600)
     m, s = divmod(rem, 60)
@@ -573,6 +602,10 @@ def main():
     args = parse_args()
     setup_signals()
 
+    # Acquire single-instance lock
+    if not acquire_lock():
+        sys.exit(1)
+
     # Setup logging
     logger = Logger(LOG_FILE, dry_run=args.dry_run)
     mode = " [DRY-RUN]" if args.dry_run else ""
@@ -592,6 +625,7 @@ def main():
         if not git.is_clean():
             status = git.get_status_short()
             logger.log("[ERROR]", f"Git not clean. Refusing to start.\n{status}")
+            release_lock()
             sys.exit(1)
         logger.log("[git]", "working tree clean")
 
@@ -635,6 +669,7 @@ def main():
         logger.log("[CRASH]", f"Unhandled exception after {cycle} cycle(s):\n{tb}")
         # Also print to stderr so it's visible in terminal
         print(f"\n!!! DREAM CRASH (logged to {LOG_FILE}):\n{tb}", file=sys.stderr, flush=True)
+        release_lock()
         sys.exit(1)
 
     # Final summary
@@ -644,6 +679,9 @@ def main():
     m, s = divmod(rem, 60)
     logger.log("[total]", f"Total time: {h:02d}:{m:02d}:{s:02d}")
     logger.log("[log]", f"Full log: {LOG_FILE}")
+
+    # Release lock on clean exit
+    release_lock()
 
 
 if __name__ == "__main__":

@@ -180,6 +180,20 @@ def resolve_agent_init(
     resolved_max_tokens = active_group.max_tokens
     resolved_timeout = active_group.timeout
 
+    # ── Validate resolved values ────────────────────────────────────────
+    if not resolved_base_url:
+        raise ValueError(
+            f"LLM group '{current_group_name}' has no valid api_base "
+            f"(cli override: {base_url!r}, group.api_base: {active_group.api_base!r}). "
+            "Cannot initialize agent without a base URL."
+        )
+    if not resolved_model:
+        raise ValueError(
+            f"LLM group '{current_group_name}' has no valid model "
+            f"(cli override: {model!r}, group.model: {active_group.model!r}). "
+            "Cannot initialize agent without a model name."
+        )
+
     # ── Nested config values with defaults ──────────────────────────────
     # Malformed retry limits
     if config:

@@ -23,7 +23,7 @@ def main():
                 with open(status_file) as f:
                     data = json.load(f)
                 status = data.get("status", "unknown")
-            except:
+            except Exception:
                 status = "read-error"
         
         has_patch = bool(glob.glob(os.path.join(t, "fix", "*.patch")))

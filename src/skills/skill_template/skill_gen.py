@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Skill template helper - generate skill templates."""
 
-from typing import Optional
 
 
 def generate_skill_template(name: str, description: str, category: str) -> str:

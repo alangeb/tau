@@ -1,6 +1,6 @@
 ---
 name: agent-browser
-description: Browser automation CLI for AI agents — navigate websites, web scraping, fill forms, click elements. Browser, web automation, playwright, headless (also load: bug_investigation, web-research, search-replace, shell_scripting, image)
+description: "Browser automation CLI — navigate, scrape, fill forms, click elements, take screenshots. Playwright, headless (also load: image, search-replace, shell_scripting, web-research, dream, swe_bench)"
 category: development
 keywords: browser automation, web scraping, interactive browser, page navigation, click, form fill
 ---
@@ -58,5 +58,8 @@ source skills/agent-browser/browser_patterns.sh
 ```
 ## Related Skills
 - `image` — image loading and vision models
-- `web-research` — web content extraction (fetch, crawl, search)
+- `search-replace` — find and replace patterns
 - `shell_scripting` — automate browser workflows
+- `web-research` — web content extraction (fetch, crawl, search)
+- `dream` — self-improvement loop
+- `swe_bench` — benchmark workflow

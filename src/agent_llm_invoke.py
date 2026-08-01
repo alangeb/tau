@@ -23,7 +23,7 @@ from agent_llm_models import (
     APITimeoutError,
     BadRequestError,
     CallStats,
-    COMPRESSION_TARGET_RATIO,
+    COMPRESSION_FACTOR,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_OUTPUT_TOKENS,
     EmptyModelResponse,
@@ -34,8 +34,6 @@ from agent_llm_models import (
 )
 from agent_llm_client import _is_context_overflow
 from agent_llm_tool_parse import (
-    BEGIN_OF_THOUGHT,
-    END_OF_THOUGHT,
     llm_postparse,
 )
 from agent_llm_validation import (
@@ -92,44 +90,26 @@ def _extract_token_usage(response: Any, response_text: str) -> tuple[int, int, i
 # Internal helpers for _invoke_llm_with_retry
 # ---------------------------------------------------------------------------
 
-def _prepare_messages(messages: Any) -> list[dict]:
-    """Normalize messages: merge reasoning, strip non-API fields.
+def _prepare_messages(messages: Any, preserve_thinking: bool = False) -> list[dict]:
+    """Normalize messages for API call: strip reasoning (unless preserve_thinking),
+    strip non-API fields.
 
-    Works on the REAL message list (no copy) so compression is in-place.
+    NEVER mutates the original context — creates new dicts for each message.
     """
     msg_list = messages.to_list() if hasattr(messages, "to_list") else messages
-    # Shallow copy of list (not deep copy) — isolates mutations from caller's list
-    # while allowing in-place compression to modify message dicts directly.
-    msg_list = list(msg_list)
 
-    # Merge reasoning into content with thinking markers (vLLM ignores top-level "reasoning").
+    result: list[dict] = []
     for msg in msg_list:
-        reasoning = msg.pop("reasoning", None)
-        if reasoning:
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                # Multimodal content — prepend reasoning as a text block.
-                # Gemma 4 wants images BEFORE text, so insert reasoning block
-                # before the first text block (after any image_url blocks).
-                reasoning_block = {
-                    "type": "text",
-                    "text": f"{BEGIN_OF_THOUGHT}{reasoning}{END_OF_THOUGHT}",
-                }
-                # Find first text block index to insert before
-                first_text_idx = next(
-                    (i for i, p in enumerate(content) if p.get("type") == "text"),
-                    0,
-                )
-                msg["content"] = (
-                    content[:first_text_idx]
-                    + [reasoning_block]
-                    + content[first_text_idx:]
-                )
-            else:
-                msg["content"] = f"{BEGIN_OF_THOUGHT}{reasoning}{END_OF_THOUGHT}\n{content or ''}"
+        new_msg = dict(msg)  # Shallow copy of dict (safe — we only pop string keys)
 
-    # Strip non-OpenAI fields from messages and nested tool_calls.
-    for msg in msg_list:
+        if not preserve_thinking:
+            # Strip reasoning for this API call (NON-DESTRUCTIVE — original context preserved).
+            new_msg.pop("reasoning", None)
+
+        result.append(new_msg)
+
+    # Strip non-API fields from messages and nested tool_calls.
+    for msg in result:
         for key in list(msg.keys()):
             if key not in ALLOWED_MESSAGE_FIELDS:
                 msg.pop(key, None)
@@ -139,7 +119,7 @@ def _prepare_messages(messages: Any) -> list[dict]:
                     if key not in _ALLOWED_TOOL_CALL_FIELDS:
                         tc.pop(key, None)
 
-    return msg_list
+    return result
 
 
 def _build_call_kwargs(
@@ -268,7 +248,7 @@ def _try_context_compress(
             msg_list,
             client,
             model_name,
-            COMPRESSION_TARGET_RATIO,
+            COMPRESSION_FACTOR,
             tools or [],
             extra_kwargs,
             log_file=log_file,
@@ -460,7 +440,13 @@ def _invoke_llm_with_retry(
             )
 
         # Prepare messages fresh each iteration so compressed context is used.
-        msg_list = _prepare_messages(messages)
+        # Extract preserve_thinking from chat_template_kwargs.
+        preserve_thinking = False
+        if effective_extra:
+            chat_template = effective_extra.get("chat_template_kwargs", {})
+            if isinstance(chat_template, dict):
+                preserve_thinking = chat_template.get("preserve_thinking", False)
+        msg_list = _prepare_messages(messages, preserve_thinking=preserve_thinking)
 
         # Disable thinking after N retries to force decisive responses.
         if (
@@ -589,7 +575,12 @@ def _invoke_llm_with_retry(
                 if effective_log_on_failure:
                     from agent_session import log_failed_api_request
 
-                    log_failed_api_request(call_kwargs, effective_log_file)
+                    log_failed_api_request(
+                        call_kwargs, effective_log_file,
+                        error_type=type(e).__name__,
+                        error_message=str(e),
+                        status_code=getattr(e, "status_code", None),
+                    )
                 raise last_error from e
 
             llm_timeout_message(attempt, effective_max_retries)
@@ -644,7 +635,12 @@ def _invoke_llm_with_retry(
                 error_display("VISION ERROR", str(e))
                 if effective_log_on_failure:
                     from agent_session import log_failed_api_request
-                    log_failed_api_request(call_kwargs, effective_log_file)
+                    log_failed_api_request(
+                        call_kwargs, effective_log_file,
+                        error_type=type(e).__name__,
+                        error_message=str(e),
+                        status_code=getattr(e, "status_code", None),
+                    )
                 raise
             elif _is_text_encode_error(error_str):
                 # TextEncodeInput error — context likely contains lone surrogates.
@@ -686,7 +682,12 @@ def _invoke_llm_with_retry(
                 if effective_log_on_failure:
                     from agent_session import log_failed_api_request
 
-                    log_failed_api_request(call_kwargs, effective_log_file)
+                    log_failed_api_request(
+                        call_kwargs, effective_log_file,
+                        error_type=type(e).__name__,
+                        error_message=str(e),
+                        status_code=getattr(e, "status_code", None),
+                    )
                 raise
 
         except Exception as e:
@@ -699,7 +700,12 @@ def _invoke_llm_with_retry(
                     if effective_log_on_failure:
                         from agent_session import log_failed_api_request
 
-                        log_failed_api_request(call_kwargs, effective_log_file)
+                        log_failed_api_request(
+                            call_kwargs, effective_log_file,
+                            error_type=type(e).__name__,
+                            error_message=str(e),
+                            status_code=getattr(e, "status_code", None),
+                        )
                     raise last_error from e
 
                 from agent_llm_client import RetryBackoff
@@ -718,7 +724,12 @@ def _invoke_llm_with_retry(
             if effective_log_on_failure:
                 from agent_session import log_failed_api_request
 
-                log_failed_api_request(call_kwargs, effective_log_file)
+                log_failed_api_request(
+                    call_kwargs, effective_log_file,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    status_code=getattr(e, "status_code", None),
+                )
             raise
 
     raise RuntimeError(

@@ -1,15 +1,16 @@
 """Token tracking for agent sessions.
 
-Extracted from AgentSessionManager to isolate token accounting logic
-(session totals, per-turn snapshots, and cache tracking) into its own
-single-responsibility class.
+Base class for ``AgentSessionManager``. Provides token accounting logic
+(session totals, per-turn snapshots, and cache tracking) as a reusable
+single-responsibility class. ``AgentSessionManager`` inherits from this
+to avoid composition boilerplate.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from agent_llm import CallStats, CacheTracker
+from agent_llm_models import CallStats, CacheTracker
 
 
 @dataclass
@@ -27,6 +28,11 @@ class TokenTracker:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+
+    # Session byte estimates (roughly 4 bytes/token for UTF-8)
+    input_bytes: int = 0
+    output_bytes: int = 0
+    cached_bytes: int = 0
 
     # Last-turn counters
     last_turn_input_tokens: int = 0
@@ -61,6 +67,11 @@ class TokenTracker:
         self.output_tokens += ct
         self.cached_tokens += cached
 
+        # Estimate bytes (roughly 4 bytes/token for UTF-8)
+        self.input_bytes += pt * 4
+        self.output_bytes += ct * 4
+        self.cached_bytes += cached * 4
+
         self.cache_tracker.record(stats)
 
         # Track exact context tokens from the API when available.
@@ -74,6 +85,9 @@ class TokenTracker:
         self.input_tokens = 0
         self.output_tokens = 0
         self.cached_tokens = 0
+        self.input_bytes = 0
+        self.output_bytes = 0
+        self.cached_bytes = 0
         self.last_turn_input_tokens = 0
         self.last_turn_output_tokens = 0
         self.last_turn_cached_tokens = 0

@@ -1,6 +1,6 @@
 ---
 name: project-onboard
-description: Understand new project — info, pyscan, pyanalyze, plan, initial reads. New project, explore codebase, project overview, kickoff, what is this codebase (also load: code-review-workflow, review)
+description: Understand new project — info, pyscan, pyanalyze, plan, initial reads. Project overview, explore codebase, kickoff (also load: code-review-workflow, review, info, file-ops, shell_scripting)
 category: development
 keywords: project, onboard, new project, explore, codebase, overview, kickoff, understand
 ---
@@ -31,14 +31,13 @@ file_read(path="CLAUDE.md")
 ```
 
 ## Helper
-
 ```bash
 python3 skills/project-onboard/onboard.py  # project onboard helper
 ```
+
 ## Related Skills
 - `code-review-workflow` — deeper analysis
+- `file-ops` — file read/edit patterns
+- `info` — agent status and diagnostics
 - `review` — detailed review process
-- `python_best_practices` — linting/formatting
-- `dependency_management` — discover project dependencies
-- `readme_template` — document project structure
-- `idea` — Capture ideas for features
+- `shell_scripting` — shell patterns

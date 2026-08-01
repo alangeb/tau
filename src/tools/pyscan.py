@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import ast
 import os
@@ -23,7 +23,8 @@ metadata = ToolMetadata(
         "imports, call hierarchy, and optionally unused code. Excludes .git, venv, __pycache__, etc.\n\n"
         "Always run FIRST on any Python project — gives per-file detail (LOC, symbols, docstrings) "
         "that pygraph cannot provide. Follow up with pygraph for cross-file relationship analysis.\n\n"
-        "Use compact=True for concise output (names, return types, line numbers, deps only — ~60% smaller)."
+        "Use compact=True for concise output (names, return types, line numbers, deps only — ~60% smaller).\n\n"
+        "Use max_files=N to limit analysis to the N largest files."
     ),
     max_size=400000,
 )
@@ -40,18 +41,19 @@ class ProjectStats:
 
 @dataclass
 class Args:
-    path: str = field(metadata={"description": "Path to a Python file or directory to analyze"})
+    path: str = field(default=".", metadata={"description": "Path to a Python file or directory to analyze"})
     check_usage: bool = field(default=False, metadata={"description": "Check for potentially unused functions and imports"})
     compact: bool = field(default=False, metadata={"description": "Compact output: names, return types, line numbers, deps only (no full type annotations, docstrings, or import lists)"})
     exclude_dirs: str = field(default="", metadata={"description": "Comma-separated list of additional directory names to exclude (e.g., 'tests,fixtures,examples')"})
     include_tests: bool = field(default=False, metadata={"description": "Include tests directory in analysis (default: excluded)"})
+    max_files: int = field(default=0, metadata={"description": "Limit analysis to N files (0 = no limit). Prioritizes larger files by line count."})
 
 
 # ── Analyzer ─────────────────────────────────────────────────────
 
 class _AIProjectAnalyzer:
     DEFAULT_EXCLUDE_DIRS = {
-        ".git", "venv", "__pycache__", "dist", "build",
+        ".git", "venv", ".venv", "__pycache__", "dist", "build",
         ".idea", ".vscode", "node_modules", ".tox", "tests", "test",
     }
 
@@ -276,7 +278,7 @@ class _AIProjectAnalyzer:
         lines.append("")
         return lines
 
-    def run(self, compact: bool = False) -> str:
+    def run(self, compact: bool = False, max_files: int = 0) -> str:
         self._collect_internal_names()
         output: list[str] = []
         excluded_info = (
@@ -292,15 +294,42 @@ class _AIProjectAnalyzer:
             self.stats.files += 1
             output.extend(self._analyze_file(self.target_path, os.path.basename(self.target_path), compact=compact))
         else:
-            for root, dirs, files in os.walk(self.target_path):
-                dirs[:] = [d for d in dirs if d not in self.EXCLUDE_DIRS]
-                for filename in sorted(files):
-                    if not filename.endswith(".py"):
-                        continue
-                    filepath = os.path.join(root, filename)
-                    rel_path = os.path.relpath(filepath, self.target_path)
+            if max_files > 0:
+                # Collect all Python files with line counts for prioritization
+                all_files = []
+                for root, dirs, files in os.walk(self.target_path):
+                    dirs[:] = [d for d in dirs if d not in self.EXCLUDE_DIRS]
+                    for filename in sorted(files):
+                        if not filename.endswith(".py"):
+                            continue
+                        filepath = os.path.join(root, filename)
+                        rel_path = os.path.relpath(filepath, self.target_path)
+                        source = self._read_file(filepath)
+                        if source:
+                            line_count = len(source.splitlines())
+                            all_files.append((filepath, rel_path, line_count))
+
+                all_files.sort(key=lambda x: x[2], reverse=True)
+                total_files = len(all_files)
+                all_files = all_files[:max_files]
+                if total_files > max_files:
+                    output.append(f"NOTE: Limited to {max_files} of {total_files} files (by line count).")
+                    output.append("")
+
+                for filepath, rel_path, line_count in all_files:
                     self.stats.files += 1
                     output.extend(self._analyze_file(filepath, rel_path, compact=compact))
+            else:
+                # No limit — walk and analyze directly (single read per file)
+                for root, dirs, files in os.walk(self.target_path):
+                    dirs[:] = [d for d in dirs if d not in self.EXCLUDE_DIRS]
+                    for filename in sorted(files):
+                        if not filename.endswith(".py"):
+                            continue
+                        filepath = os.path.join(root, filename)
+                        rel_path = os.path.relpath(filepath, self.target_path)
+                        self.stats.files += 1
+                        output.extend(self._analyze_file(filepath, rel_path, compact=compact))
 
         output.append("## Project Summary")
         output.append(f"- **Total Files:** {self.stats.files}")
@@ -375,14 +404,13 @@ def _analyze_usage(path: str) -> str:
 # ── Execution ────────────────────────────────────────────────────
 
 def run(
-    agent: TauErgon,
-    tool_call_id: str | None = None,
-    path: str = ".",
-    check_usage: bool = False,
-    compact: bool = False,
-    exclude_dirs: str = "",
-    include_tests: bool = False,
+    path: str = ".", check_usage: bool = False, compact: bool = False,
+    exclude_dirs: str = "", include_tests: bool = False, max_files: int = 0,
+    _ctx: ToolContext | None = None,
 ) -> str:
+    """Execute a Python project scan."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if not os.path.exists(path):
         return f"Error: Path does not exist: {path}"
 
@@ -391,7 +419,7 @@ def run(
         if exclude_dirs else set()
     )
     analyzer = _AIProjectAnalyzer(path, exclude_dirs=exclude_dirs_set, include_tests=include_tests)
-    result = analyzer.run(compact=compact)
+    result = analyzer.run(compact=compact, max_files=max_files)
 
     if check_usage:
         result += "\n\n" + _analyze_usage(path)

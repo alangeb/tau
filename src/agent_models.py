@@ -1,5 +1,7 @@
 """Data models for TauErgon — messages, colors, subagent results."""
 
+from __future__ import annotations
+
 import time
 import uuid
 from dataclasses import dataclass
@@ -24,7 +26,7 @@ class InputMessage:
     @classmethod
     def from_a2a(
         cls, content: str, request_id: str | None = None, timestamp: float | None = None
-    ) -> "InputMessage":
+    ) -> InputMessage:
         """Create an InputMessage from A2A protocol input."""
         return cls(
             source="a2a",
@@ -34,12 +36,12 @@ class InputMessage:
         )
 
     @classmethod
-    def from_interactive(cls, content: str, timestamp: float | None = None) -> "InputMessage":
+    def from_interactive(cls, content: str, timestamp: float | None = None) -> InputMessage:
         """Create an InputMessage from interactive user input."""
         return cls(source="interactive", content=content, timestamp=timestamp)
 
     @classmethod
-    def from_command_line(cls, content: str, timestamp: float | None = None) -> "InputMessage":
+    def from_command_line(cls, content: str, timestamp: float | None = None) -> InputMessage:
         """Create an InputMessage from command-line input."""
         return cls(source="command_line", content=content, timestamp=timestamp)
 
@@ -106,6 +108,13 @@ class AgentStatus:
     session_in: int = 0
     session_out: int = 0
     session_cached: int = 0
+    # --- Byte tracking (estimated: ~4 bytes/token for UTF-8) ---
+    last_turn_in_bytes: int = 0
+    last_turn_out_bytes: int = 0
+    last_turn_cached_bytes: int = 0
+    session_in_bytes: int = 0
+    session_out_bytes: int = 0
+    session_cached_bytes: int = 0
 
     # --- Cache ---
     has_cache_data: bool = False
@@ -118,6 +127,8 @@ class AgentStatus:
     agent_name: str = ""
     context_file: str = ""
     nesting_count: int = 0
+    nesting_stack: str = ""  # e.g. "SF" = fork in subagent, "T" = think
+    turn_active: bool = False  # True while agent is processing a turn
 
     # --- Loop detection ---
     loop_stats: dict[str, Any] | None = None

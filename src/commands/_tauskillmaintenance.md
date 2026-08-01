@@ -8,22 +8,24 @@ description: Periodic skill maintenance — review audit logs, audit skills, upd
 
 ### 1.1 Gather Tool Usage Data
 ```bash
-# Count tool invocations across all recent logs
-for f in ~/.local/tau/log/*_2026*_1.audit; do
-  grep -oP "final_name='[^']*" "$f" 2>/dev/null | sed "s/final_name='"//
+# Count tool invocations across all recent logs (portable grep, no -P flag)
+LOG_DIR="$HOME/.local/tau/log"
+ls -t "$LOG_DIR"/*_1.audit 2>/dev/null | head -20 | while read f; do
+  grep -oE "final_name='[^']*" "$f" 2>/dev/null | sed "s/final_name='"//
 done | sort | uniq -c | sort -rn > /tmp/tool_usage.txt
 cat /tmp/tool_usage.txt
 ```
 
 ### 1.2 Analyze Skill Loading
 ```bash
-# Which skills are loaded and how often
-grep -rh "final_name='skill'" ~/.local/tau/log/*_2026*_1.audit 2>/dev/null | \
-  grep -oP 'skill_name.*?' | sort | uniq -c | sort -rn
+# Which skills are loaded and how often (portable grep)
+LOG_DIR="$HOME/.local/tau/log"
+grep -rh "final_name='skill'" "$LOG_DIR"/*_1.audit 2>/dev/null | \
+  grep -oE "skill_name[^,]*" | sort | uniq -c | sort -rn
 
-# Count skill calls per log
-for f in ~/.local/tau/log/*_2026*_1.audit; do
-  count=$(grep -c "final_name='skill'" "$f" 2>/dev/null)
+# Count skill calls per log (last 20 sessions)
+ls -t "$LOG_DIR"/*_1.audit 2>/dev/null | head -20 | while read f; do
+  count=$(grep -c "final_name='skill'" "$f" 2>/dev/null || echo 0)
   if [ "$count" -gt 0 ]; then
     echo "$(basename $f): $count skill calls"
   fi
@@ -33,16 +35,18 @@ done
 ### 1.3 Identify Repeated Patterns
 ```bash
 # Look at tool call sequences — what tools are used together?
-# Sample from recent logs
-for f in ~/.local/tau/log/3514241_2026*_1.audit; do
-  grep -oP "final_name='[^']*" "$f" | sed "s/final_name='"// | uniq -c | sort -rn
+# Sample from recent logs (portable grep)
+LOG_DIR="$HOME/.local/tau/log"
+ls -t "$LOG_DIR"/*_1.audit 2>/dev/null | head -20 | while read f; do
+  grep -oE "final_name='[^']*" "$f" 2>/dev/null | sed "s/final_name='"// | uniq -c | sort -rn
 done
 ```
 
 ### 1.4 Extract USER Prompts
 ```bash
 # What tasks are being done?
-for f in ~/.local/tau/log/*_2026*_1.audit; do
+LOG_DIR="$HOME/.local/tau/log"
+ls -t "$LOG_DIR"/*_1.audit 2>/dev/null | head -20 | while read f; do
   grep -A1 "^\[.*\] USER" "$f" 2>/dev/null | grep "|" | \
     grep -v "Think hard" | grep -v "EVERY TIME" | head -3
 done | sort -u
@@ -54,7 +58,8 @@ done | sort -u
 
 ### 2.1 List All Skills
 ```bash
-ls skills/*.md
+# List all skill directories and their SKILL.md files
+ls -d skills/*/SKILL.md 2>/dev/null || ls skills/*/SKILL.md
 ```
 
 ### 2.2 Check Skill Quality
@@ -151,9 +156,9 @@ skill "background"  # Search by keyword
 ### 5.2 Verify Cross-References
 For EACH skill, verify "Related Skills" section exists and links are valid:
 ```bash
-for f in skills/*.md; do
+for f in skills/*/SKILL.md; do
   if ! grep -q "## Related Skills" "$f"; then
-    echo "MISSING Related Skills: $(basename $f)"
+    echo "MISSING Related Skills: $(basename $(dirname $f))"
   fi
 done
 ```

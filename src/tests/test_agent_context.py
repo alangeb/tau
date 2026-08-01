@@ -183,6 +183,132 @@ class TestLoadSaveContext:
         result = context.load_from_file(context_file)
         assert result is False
 
+    def test_load_metadata_wrapped_format(self, temp_dir):
+        """Test loading new metadata-wrapped context file format."""
+        context_file = temp_dir / "metadata_context.json"
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "World"},
+        ]
+        metadata = {
+            "pid": 12345,
+            "working_dir": "/tmp/test",
+            "start_time": "2026-08-01T09:06:30+00:00",
+            "model": "test-model",
+        }
+        # Write new format
+        with open(context_file, "w") as f:
+            json.dump({"metadata": metadata, "messages": messages}, f)
+
+        # Load
+        loaded_context = TauContext()
+        result = loaded_context.load_from_file(context_file)
+
+        assert result is True
+        assert loaded_context.to_list() == messages
+        assert len(loaded_context) == 2
+        assert loaded_context.get_metadata() == metadata
+
+    def test_load_bare_array_format(self, temp_dir):
+        """Test loading legacy bare-array context file format."""
+        context_file = temp_dir / "bare_context.json"
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "World"},
+        ]
+        # Write bare array format
+        with open(context_file, "w") as f:
+            json.dump(messages, f)
+
+        # Load
+        loaded_context = TauContext()
+        result = loaded_context.load_from_file(context_file)
+
+        assert result is True
+        assert loaded_context.to_list() == messages
+        assert len(loaded_context) == 2
+        assert loaded_context.get_metadata() == {}
+
+    def test_save_and_load_roundtrip_with_metadata(self, temp_dir):
+        """Test saving and loading preserves metadata."""
+        context_file = temp_dir / "roundtrip_context.json"
+        context = TauContext(
+            [
+                {"role": "system", "content": "You are helpful"},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "World"},
+            ]
+        )
+        context.set_metadata(pid=99999, model="test-model")
+
+        # Save
+        context.save_to_file(context_file)
+
+        # Load
+        loaded_context = TauContext()
+        result = loaded_context.load_from_file(context_file)
+
+        assert result is True
+        assert loaded_context.to_list() == context.to_list()
+        assert loaded_context.get_metadata()["pid"] == 99999
+        assert loaded_context.get_metadata()["model"] == "test-model"
+
+    def test_save_to_file_small_context_returns_false(self, temp_dir):
+        """Test that saving < 3 messages returns False (silent skip)."""
+        context_file = temp_dir / "small_context.json"
+        context = TauContext([
+            {"role": "user", "content": "Hello"},
+        ])
+        result = context.save_to_file(context_file)
+        assert result is False
+        assert not context_file.exists()
+
+    def test_save_to_file_pending_tools_returns_false(self, temp_dir):
+        """Test that saving with pending tool calls returns False."""
+        context_file = temp_dir / "pending_context.json"
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Let me help", "tool_calls": [
+                {"id": "call_1", "function": {"name": "tool", "arguments": "{}"}}
+            ]},
+        ])
+        result = context.save_to_file(context_file)
+        assert result is False
+        assert not context_file.exists()
+
+    def test_save_to_file_force_with_pending_tools(self, temp_dir):
+        """Test that force=True allows saving with pending tool calls."""
+        context_file = temp_dir / "force_context.json"
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Let me help", "tool_calls": [
+                {"id": "call_1", "function": {"name": "tool", "arguments": "{}"}}
+            ]},
+        ])
+        result = context.save_to_file(context_file, force=True)
+        assert result is True
+        assert context_file.exists()
+
+    def test_load_malformed_dict_returns_false(self, temp_dir):
+        """Test loading a dict with 'messages' that is not a list."""
+        context_file = temp_dir / "malformed.json"
+        with open(context_file, "w") as f:
+            json.dump({"messages": "not a list"}, f)
+        context = TauContext()
+        result = context.load_from_file(context_file)
+        assert result is False
+
+    def test_load_unrecognized_format_returns_false(self, temp_dir):
+        """Test loading a JSON string (neither list nor dict with messages)."""
+        context_file = temp_dir / "string.json"
+        with open(context_file, "w") as f:
+            f.write('"just a string"')
+        context = TauContext()
+        result = context.load_from_file(context_file)
+        assert result is False
+
 
 class TestContextMethods:
     """Test TauContext class methods."""
@@ -249,7 +375,9 @@ class TestContextMethods:
         # Verify content
         with open(context_file, "r") as f:
             saved = json.load(f)
-        assert len(saved) == 3
+        assert "metadata" in saved
+        assert "messages" in saved
+        assert len(saved["messages"]) == 3
 
     def test_to_list(self):
         """Test to_list method."""
@@ -306,7 +434,7 @@ class TestContextAppend:
         context.append_user("Hello")
         assert len(context) == 2
         assert context[1]["role"] == "user"
-        assert context[1]["content"] == "Hello"
+        assert context[1]["content"] == "[U:real | N:0] Hello"
 
     def test_append_assistant(self):
         """Test append_assistant method after user message."""

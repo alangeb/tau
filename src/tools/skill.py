@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,6 +19,7 @@ metadata = ToolMetadata(
         "Unified skill tool. Empty string lists all available skills. "
         "Exact name loads skill content. Falls back to intelligent fork-based discovery on no match."
     ),
+    aliases_arg={"query": "skill_name", "name": "skill_name", "skill": "skill_name"},
     max_size=16384,
 )
 
@@ -115,8 +116,10 @@ class Args:
 
 # ── Execution ──
 
-def run(skill_name: str, agent: TauErgon, tool_call_id: str | None = None) -> str:
+def run(skill_name: str = "", _ctx: ToolContext | None = None) -> str:
     """List skills (empty string) or load skill content by name."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if not skill_name:
         return _format_skill_list()
 
@@ -139,10 +142,11 @@ def run(skill_name: str, agent: TauErgon, tool_call_id: str | None = None) -> st
             prompt=prompt,
             parent_context=agent.context,
             parent_agent=agent,
-            nesting_count=agent.nesting_count,
+            nesting_stack=agent.nesting_stack,
+            nesting_type="K",
             tool_call_id=tool_call_id,
             tool_filter=ToolFilter(
-                allowlist={"file_read", "glob", "ls", "end_turn"},
+                allowlist={"file_read", "glob", "ls"},
                 denied_message=(
                     "Tool '{tool_name}' is not permitted in skill discovery. "
                     "Use only: {available_tools}."

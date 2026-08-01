@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agent_context import TauContext
 from agent_core import TauErgon
 from agent_subagent import invoke_subagent_sync, NESTING_DEPTH_THRESHOLD
+from tools import ToolContext
 
 
 def _make_mock_agent(max_context_tokens=200000, current_group_name="default"):
@@ -48,6 +49,7 @@ class TestSubagentFork:
                 system_prompt="You are a code analyzer",
                 parent_agent=_make_mock_agent(current_group_name="test"),
                 nesting_count=0,
+                nesting_stack="",
                 config=test_config,
             )
 
@@ -91,6 +93,7 @@ class TestSubagentFork:
                 system_prompt="You are a test agent",
                 parent_agent=_make_mock_agent(current_group_name="test"),
                 nesting_count=1,
+                nesting_stack="S",
                 config=test_config,
             )
 
@@ -225,6 +228,7 @@ class TestSubagentFork:
                 system_prompt="Test",
                 parent_agent=mock_agent,
                 nesting_count=0,
+                nesting_stack="",
                 config=test_config,
             )
             assert isinstance(result1, str)
@@ -245,12 +249,12 @@ class TestSubagentFork:
         from tools.subagent import run as subagent_run
 
         mock_agent.nesting_count = NESTING_DEPTH_THRESHOLD
-        result = fork_run(task="Task 3", agent=mock_agent, tool_call_id="test")
+        result = fork_run(task="Task 3", _ctx=ToolContext(agent=mock_agent, tool_call_id="test"))
         assert isinstance(result, str)
         assert "Maximum nesting depth" in result or "ERROR" in result
 
         mock_agent.nesting_count = NESTING_DEPTH_THRESHOLD
-        result = subagent_run(task="Task 3", agent=mock_agent)
+        result = subagent_run(task="Task 3", _ctx=ToolContext(agent=mock_agent))
         assert isinstance(result, str)
         assert "Maximum nesting depth" in result or "ERROR" in result
 
@@ -268,6 +272,7 @@ class TestSubagentFork:
         agent.model_name = "test-model"
         agent.max_context_tokens = 200000
         agent.nesting_count = 0
+        agent.nesting_stack = ""
         agent.current_group_name = "test"
         agent.config = test_config
 
@@ -283,8 +288,7 @@ class TestSubagentFork:
         with patch.object(TauErgon, "invoke_with_tools", return_value="Fork output"):
             result = run(
                 task="analyze code",
-                agent=agent,
-                tool_call_id="fork-123",
+                _ctx=ToolContext(agent=agent, tool_call_id="fork-123"),
             )
 
         assert isinstance(result, str)
@@ -300,6 +304,7 @@ class TestSubagentFork:
         agent.model_name = "test-model"
         agent.max_context_tokens = 200000
         agent.nesting_count = 0
+        agent.nesting_stack = ""
         agent.current_group_name = "test"
         agent.config = test_config
 
@@ -317,8 +322,7 @@ class TestSubagentFork:
         ):
             result = run(
                 task="analyze code",
-                agent=agent,
-                tool_call_id=None,
+                _ctx=ToolContext(agent=agent, tool_call_id=None),
             )
 
         assert isinstance(result, str)
@@ -343,7 +347,7 @@ class TestSubagentFork:
         ):
             result = run(
                 task="analyze code",
-                agent=agent,
+                _ctx=ToolContext(agent=agent),
             )
 
         assert isinstance(result, str)

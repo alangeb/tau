@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 from dataclasses import dataclass, field
 
 import os
@@ -57,23 +57,19 @@ class Args:
     include_tests: bool = field(default=False, metadata={"description": "Include tests directory in analysis"})
 
 def run(
-    agent: TauErgon,
-    tool_call_id: str | None = None,
-    path: str = ".",
-    query_type: str = "summary",
-    symbol: str = "",
-    from_symbol: str = "",
-    to_symbol: str = "",
-    top: int = 10,
-    exclude_dirs: str = "",
-    include_tests: bool = False,
+    path: str = ".", query_type: str = "summary", symbol: str = "",
+    from_symbol: str = "", to_symbol: str = "", top: int = 10,
+    exclude_dirs: str = "", include_tests: bool = False,
+    _ctx: ToolContext | None = None,
 ) -> str:
     """Execute a graph query on a Python project."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if not os.path.exists(path):
         return f"Error: Path does not exist: {path}"
 
     try:
-        from tools.graph import build_graph, Graph
+        from tools.graph import build_graph
     except ImportError:
         return "Error: graph module not available"
 

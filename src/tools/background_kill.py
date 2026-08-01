@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolMetadata, ToolContext
 
 import subprocess
 from dataclasses import dataclass, field
@@ -70,9 +70,12 @@ def _kill_all_agent_sessions() -> int:
 
 # ── Execution ──
 def run(
-    agent: TauErgon, tool_call_id: str | None = None, session_name: str = ""
+    session_name: str = "",
+    _ctx: ToolContext | None = None,
 ) -> str:
     """Kill a tmux session or all agent sessions."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     try:
         if not session_name:
             killed = _kill_all_agent_sessions()

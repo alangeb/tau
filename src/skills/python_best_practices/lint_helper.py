@@ -2,7 +2,6 @@
 """Python best practices helper - linting and formatting utilities."""
 
 import subprocess
-from typing import Optional
 
 
 def lint_file(file_path: str) -> dict:

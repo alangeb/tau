@@ -32,9 +32,7 @@ class TestCommandExecution:
 
         # Patch where it's USED (agent_command_handlers imports from agent_subagent)
         with patch("agent_command_handlers.invoke_fork_sync") as mock_fork:
-            mock_fork.return_value = SubAgentResult(
-                output="Result from forked subagent", input_tokens=50, output_tokens=25
-            )
+            mock_fork.return_value = "Result from forked subagent"
 
             # Execute /fork command with task
             msg = InputMessage.from_interactive(
@@ -72,9 +70,7 @@ class TestCommandExecution:
 
         # Patch where it's USED (agent_command_handlers imports from agent_subagent)
         with patch("agent_command_handlers.invoke_fork_sync") as mock_fork:
-            mock_fork.return_value = SubAgentResult(
-                output="Result", input_tokens=10, output_tokens=5
-            )
+            mock_fork.return_value = "Result"
 
             # Execute /fork command
             msg = InputMessage.from_interactive("/fork Review code")
@@ -123,9 +119,7 @@ class TestSubagentIntegration:
 
         # Patch where it's USED (agent_command_handlers imports from agent_subagent)
         with patch("agent_command_handlers.invoke_subagent_sync") as mock_subagent:
-            mock_subagent.return_value = SubAgentResult(
-                output="Subagent result", input_tokens=30, output_tokens=15
-            )
+            mock_subagent.return_value = "Subagent result"
 
             # Execute /subagent command
             msg = InputMessage.from_interactive("/subagent Solve a math problem")

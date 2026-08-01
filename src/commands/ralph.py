@@ -201,7 +201,7 @@ def _finalize_task(task_id: str, incomplete: bool = False) -> None:
 
 # ── Iteration ──
 def _execute_iteration(
-    agent: "TauErgon", task_id: str, iteration: int
+    agent: TauErgon, task_id: str, iteration: int
 ) -> IterationResult:
     spec_file = RALPH_LOOP_DIR / TASK_SPEC_DIR / f"{task_id}.json"
     task_spec = _read_json(spec_file)
@@ -274,14 +274,14 @@ def _record_report(reports: list[str], report: str) -> None:
         del reports[: len(reports) - MAX_REPORTS]
 
 
-def _spawn_and_check(prompt: str, agent: "TauErgon") -> tuple[str | None, str]:
+def _spawn_and_check(prompt: str, agent: TauErgon) -> tuple[str | None, str]:
     report = _spawn_fork(prompt, agent)
     if report is None:
         return None, ""
     return report, _check_tag(report)
 
 
-def _spawn_fork(prompt: str, agent: "TauErgon") -> str | None:
+def _spawn_fork(prompt: str, agent: TauErgon) -> str | None:
     from agent_subagent import invoke_fork_sync
 
     try:
@@ -289,7 +289,7 @@ def _spawn_fork(prompt: str, agent: "TauErgon") -> str | None:
             prompt=prompt,
             parent_context=agent.context,
             parent_agent=agent,
-            nesting_count=agent.nesting_count,
+            nesting_stack=agent.nesting_stack,
         )
     except Exception as e:
 
@@ -305,7 +305,7 @@ def _check_tag(report: str) -> str:
     return ""
 
 
-def _retry_for_tag(agent: "TauErgon") -> tuple[str | None, str]:
+def _retry_for_tag(agent: TauErgon) -> tuple[str | None, str]:
     for retry in range(1, MAX_RETRIES + 1):
         warning(
             f"  ⚠️  No <CONTINUE>/<FINISHED> tag — retry {retry}/{MAX_RETRIES}"
@@ -355,7 +355,7 @@ Focus on making progress. If you've made significant progress, confirm completio
 
 
 # ── Main entry point ──
-def run(agent: "TauErgon", args: list[str]) -> None:
+def run(agent: TauErgon, args: list[str]) -> None:
 
 
     if not args or args[0] in ("help", "-h", "h"):

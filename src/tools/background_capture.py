@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolMetadata, ToolContext
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -25,24 +25,24 @@ class Args:
     session_name: str = field(
         metadata={"description": "Session name (required, must start with tmux-agent-)"}
     )
-    scrollback: int = field(
-        default=30, metadata={"description": "Number of scrollback lines"}
+    lines: int = field(
+        default=30, metadata={"description": "Number of lines to show from end"}
     )
 
 
 # ── Execution ──
 def run(
-    session_name: str,
-    agent: TauErgon,
-    tool_call_id: str | None = None,
-    scrollback: int = 30,
+    session_name: str, lines: int = 10,
+    _ctx: ToolContext | None = None,
 ) -> str:
-    """Capture pane output with scrollback history."""
+    """Show last N lines from tmux pane output."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if err := validate_session(session_name):
         return err
-    if scrollback < 0:
-        return "ERROR: scrollback must be non-negative"
-    if scrollback == 0:
+    if lines < 0:
+        return "ERROR: lines must be non-negative"
+    if lines == 0:
         return ""
 
-    return capture_pane(session_name, scrollback) or "No output captured"
+    return capture_pane(session_name, lines) or "No output captured"

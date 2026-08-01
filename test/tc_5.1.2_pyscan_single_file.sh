@@ -38,7 +38,7 @@ EOF
 # Run pyscan - use direct tool call to avoid agent truncation
 result=$(cd /tmp && PYTHONPATH=$HOME/tau/src /usr/bin/env python3 -c "
 from tools.pyscan import run
-print(run(agent=None, path='/tmp/pyscan_single'))
+print(run(path='/tmp/pyscan_single'))
 ")
 
 pass=1

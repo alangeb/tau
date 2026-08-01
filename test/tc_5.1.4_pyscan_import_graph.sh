@@ -49,7 +49,7 @@ EOF
 # Run pyscan
 result=$(cd /tmp && PYTHONPATH=$HOME/tau/src /usr/bin/env python3 -c "
 from tools.pyscan import run
-print(run(agent=None, path='/tmp/pyscan_import'))
+print(run(path='/tmp/pyscan_import'))
 ")
 
 pass=1

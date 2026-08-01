@@ -2,13 +2,8 @@
 
 import pytest
 from unittest.mock import Mock
-from agent_llm import (
-    _invoke_llm_with_retry,
-    LLMCallConfig,
-    LLMResponse,
-    BadRequestError,
-    APIError,
-)
+from agent_llm_invoke import _invoke_llm_with_retry
+from agent_llm_models import LLMCallConfig, LLMResponse, BadRequestError, APIError
 
 
 class MockContext:
@@ -226,7 +221,7 @@ class TestPrepareMessagesInLoop:
         # This is a structural test — the real verification is that retries work.
 
         # Actually, APITimeoutError is the right exception to trigger retries
-        from agent_llm import APITimeoutError
+        from agent_llm_models import APITimeoutError
 
         mock_client.chat.completions.create.side_effect = [
             APITimeoutError("timeout"),

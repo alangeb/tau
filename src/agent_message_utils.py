@@ -9,17 +9,27 @@ module organization.
 
 from __future__ import annotations
 
-# ── Synthetic message protocol ────────────────────────────────────────────────
-# All system-injected messages use this prefix so they can be reliably detected
-# and excluded from user-boundary calculations (undo, get_last_real_user_prompt).
-# Format: [SYSTEM-SYNTHETIC: <category>] <content>
-# Categories: end_turn_reminder, escalation, reflection, turn_started,
-#             turn_closed, command, recovery
+# ── User message prefix protocol ────────────────────────────────────────────────
+# All user messages are prefixed with [U:TYPE | N:stack] to indicate their type
+# and nesting level. Real user messages have [U:real | N:...], synthetic messages
+# have other types ([U:meta | N:...], [U:confirm | N:...], etc.).
+# Format: [U:TYPE | N:stack] Content
+# Types: real, meta, confirm, inject, system, fork, subagent, redirect
+_USER_PREFIX_PATTERN = "[U:"
+_REAL_USER_PREFIX = "[U:real | N:"
+
+# Legacy synthetic prefix (backward compatibility)
 _SYNTHETIC_PREFIX = "[SYSTEM-SYNTHETIC: "
 
 
 def is_synthetic_message(msg: dict) -> bool:
     """Check if any message (user or assistant) is synthetic.
+
+    A message is synthetic if it has a user message prefix with a synthetic type
+    (meta, confirm, inject, system). Real user messages (real, fork, subagent,
+    redirect) are NOT synthetic, even though they have prefixes.
+
+    Also checks for legacy [SYSTEM-SYNTHETIC: prefix for backward compatibility.
 
     Args:
         msg: A message dictionary to check.
@@ -27,31 +37,43 @@ def is_synthetic_message(msg: dict) -> bool:
     Returns:
         True if the message was system-injected, False otherwise.
     """
+    # Synthetic types: meta, confirm, inject, system
+    # Non-synthetic types: real, fork, subagent, redirect
+    _SYNTHETIC_TYPES = {"meta", "confirm", "inject", "system"}
+
     content = msg.get("content", "")
     if isinstance(content, str):
-        return content.startswith(_SYNTHETIC_PREFIX)
+        # Check for new prefix format
+        if content.startswith(_USER_PREFIX_PATTERN):
+            user_type = _get_user_type_from_content(content)
+            return user_type in _SYNTHETIC_TYPES
+        # Legacy check (backward compatibility)
+        return content.startswith("[SYSTEM-SYNTHETIC: ")
     if isinstance(content, list):
         for part in content:
             if isinstance(part, dict) and part.get("type") == "text":
-                if part.get("text", "").startswith(_SYNTHETIC_PREFIX):
+                text = part.get("text", "")
+                # Check for new prefix format
+                if text.startswith(_USER_PREFIX_PATTERN):
+                    user_type = _get_user_type_from_content(text)
+                    return user_type in _SYNTHETIC_TYPES
+                # Legacy check (backward compatibility)
+                if text.startswith("[SYSTEM-SYNTHETIC: "):
                     return True
     return False
 
 
-def make_synthetic_user(category: str, content: str) -> dict:
-    """Create a synthetic user message with the standard marker.
-
-    Args:
-        category: The synthetic message category (e.g., 'end_turn_reminder').
-        content: The message content (without prefix).
-
-    Returns:
-        A message dict ready to append to context.
-    """
-    return {
-        "role": "user",
-        "content": f"{_SYNTHETIC_PREFIX}{category}] {content}",
-    }
+def _get_user_type_from_content(content: str) -> str | None:
+    """Extract user type from prefixed content."""
+    if not isinstance(content, str) or not content.startswith(_USER_PREFIX_PATTERN):
+        return None
+    try:
+        end = content.index("]")
+        prefix = content[1:end]  # "U:TYPE | N:stack"
+        type_part = prefix.split(" | ")[0]  # "U:TYPE"
+        return type_part[2:]  # "TYPE"
+    except (ValueError, IndexError):
+        return None
 
 
 def _extract_text_content(msg: dict) -> str:
@@ -120,5 +142,4 @@ __all__ = [
     "_sanitize_text",
     "get_last_real_user_prompt",
     "is_synthetic_message",
-    "make_synthetic_user",
 ]

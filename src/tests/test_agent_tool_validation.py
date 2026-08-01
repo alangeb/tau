@@ -1,12 +1,12 @@
 """Unit tests for agent_tool_validation normalization pipeline.
 
-Tests normalize_tool_call (production path) and fix_tool_call (compat shim).
+Tests normalize_tool_call (production path).
 """
 
 import pytest
 from dataclasses import dataclass
 
-from tools.validation import normalize_tool_call, fix_tool_call, _dataclass_to_json_schema
+from tools.validation import normalize_tool_call, _dataclass_to_json_schema
 
 
 @dataclass
@@ -136,7 +136,7 @@ class TestNormalizeToolCall:
             "name": "grep",
             "args_dict": {"max_results": "10.0"},
         }
-        warnings = normalize_tool_call(tc)
+        normalize_tool_call(tc)
         assert tc["args_dict"]["max_results"] == 10
 
     def test_bool_coerce_true(self):
@@ -158,7 +158,7 @@ class TestNormalizeToolCall:
             "name": "grep",
             "args_dict": {"max_results": 10},  # already int
         }
-        warnings = normalize_tool_call(tc)
+        normalize_tool_call(tc)
         assert tc["args_dict"]["max_results"] == 10
         # No coercion warning since value is already int
 
@@ -185,43 +185,10 @@ class TestNormalizeToolCall:
             "name": "grep",
             "args_dict": {"max_results": "42", "path": "."},
         }
-        warnings = normalize_tool_call(tc)
+        normalize_tool_call(tc)
         assert tc["args_dict"]["max_results"] == 42  # coerced
         # 'path' may or may not be an alias for grep — check it exists
         assert "path" in tc["args_dict"] or "file_path" in tc["args_dict"]
-
-
-class TestFixToolCallCompat:
-    """Tests for fix_tool_call — backward-compat shim that delegates to normalize_tool_call.
-
-    NOTE: fix_tool_call ignores its cmd_aliases, arg_aliases, tool_module parameters
-    and delegates to normalize_tool_call which reads from module-level globals.
-    These tests verify the delegation works correctly.
-    """
-
-    def test_delegates_to_normalize(self):
-        """fix_tool_call delegates to normalize_tool_call."""
-        tc = {"name": "read_file", "args_dict": {"file_path": "foo.txt"}}
-        warnings = fix_tool_call(tc, {}, {}, None)
-        # Should resolve 'read_file' → 'file_read' via global CMD_ALIASES
-        assert tc["name"] == "file_read"
-        assert any("read_file" in w for w in warnings)
-
-    def test_parameters_ignored(self):
-        """Custom parameters are ignored (delegates to globals)."""
-        tc = {"name": "read_file", "args_dict": {"file_path": "foo.txt"}}
-        # Pass custom aliases that DON'T match globals
-        custom_aliases = {"fake_alias": "fake_target"}
-        warnings = fix_tool_call(tc, custom_aliases, {}, None)
-        # Still resolves via global CMD_ALIASES, not custom_aliases
-        assert tc["name"] == "file_read"
-
-    def test_returns_warnings(self):
-        """fix_tool_call returns warning strings."""
-        tc = {"name": "read_file", "args_dict": {}}
-        warnings = fix_tool_call(tc, {}, {}, None)
-        assert isinstance(warnings, list)
-        assert len(warnings) >= 1  # at least the alias warning
 
 
 # ── Contract tests: type coercion edge cases ──────────────────────────────────
@@ -296,6 +263,6 @@ class TestTypeCoercionContracts:
     def test_coerce_invalid_string_unchanged(self):
         """Non-numeric string for int field → left as-is (no crash)."""
         tc = {"name": "grep", "args_dict": {"max_results": "not_a_number"}}
-        warnings = normalize_tool_call(tc)
+        normalize_tool_call(tc)
         # Should not crash; value stays as string
         assert tc["args_dict"]["max_results"] == "not_a_number"

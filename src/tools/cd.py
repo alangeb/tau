@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from agent_core import TauErgon
 
 
 # ── Tool metadata ────────────────────────────────────────────────────────────
@@ -38,8 +34,10 @@ class Args:
 
 # ── Execution ────────────────────────────────────────────────────────────────
 
-def run(path: str, agent: TauErgon, tool_call_id: str | None = None) -> str:
+def run(path: str, _ctx: ToolContext | None = None) -> str:
     """Change the working directory."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if not path:
         return "ERROR: path is required."
 

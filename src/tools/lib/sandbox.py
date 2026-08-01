@@ -105,7 +105,7 @@ def _make_signature(tool_name: str, file_path: str) -> str:
 
 def _check_sandbox(
     tool_name: str,
-    agent: "TauErgon",
+    agent: TauErgon,
     file_path: str,
     path: Path,
     cwd: Path,
@@ -147,7 +147,7 @@ def _check_sandbox(
 
 # ── Public API ───────────────────────────────────────────────────────────
 
-def get_allowed_paths(agent: "TauErgon") -> list[str] | None:
+def get_allowed_paths(agent: TauErgon) -> list[str] | None:
     """Extract whitelist paths from agent config, or None if unavailable."""
     if hasattr(agent, "config"):
         return agent.config.path_security.allowed_paths
@@ -181,7 +181,7 @@ def validate_path(
 
 def check_path(
     tool_name: str,
-    agent: "TauErgon",
+    agent: TauErgon,
     file_path: str,
     allowed_paths: list[str] | None = None,
     write_operation: bool = True,

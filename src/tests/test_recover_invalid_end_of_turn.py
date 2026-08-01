@@ -49,19 +49,19 @@ class TestRecoverFromInvalidEndOfTurn:
         assert synthetic_msgs[0]["role"] == "user"
         
         # Verify it has the recovery category
-        assert "recovery" in synthetic_msgs[0]["content"].lower() or _SYNTHETIC_PREFIX in synthetic_msgs[0]["content"]
+        assert "[U:system | N:" in synthetic_msgs[0]["content"]
 
     def test_synthetic_bridge_has_correct_prefix(self):
-        """The synthetic bridge is properly marked with _SYNTHETIC_PREFIX."""
+        """The synthetic bridge is properly marked with [U:system | N: prefix."""
         manager, ctx = self._make_manager()
-        
+
         manager.recover_from_invalid_end_of_turn("Truncated response", None)
-        
+
         msgs = ctx.get_messages()
         synthetic_msgs = [m for m in msgs if is_synthetic_message(m)]
-        
+
         assert len(synthetic_msgs) == 1
-        assert _SYNTHETIC_PREFIX in synthetic_msgs[0]["content"]
+        assert "[U:system | N:" in synthetic_msgs[0]["content"]
 
     def test_context_remains_valid_after_recovery(self):
         """The context has no validation errors after recovery."""
@@ -88,7 +88,7 @@ class TestRecoverFromInvalidEndOfTurn:
         
         # Check for expected keywords
         assert "structurally incomplete" in content or "incomplete" in content
-        assert "end_turn" in content
+        assert "respond" in content or "complete" in content
 
     def test_recovery_preserves_last_real_prompt(self):
         """The recovery message includes the last real user prompt."""

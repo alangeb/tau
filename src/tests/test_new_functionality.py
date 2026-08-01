@@ -20,7 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent_context import TauContext
-from agent_llm import _ALLOWED_TOOL_CALL_FIELDS
+from agent_llm_models import _ALLOWED_TOOL_CALL_FIELDS
 from agent_session import log_failed_api_request
 
 # ---------------------------------------------------------------------------
@@ -481,6 +481,36 @@ class TestLogFailedApiRequest:
         assert data["request"]["tools"][0]["function"]["name"] == "file_read"
         assert data["request"]["extra_body"]["top_k"] == 50
 
+    def test_error_field_captured(self, temp_dir):
+        """Error type, message, and status_code should be recorded."""
+        log_file = temp_dir / "prefix.audit"
+        log_failed_api_request(
+            {"model": "test-model"},
+            log_file,
+            error_type="BadRequestError",
+            error_message="context too long",
+            status_code=400,
+        )
+
+        expected = temp_dir / "prefix.failed_request.json"
+        with open(expected) as f:
+            data = json.load(f)
+        assert data["error"]["type"] == "BadRequestError"
+        assert data["error"]["message"] == "context too long"
+        assert data["error"]["status_code"] == 400
+
+    def test_error_field_defaults(self, temp_dir):
+        """Error fields should default to unknown/empty/None when not provided."""
+        log_file = temp_dir / "prefix.audit"
+        log_failed_api_request({"model": "test-model"}, log_file)
+
+        expected = temp_dir / "prefix.failed_request.json"
+        with open(expected) as f:
+            data = json.load(f)
+        assert data["error"]["type"] == "unknown"
+        assert data["error"]["message"] == ""
+        assert data["error"]["status_code"] is None
+
 
 # ---------------------------------------------------------------------------
 # Test 6: _log_file parameter wired through _invoke_llm_with_retry
@@ -492,8 +522,8 @@ class TestInvokeRetryLogFile:
 
     def test_log_file_written_on_timeout_exhaustion(self, temp_dir):
         """When all retries fail with timeout, failed request should be logged."""
-        from agent_llm import LLMCallConfig, _invoke_llm_with_retry
-        from agent_llm import APITimeoutError
+        from agent_llm_invoke import _invoke_llm_with_retry
+        from agent_llm_models import LLMCallConfig, APITimeoutError
 
         mock_client = Mock()
         mock_client.chat.completions.create.side_effect = APITimeoutError("timed out")
@@ -521,7 +551,8 @@ class TestInvokeRetryLogFile:
 
     def test_no_log_file_when_success(self, temp_dir):
         """Successful call should NOT create a failed request file."""
-        from agent_llm import LLMCallConfig, _invoke_llm_with_retry
+        from agent_llm_invoke import _invoke_llm_with_retry
+        from agent_llm_models import LLMCallConfig
 
         mock_client = Mock()
         mock_response = Mock()
@@ -551,8 +582,8 @@ class TestInvokeRetryLogFile:
 
     def test_log_file_none_is_safe(self):
         """_log_file=None should not crash on failure."""
-        from agent_llm import LLMCallConfig, _invoke_llm_with_retry
-        from agent_llm import APITimeoutError
+        from agent_llm_invoke import _invoke_llm_with_retry
+        from agent_llm_models import LLMCallConfig, APITimeoutError
 
         mock_client = Mock()
         mock_client.chat.completions.create.side_effect = APITimeoutError("timed out")

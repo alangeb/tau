@@ -41,8 +41,12 @@ class ToolFilter:
     denied_message: Optional[str] = None
 
     def should_include(self, tool_name: str) -> bool:
-        """Return True if *tool_name* passes the filter."""
-        if self.allowlist:
+        """Return True if *tool_name* passes the filter.
+
+        Note: an empty allowlist (e.g. frozenset()) means "no tools allowed",
+        not "no filter". Use `is not None` to distinguish empty from unset.
+        """
+        if self.allowlist is not None:
             return any(
                 (
                     fnmatch.fnmatch(tool_name, pat)

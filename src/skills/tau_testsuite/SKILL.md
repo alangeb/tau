@@ -1,6 +1,6 @@
 ---
 name: tau_testsuite
-description: Tool test suite guide - fast A2A tests, structured testcases, helpers, consistency. Test suite, write tests, test automation, sanity tests, test structure (also load: test-suite-monitor, dependency_management, background)
+description: "Tool test suite guide — run tests, fast A2A tests, structured testcases, helpers. Sanity check, test runner (also load: test-suite-monitor, dependency_management, background, tmux_monitoring)"
 category: development
 keywords: test suite, run tests, sanity check, test runner, regression tests
 ---
@@ -111,5 +111,4 @@ source skills/tau_testsuite/test_runner.sh
 ## Related Skills
 - `test-suite-monitor` — background test monitoring workflow
 - `background` — tmux session management
-- `shell_scripting` — test output parsing
 - `dependency_management` — test dependencies

@@ -13,7 +13,8 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from agent_llm import CacheTracker, CallStats, PrefixCacheTracker
+from agent_llm_models import CacheTracker, CallStats
+from agent_llm_cache import PrefixCacheTracker
 from agent_token_tracker import TokenTracker
 from agent_commands import CommandManager
 
@@ -79,17 +80,21 @@ class TestNoGlobalCacheTracker(unittest.TestCase):
     """Verify global cache tracker functions have been removed."""
 
     def test_no_global_cache_tracker(self):
-        """agent_llm should not export get_cache_tracker or reset_cache_tracker."""
-        import agent_llm
-        self.assertFalse(hasattr(agent_llm, "get_cache_tracker"))
-        self.assertFalse(hasattr(agent_llm, "reset_cache_tracker"))
-        self.assertFalse(hasattr(agent_llm, "_global_cache_tracker"))
+        """Submodules should not export get_cache_tracker or reset_cache_tracker."""
+        import agent_llm_models as m
+        import agent_llm_cache as c
+        self.assertFalse(hasattr(m, "get_cache_tracker"))
+        self.assertFalse(hasattr(m, "reset_cache_tracker"))
+        self.assertFalse(hasattr(m, "_global_cache_tracker"))
+        self.assertFalse(hasattr(c, "get_cache_tracker"))
+        self.assertFalse(hasattr(c, "reset_cache_tracker"))
+        self.assertFalse(hasattr(c, "_global_cache_tracker"))
 
     def test_no_global_prefix_cache_tracker(self):
-        """agent_llm should not export get_prefix_cache_tracker."""
-        import agent_llm
-        self.assertFalse(hasattr(agent_llm, "get_prefix_cache_tracker"))
-        self.assertFalse(hasattr(agent_llm, "_global_prefix_cache_tracker"))
+        """Submodules should not export get_prefix_cache_tracker."""
+        import agent_llm_cache as c
+        self.assertFalse(hasattr(c, "get_prefix_cache_tracker"))
+        self.assertFalse(hasattr(c, "_global_prefix_cache_tracker"))
 
 
 class TestSimpleOpenAIClientNoneTracker(unittest.TestCase):
@@ -97,7 +102,7 @@ class TestSimpleOpenAIClientNoneTracker(unittest.TestCase):
 
     def test_none_cache_tracker(self):
         """SimpleOpenAIClient should accept None cache_tracker without error."""
-        from agent_llm import SimpleOpenAIClient
+        from agent_llm_client import SimpleOpenAIClient
         # Should not raise
         client = SimpleOpenAIClient(
             base_url="http://localhost:8000",

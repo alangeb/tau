@@ -13,7 +13,9 @@ def main():
     slug = title.lower().replace(" ", "-").replace("_", "-")[:50]
     month = datetime.date.today().strftime("%Y-%m")
     
-    todo_dir = os.path.expanduser("tasks/1_todo")
+    _script_dir = os.path.dirname(os.path.realpath(__file__))
+    _root = os.path.dirname(os.path.dirname(_script_dir))
+    todo_dir = os.path.join(_root, "tasks", "1_todo")
     os.makedirs(todo_dir, exist_ok=True)
     
     path = os.path.join(todo_dir, f"{slug}.md")

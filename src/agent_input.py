@@ -2,9 +2,27 @@
 
 Manages user input from stdin, context file operations, and the main agent run loop.
 
-Input modes: interactive stdin (with '#' multiline blocks), '/commands', '!shell'.
+Input Prefix Protocol:
+======================
+Regular input (outside multiline block):
+  - '#'     Start multiline block (content until 2+ blank lines)
+  - '#!'    Start multiline block (alternative syntax, equivalent to #)
+  - '!'     Execute shell command via bash tool
+  - '+'     Steering control (inject when turn is active)
+  - '/'     Dispatch slash command to CommandManager
+
+Inside multiline block:
+  - '#!'    Continue block (prefix stripped from content)
+  - '#+'    Break multiline and route steering command
+  - '#/'    Break multiline and execute as slash command
+  - 2+ blank lines  Submit the accumulated block
+
 Context files: JSON arrays stored in LOG_DIR as {ppid}_{timestamp}_{counter}.context.
+
+See tests/test_input_protocol.py for comprehensive test coverage.
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -39,6 +57,11 @@ from agent_console import (
     warning,
 )
 from agent_session import LOG_DIR
+from agent_context_utils import (
+    format_age,
+    get_all_context_files,
+    read_context_metadata,
+)
 from agent_models import InputMessage
 from tools import TOOLS
 
@@ -92,81 +115,41 @@ class OutputCapture:
 
 
 def get_context_file_by_parent_ppid() -> Path | None:
-    """Get the most recent context file matching the current parent PID."""
+    """Get the most recent context file matching the current parent PID.
+    
+    Falls back to the most recent context file if no match is found,
+    to handle cases where the parent PID changes between runs (e.g.,
+    different shell sessions).
+    """
     ppid = os.getppid()
     ctx_pattern = re.compile(rf"^{ppid}_\d+_\d+\.context$")
     ctx_files = [f for f in LOG_DIR.glob("*.context") if ctx_pattern.match(f.name)]
 
-    return max(ctx_files, key=lambda f: f.stat().st_mtime) if ctx_files else None
-
-
-def _get_all_context_files() -> list[Path]:
-    """Get all context files in LOG_DIR, sorted newest first."""
-    ctx_pattern = re.compile(r"^\d+_\d+_\d+\.context$")
-    ctx_files = [f for f in LOG_DIR.glob("*.context") if ctx_pattern.match(f.name)]
-    return sorted(ctx_files, key=lambda f: f.stat().st_mtime, reverse=True)
-
-
-def _format_age(seconds: float) -> str:
-    """Format a duration in seconds into a human-readable string."""
-    if seconds < 60:
-        return f"{int(seconds)}s ago"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"{int(minutes)}m ago"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{int(hours)}h ago"
-    days = hours // 24
-    return f"{int(days)}d ago"
-
-
-def _read_context_metadata(context_file: Path) -> tuple[int, str]:
-    """Read message count and last user message from a context file."""
-    try:
-        with open(context_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return (0, "")
-
-    msg_count = len(data)
-    last_user = ""
-    for msg in reversed(data):
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                image_count = sum(1 for p in content if p.get("type") == "image_url")
-                text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
-                content = f"[{image_count} image(s)]"
-                if text_parts:
-                    t = text_parts[0]
-                    if len(t) > 80:
-                        t = t[:77] + "..."
-                    content += ": " + t
-            elif isinstance(content, str) and len(content) > 80:
-                content = content[:77] + "..."
-            last_user = content
-            break
-    return (msg_count, last_user)
+    if ctx_files:
+        return max(ctx_files, key=lambda f: f.stat().st_mtime)
+    
+    # Fallback: return the most recent context file regardless of PID
+    all_ctx = get_all_context_files()
+    return all_ctx[0] if all_ctx else None
 
 
 def list_context_files(
     ppid_filter: int | None = None, limit: int | None = None
 ) -> list[dict]:
     """List context files with metadata, sorted newest first."""
-    ctx_files = _get_all_context_files()
+    ctx_files = get_all_context_files()
     results: list[dict] = []
     now = time.time()
     for f in ctx_files:
         if ppid_filter is not None:
             if int(f.name.split("_")[0]) != ppid_filter:
                 continue
-        msg_count, last_user = _read_context_metadata(f)
+        msg_count, last_user = read_context_metadata(f)
         results.append(
             {
                 "file": f,
                 "name": f.name,
-                "age": _format_age(now - f.stat().st_mtime),
+                "age": format_age(now - f.stat().st_mtime),
                 "msg_count": msg_count,
                 "last_user": last_user,
             }
@@ -239,13 +222,88 @@ class InputHandler:
 
     # --- Input thread ---
     def _start_input_thread(self) -> None:
-        """Spawn daemon thread for reading stdin with multiline '#' block support."""
+        """Spawn daemon thread for reading stdin with multiline block support.
+
+        Input Prefix Protocol:
+        ======================
+        Outside multiline block:
+          - '#'     Start multiline block (content until 2+ blank lines)
+          - '#!'    Start multiline block (alternative syntax, same as #)
+          - '!'     Shell command (execute via bash tool)
+          - '+'     Steering control (when turn is active)
+          - '/'     Slash command (dispatch to CommandManager)
+
+        Inside multiline block:
+          - '#!'    Continue block (prefix stripped)
+          - '#'     Continue block (prefix stripped)
+          - '#+'    Break multiline and route steering
+          - '#/'    Break multiline and execute as command
+          - 2+ blank lines  Submit the accumulated block
+
+        Steering commands (after + or #+):
+          - 'stop'       Gracefully terminate current turn
+          - 'redirect X' Redirect to new task, clearing context
+          - 'status'     Display agent status
+          - Other text   Inject as user message
+
+        See tests/test_input_protocol.py for comprehensive test coverage.
+        """
+
+        def _route_steering(payload: str) -> None:
+            """Route a steering message to the control queue.
+
+            If no turn is active, the message goes to the input queue as regular input.
+            
+            Supports steering commands:
+            - "stop" - Gracefully terminate the current turn
+            - "redirect <task>" - Redirect to a new task, clearing context
+            - "status" - Display current agent status
+            - Any other text - Inject as user message into the conversation
+            """
+            if not self.agent._turn_active:
+                self.input_queue.put(InputMessage.from_interactive(f"+{payload}"))
+                return
+
+            def _put(cmd: dict) -> None:
+                try:
+                    self.agent._control_queue.put_nowait(json.dumps(cmd))
+                except queue.Full:
+                    warning("[Control queue full — steering message dropped]")
+
+            if payload == "stop":
+                _put({"type": "terminate", "graceful": True, "source": "user"})
+                sys.stdout.write("\r\033[K[Injected: stop]\n")
+            elif payload.startswith("redirect "):
+                _put({"type": "redirect", "task": payload[9:]})
+                sys.stdout.write(f"\r\033[K[Injected: redirect {payload[9:40]}...]\n")
+            elif payload == "status":
+                _put({"type": "status"})
+                sys.stdout.write("\r\033[K[Injected: status]\n")
+            else:
+                _put({"type": "inject", "content": payload})
+                preview = payload[:50] + ("..." if len(payload) > 50 else "")
+                sys.stdout.write(f"\r\033[K[Injected: {preview}]\n")
+            sys.stdout.flush()
+
+        def _execute_command(cmd_str: str) -> None:
+            """Execute a slash command from within a multiline block.
+            
+            Args:
+                cmd_str: The command string (without leading /)
+            """
+            cmd_parts = cmd_str.strip().split(None, 1)
+            if not cmd_parts:
+                return
+            cmd_name = cmd_parts[0]
+            cmd_full = f"/{cmd_str.strip()}"
+            # Create a synthetic InputMessage for the command
+            cmd_msg = InputMessage.from_interactive(cmd_full)
+            self.agent._handle_command(cmd_name, cmd_full, cmd_msg)
 
         def input_handler():
-            # State machine: active=True means inside '#' multiline block
-            buffer: list[str] = []  # Collected lines
-            active = False  # Inside multiline block?
-            blanks = 0  # Consecutive blank line counter
+            buffer: list[str] = []
+            active = False
+            blanks = 0
 
             while (
                 not AgentLifecycle.is_exit_requested() and not self._input_thread_stop.is_set()
@@ -259,25 +317,46 @@ class InputHandler:
                         content = line.rstrip("\n")
 
                         if active:
-                            if content == "":
-                                # Increment first, then check: ensures 2 blank lines terminates (blanks reaches 2 on the 2nd blank)
+                            # Inside multiline block
+                            if content.startswith("#+"):
+                                # Break multiline and route steering
+                                _route_steering(content[2:].strip())
+                                buffer, blanks, active = [], 0, False
+                            elif content.startswith("#/"):
+                                # Break multiline and execute as command
+                                _execute_command(content[2:])
+                                buffer, blanks, active = [], 0, False
+                            elif content.startswith("#!") or content.startswith("#"):
+                                # Continue block, strip the prefix
+                                blanks = 0
+                                prefix_len = 2 if content.startswith("#!") else 1
+                                buffer.append(content[prefix_len:])
+                            elif content == "":
                                 blanks += 1
                                 if blanks >= 2:
+                                    # Two blank lines end the block
                                     self.input_queue.put(
                                         InputMessage.from_interactive("\n".join(buffer))
                                     )
-                                    buffer = []
-                                    blanks = 0
-                                    active = False
+                                    buffer, blanks, active = [], 0, False
                             else:
                                 blanks = 0
-                                buffer.append(
-                                    content[1:] if content.startswith("#") else content
-                                )
-                        elif content.startswith("#"):
-                            active = True
-                            buffer = [content[1:]]
+                                buffer.append(content)
+                        elif content.startswith("#") and not content.startswith("#/"):
+                            # Start multiline block (# or #!, but not #/ which needs turn active)
+                            # Note: #/ is handled as a command only when turn is active
+                            active, buffer = True, [content[1:]]  # Strip the #
+                        elif content.startswith("+"):
+                            # Steering command (only works when turn is active)
+                            _route_steering(content[1:].strip())
+                        elif content.startswith("!"):
+                            # Shell command - queue for processing
+                            self.input_queue.put(InputMessage.from_interactive(content))
+                        elif content.startswith("/"):
+                            # Slash command - queue for processing
+                            self.input_queue.put(InputMessage.from_interactive(content))
                         elif content:
+                            # Regular input
                             self.input_queue.put(InputMessage.from_interactive(content))
                 except (EOFError, OSError, KeyboardInterrupt):
                     break
@@ -332,7 +411,9 @@ class InputHandler:
                     # with \n (cursor mid-line). At worst one extra blank line.
                     if need_prompt:
                         sys.stdout.write("\n")
-                        prompt(">>> ")
+                        # Show [RUNNING] indicator when a turn is active (+ steering available)
+                        prompt_text = ">>> [RUNNING] " if self.agent._turn_active else ">>> "
+                        prompt(prompt_text)
                         sys.stdout.flush()
                         need_prompt = False
                     continue
@@ -415,8 +496,9 @@ class InputHandler:
                 return None
             shell_entry = TOOLS.get("bash")
             if shell_entry:
+                from tools import ToolContext
                 result = shell_entry.run(
-                    cmd=command, timeout=30, agent=self.agent, tool_call_id=None
+                    cmd=command, timeout=30, _ctx=ToolContext(agent=self.agent, tool_call_id=None)
                 )
                 tool_result(result)
             else:
@@ -424,18 +506,28 @@ class InputHandler:
             return None
 
         try:
-            self.agent.invoke_with_tools(msg.content)
-            last_assistant = self.agent.context.get_last_assistant()
+            # Set A2A request ID for chunk emission during tool execution
+            if msg.source == "a2a":
+                self.agent._current_a2a_request_id = msg.request_id  # pylint: disable=W0212
+            try:
+                self.agent.invoke_with_tools(msg.content)
+                last_assistant = self.agent.context.get_last_assistant()
 
-            if msg.source in ["interactive", "command_line", "system", "a2a"]:
-                print_context_status(self.agent.get_status())
+                if msg.source in ["interactive", "command_line", "system", "a2a"]:
+                    print_context_status(self.agent.get_status())
 
-            self.agent.context.save_to_file(self.agent._session.context_file)
-            self.agent._heartbeat.touch_activity()
-            return last_assistant
+                self.agent.context.save_to_file(self.agent._session.context_file)
+                self.agent._heartbeat.touch_activity()
+                return last_assistant
+            finally:
+                # Always clear A2A request ID after processing (success or error)
+                if msg.source == "a2a":
+                    self.agent._current_a2a_request_id = None  # pylint: disable=W0212
         except Exception as e:
             # Catch ALL exceptions (not just RuntimeError/ValueError/TypeError/OSError)
             # so that ANY crash during tool invocation is logged and handled gracefully.
+            if msg.source == "a2a":
+                self.agent._current_a2a_request_id = None  # pylint: disable=W0212
             error(f"invoke_with_tools failed: {type(e).__name__}: {e}")
             traceback.print_exc()
             return None

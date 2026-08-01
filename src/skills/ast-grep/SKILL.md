@@ -1,6 +1,6 @@
 ---
 name: ast-grep
-description: AST code search/rewrite. Enhanced grep for complex search or search&replace tasks. AST search, pattern matching, code transformation (also load: code-review-workflow, search-replace, bug_investigation, review)
+description: "AST code search/rewrite. Structural pattern search and replace. AST search, code transformation (also load: bug_investigation, code-review-workflow, grep_tool, review, search-replace, shell_scripting)"
 category: development
 keywords: AST search, pattern matching, code transformation, structural search, code rewrite, complex search replace
 ---
@@ -43,8 +43,9 @@ python3 skills/ast-grep/patterns.py  # ast grep helper
 ```
 
 ## Related Skills
-- `code-review-workflow` — complete review pipeline
-- `review` — detailed code review process
 - `bug_investigation` — root cause analysis
-
+- `code-review-workflow` — complete review pipeline
+- `grep_tool` — text-level search (complement to AST-level search)
+- `review` — detailed code review process
 - `search-replace` — Find and replace patterns across files
+- `shell_scripting` — shell scripting

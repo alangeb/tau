@@ -2,7 +2,6 @@
 """Documentation helper - docstring generation and validation."""
 
 import re
-from typing import Optional
 
 
 def generate_docstring(func_name: str, args: list[str], returns: str = "None") -> str:

@@ -1,6 +1,6 @@
 ---
 name: git-advanced
-description: Advanced git — bisect, cherry-pick, revert, log analysis, history. Git bisect, git log, git history, git stash, cherry-pick, revert, blame (also load: git, bug_investigation, tau_audit)
+description: "Advanced git — bisect, cherry-pick, revert, log analysis, history, stash, blame, reflog (also load: bug_investigation, git, tau_audit, code-review-workflow, git-verify)"
 category: development
 keywords: git, bisect, cherry-pick, revert, log, history, blame, stash, advanced
 ---
@@ -12,7 +12,6 @@ keywords: git, bisect, cherry-pick, revert, log, history, blame, stash, advanced
 
 ## Tau Worktree Bisect
 ```bash
-# Bisect in worktree (NEVER switch branches)
 git bisect start
 git bisect bad
 git bisect good <commit>
@@ -30,12 +29,9 @@ git log -S"search_string" --oneline
 
 ## Cherry-Pick (Tau-Specific)
 ```bash
-# Cherry-pick into worktree
 git cherry-pick <commit>
-# Range
-git cherry-pick <start>..<end>
-# Abort if conflict
-git cherry-pick --abort
+git cherry-pick <start>..<end>    # Range
+git cherry-pick --abort           # Conflict
 ```
 
 ## Rules
@@ -44,12 +40,13 @@ git cherry-pick --abort
 - Worktree LOCKED to one branch — NEVER switch
 
 ## Helper
-
 ```bash
 python3 skills/git-advanced/git_ops.py  # git advanced helper
 ```
+
 ## Related Skills
-- `git` — basic worktree operations
-- `code-review-workflow` — review changes before committing
 - `bug_investigation` — use bisect for bug hunting
+- `git` — basic worktree operations
 - `tau_audit` — analyze commit patterns
+- `code-review-workflow` — review changes before committing
+- `git-verify` — verify code changes

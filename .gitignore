@@ -8,8 +8,21 @@ test/output/**
 # subconscious
 subconscious/**
 dream.log
+dream.pid
+dream.stop
 # task automation
 tasks/*/**
 tasks/log/
+src/tasks/
 # log files
 logfile
+# ralph loop runtime state
+.ralph_loop/
+# test artifacts
+src/*.tmp
+# sanity test artifact
+tau-sanity.py
+# benchmark data
+data/
+# benchmark runs
+runs/

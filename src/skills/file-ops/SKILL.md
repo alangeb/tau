@@ -1,6 +1,6 @@
 ---
 name: file-ops
-description: File operations — read, edit, write, glob, ls workflows. Read file, write file, edit file, find files, list directory, batch edit (also load: search-replace, code-review-workflow)
+description: "File operations — read, edit, write, glob, ls, head, wc. Read file, write file, edit file, find files (also load: code-review-workflow, search-replace, git, grep_tool, shell_scripting)"
 category: development
 keywords: file, read, write, edit, glob, list, directory, batch, find, operations
 ---
@@ -39,11 +39,13 @@ file_read(path="new.py")  # Verify
 - ls for exploration
 
 ## Helper
-
 ```bash
 python3 skills/file-ops/file_ops.py  # file ops helper
 ```
+
 ## Related Skills
-- `search-replace` — find and replace patterns
-- `shell_scripting` — batch file operations
 - `code-review-workflow` — verify changes
+- `search-replace` — find and replace patterns
+- `git` — commit file changes
+- `grep_tool` — search file contents
+- `shell_scripting` — batch file operations

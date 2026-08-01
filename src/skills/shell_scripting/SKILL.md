@@ -1,6 +1,6 @@
 ---
 name: shell_scripting
-description: Tau bash patterns — audit log processing, test output parsing, worktree operations. Bash scripting, shell commands, text processing, awk, sed, grep, find, sort, uniq, xargs, pipe (also load: background, reference, search-replace, file-ops)
+description: "Tau bash patterns — audit log processing, test output parsing, worktree operations. Shell script, awk, sed, grep, find (also load: background, file-ops, reference, search-replace, agent-browser, command_template, performance)"
 category: development
 keywords: bash, shell, script, audit log, test output, worktree, awk, sed, grep, find, sort, uniq, xargs, pipe
 ---
@@ -21,50 +21,33 @@ done | sort | uniq -c | sort -rn
 grep -rh '"skill_name":\s*"[^"]*"' ~/.local/tau/log/*_2026*_1.audit | \
   grep -oP '"skill_name":\s*"\K[^"]+' | sort | uniq -c | sort -rn
 
-# Error patterns
+# Error count
 grep -c 'TOOL_ERROR\|TOOL_BLOCKED' <audit_file>
 ```
 
 ## Test Output Parsing
 ```bash
-# Status summary
 find $HOME/tau/test/output -name "status.json" | xargs grep '"status"' | sort | uniq -c
-
-# Duration analysis
 grep -oP 'duration_s=\K[\d.]+' <audit_file> | sort -n | tail -10
 ```
 
 ## Worktree Operations
 ```bash
-# Verify worktree identity
 test -f .git
 MAIN_REPO=$(cat .git | sed 's/^gitdir: \(.*\)\/.git\/worktrees\/.*$/\1/')
 BRANCH=$(git branch --show-current)
 ```
 
-## Gotchas
-- **Quoting**: `'single'` for literal, `"double"` for expansion
-- **Pipefail**: `set -o pipefail` to catch errors in pipes
-- **Globbing**: `shopt -s nullglob` to handle empty globs
-
 ## Helper
-
 ```bash
 source skills/shell_scripting/common_patterns.sh
 ```
-## Related Skills
-- `image` — image loading and vision models
-- `docker` — container management
-- `background` — tmux session management
-- `agent-browser` — browser automation via shell
-- `tau_audit` — audit log analysis
-- `tau_testsuite` — test output parsing
-- `command_template` — shell-based commands
 
-- `performance` — Performance
-- `signal-cli` — Signal CLI and JSON-RPC API
-- `freecad` — Headless FreeCAD 3D modeling
-- `web-research` — Web research
-- `search-replace` — Find and replace patterns across files
+## Related Skills
+- `background` — tmux session management
+- `file-ops` — file operations
 - `reference` — Tau quick reference
-- `file-ops` — File operations
+- `search-replace` — find and replace patterns
+- `agent-browser` — browser automation via shell
+- `command_template` — shell-based commands
+- `performance` — profile bottlenecks and optimize

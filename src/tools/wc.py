@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,14 +36,12 @@ class Args:
 # ── Execution ──
 
 def run(
-    path: str,
-    agent: TauErgon,
-    tool_call_id: str | None = None,
-    lines: bool = False,
-    words: bool = False,
-    chars: bool = False,
+    path: str, lines: bool = False, words: bool = False, chars: bool = False,
+    _ctx: ToolContext | None = None,
 ) -> str:
     """Count lines, words, and/or characters in a file."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     try:
         cmd = ["wc"]
         if lines:

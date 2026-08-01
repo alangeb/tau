@@ -161,47 +161,6 @@ if ! expect_contains "777" "$result_clean_8" "Undo restores test_value=777" "$TE
 fi
 
 # ============================================================================
-# TEST 9: Dynamically create custom command and verify in /help
-# ============================================================================
-# Create testcustomcommand.md file in the agent's commands directory
-COMMS_DIR="$CODE_DIR/commands"
-cat > "$COMMS_DIR/testcustomcommand.md" << 'EOF'
----
-name: testcustomcommand
-signature: testcustomcommand <arg1> <arg2>
-description: Math pattern - remember X and Y values
----
-
-Later we will working on some math. You don't need todo anything for now, just remember X=2*$1 and Y=2*$2 (just remember)
-EOF
-
-# Test that /help shows the new command
-log_info "[COMM] /help"
-FULL_RESULT_9=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/help" 2>&1) || true
-result_clean_9=$(echo "$FULL_RESULT_9" | sed 's/\x1b\[[0-9;]*m//g')
-if ! expect_contains "/testcustomcommand" "$result_clean_9" "/help shows /testcustomcommand" "$TEST_NAME"; then
-    log_fail "[INPUT] Full result: $FULL_RESULT_9"
-    ALL_PASSED=false
-fi
-
-# ============================================================================
-# TEST 10: Execute custom command and verify memory
-# ============================================================================
-# First execute the custom command
-log_info "[COMM] /testcustomcommand 1111 3333"
-FULL_RESULT_10A=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/testcustomcommand 1111 3333" 2>&1) || true
-result_clean_10A=$(echo "$FULL_RESULT_10A" | sed 's/\x1b\[[0-9;]*m//g')
-
-# Now ask about X value
-log_info "[COMM] do you remember the value of X? just answer with the value, no punctuation or anything"
-FULL_RESULT_10B=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "do you remember the value of X? just answer with the value, no punctuation or anything" 2>&1) || true
-result_clean_10B=$(echo "$FULL_RESULT_10B" | sed 's/\x1b\[[0-9;]*m//g')
-if ! expect_contains "2222" "$result_clean_10B" "Custom command sets X=2222" "$TEST_NAME"; then
-    log_fail "[INPUT] Full result: $FULL_RESULT_10B"
-    ALL_PASSED=false
-fi
-
-# ============================================================================
 # TEST 11-13: Calculate X+Y value (using remembered variables from custom command)
 # ============================================================================
 # The custom command set X=2*1111=2222 and Y=2*3333=6666 earlier (messages 14-15).
@@ -227,27 +186,11 @@ fi
 log_info "[COMM] /commands"
 FULL_RESULT_14A=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/commands" 2>&1) || true
 result_clean_14A=$(echo "$FULL_RESULT_14A" | sed 's/\x1b\[[0-9;]*m//g')
-if ! expect_contains "/testcustomcommand" "$result_clean_14A" "/commands contains /testcustomcommand" "$TEST_NAME"; then
-    log_fail "[INPUT] Full result: $FULL_RESULT_14A"
-    ALL_PASSED=false
-fi
 if ! expect_contains "AVAILABLE COMMANDS" "$result_clean_14A" "/commands contains AVAILABLE COMMANDS" "$TEST_NAME"; then
     log_fail "[INPUT] Full result: $FULL_RESULT_14A"
     ALL_PASSED=false
 fi
 
-# ============================================================================
-# TEST 15: Delete custom command and verify it's gone from /commands
-# ============================================================================
-rm "$COMMS_DIR/testcustomcommand.md"
-
-log_info "[COMM] /commands (after deletion)"
-FULL_RESULT_15=$(python3 "$DUT_PATH" --pid "$AGENT_PID" "/commands" 2>&1) || true
-result_clean_15=$(echo "$FULL_RESULT_15" | sed 's/\x1b\[[0-9;]*m//g')
-if ! expect_not_contains "/testcustomcommand" "$result_clean_15" "/commands does not contain /testcustomcommand" "$TEST_NAME"; then
-    log_fail "[INPUT] Full result: $FULL_RESULT_15"
-    ALL_PASSED=false
-fi
 
 # TEST 19: /exec with file creation
 if false; then

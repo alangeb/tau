@@ -4,15 +4,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_llm import (
-    _extract_token_usage,
-    CallStats,
-    CacheTracker,
-    _invoke_llm_with_retry,
-    LLMCallConfig,
-    LLMResponse,
-)
-from agent_llm import APITimeoutError
+from agent_llm_invoke import _extract_token_usage, _invoke_llm_with_retry
+from agent_llm_models import CallStats, CacheTracker, LLMCallConfig, LLMResponse
+from agent_llm_models import APITimeoutError
 
 
 class TestLegacyExtractTokenUsage:
@@ -360,7 +354,7 @@ class TestPrefixCacheTrackerMonitoring:
 
     def test_diagnose_miss_no_previous(self):
         """diagnose_miss returns message when no previous request."""
-        from agent_llm import PrefixCacheTracker
+        from agent_llm_cache import PrefixCacheTracker
 
         tracker = PrefixCacheTracker()
         diag = tracker.diagnose_miss(self._make_body())
@@ -368,7 +362,7 @@ class TestPrefixCacheTrackerMonitoring:
 
     def test_diagnose_miss_with_prefix_match(self):
         """diagnose_miss reports prefix match and size delta."""
-        from agent_llm import PrefixCacheTracker
+        from agent_llm_cache import PrefixCacheTracker
 
         tracker = PrefixCacheTracker()
         body1 = self._make_body("short")
@@ -380,7 +374,7 @@ class TestPrefixCacheTrackerMonitoring:
 
     def test_diagnose_miss_params_changed(self):
         """diagnose_miss reports param changes."""
-        from agent_llm import PrefixCacheTracker
+        from agent_llm_cache import PrefixCacheTracker
         import json as _json
 
         tracker = PrefixCacheTracker()
@@ -396,7 +390,7 @@ class TestPrefixCacheTrackerMonitoring:
         Verifies that _prev_request_body is saved before _last_request_body is updated,
         so diagnose_miss reports meaningful divergence (not 100% self-match).
         """
-        from agent_llm import PrefixCacheTracker
+        from agent_llm_cache import PrefixCacheTracker
 
         tracker = PrefixCacheTracker()
         body1 = self._make_body("original")
@@ -411,7 +405,7 @@ class TestPrefixCacheTrackerMonitoring:
 
     def test_reset_clears_all(self):
         """reset clears all stored state."""
-        from agent_llm import PrefixCacheTracker
+        from agent_llm_cache import PrefixCacheTracker
 
         tracker = PrefixCacheTracker()
         body = self._make_body("hello")
@@ -423,3 +417,192 @@ class TestPrefixCacheTrackerMonitoring:
         assert tracker._prev_params_key is None
         assert tracker._last_request_body is None
         assert tracker._last_params_key is None
+
+
+class TestReportCacheHitDedup:
+    """Test that _report_cache_hit deduplicates consecutive identical warnings."""
+
+    def _make_client(self, cached_tokens: int = 0):
+        """Create a SimpleOpenAIClient with a tracker and mock response."""
+        import json as _json
+        from agent_llm_client import SimpleOpenAIClient
+        from agent_llm_cache import PrefixCacheTracker
+        from unittest.mock import Mock
+
+        tracker = PrefixCacheTracker()
+        body = _json.dumps({"model": "m", "messages": []}, sort_keys=True).encode()
+        tracker.compute_expected_hit(body)
+
+        client = SimpleOpenAIClient(
+            base_url="http://localhost:9999",
+            api_key="test",
+            cache_tracker=tracker,
+        )
+
+        def _make_response(cached: int = 0):
+            response = Mock()
+            response.usage.prompt_tokens = 100
+            response.usage.prompt_tokens_details = {"cached_tokens": cached}
+            return response
+
+        return client, tracker, body, _make_response
+
+    def test_low_actual_dedup(self):
+        """Repeated 'low actual' warnings are suppressed."""
+        from unittest.mock import patch
+
+        client, tracker, body, mk_resp = self._make_client(cached_tokens=0)
+        hit_reason = "first call (no previous context)"
+
+        with patch("agent_llm_client.warning") as mock_warning:
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.0,
+                hit_reason=hit_reason,
+                body_bytes=body,
+            )
+            first_count = mock_warning.call_count
+            # Second call with identical conditions → all suppressed
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.0,
+                hit_reason=hit_reason,
+                body_bytes=body,
+            )
+            assert mock_warning.call_count == first_count
+
+    def test_gap_dedup(self):
+        """Repeated gap warnings are suppressed."""
+        from unittest.mock import patch
+
+        client, tracker, body, mk_resp = self._make_client(cached_tokens=0)
+
+        with patch("agent_llm_client.warning") as mock_warning:
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.75,
+                hit_reason="prefix match: 100/100 bytes (100.0%)",
+                body_bytes=body,
+            )
+            first_count = mock_warning.call_count
+            # Two more calls with same gap → suppressed
+            for _ in range(2):
+                client._report_cache_hit(
+                    response=mk_resp(),
+                    expected_hit=0.75,
+                    hit_reason="prefix match: 100/100 bytes (100.0%)",
+                    body_bytes=body,
+                )
+            assert mock_warning.call_count == first_count
+
+    def test_low_expected_dedup_with_varying_hit_reason(self):
+        """low_exp key excludes hit_reason, so varying descriptions still dedup.
+
+        The hit_reason string contains volatile byte counts (e.g.
+        'prefix match: 114/183 bytes (62.3%)') that would make the key
+        unique per call.  The key uses only the rounded expected_hit,
+        so identical conditions are still suppressed.
+        """
+        from unittest.mock import patch
+
+        client, tracker, body, mk_resp = self._make_client(cached_tokens=0)
+
+        with patch("agent_llm_client.warning") as mock_warning:
+            # Same expected_hit, different hit_reason each time
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.10,
+                hit_reason="prefix match: 100/200 bytes (50.0%)",
+                body_bytes=body,
+            )
+            first_count = mock_warning.call_count
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.10,
+                hit_reason="prefix match: 150/300 bytes (50.0%)",
+                body_bytes=body,
+            )
+            # No new warnings — key only uses expected_hit, not hit_reason
+            assert mock_warning.call_count == first_count
+
+    def test_condition_change_re_warns(self):
+        """When actual hit rate changes, warning is re-emitted."""
+        from unittest.mock import patch
+
+        client, tracker, body, mk_resp = self._make_client(cached_tokens=0)
+        hit_reason = "first call (no previous context)"
+
+        with patch("agent_llm_client.warning") as mock_warning:
+            # First: 0% actual
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.0,
+                hit_reason=hit_reason,
+                body_bytes=body,
+            )
+            first_count = mock_warning.call_count
+
+            # Second: still 0% → suppressed
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.0,
+                hit_reason=hit_reason,
+                body_bytes=body,
+            )
+            assert mock_warning.call_count == first_count
+
+            # Third: actual changed to 10% → still <25%, key changed → re-emitted
+            client._report_cache_hit(
+                response=mk_resp(cached=10),
+                expected_hit=0.0,
+                hit_reason=hit_reason,
+                body_bytes=body,
+            )
+            assert mock_warning.call_count > first_count
+
+    def test_params_changed_dedup(self):
+        """Repeated 'params changed' warnings are suppressed."""
+        from unittest.mock import patch
+
+        client, tracker, body, mk_resp = self._make_client(cached_tokens=0)
+        reason = "params changed: model"
+
+        with patch("agent_llm_client.warning") as mock_warning:
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.0,
+                hit_reason=reason,
+                body_bytes=body,
+            )
+            first_count = mock_warning.call_count
+            # Second call with identical params-change reason → suppressed
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.0,
+                hit_reason=reason,
+                body_bytes=body,
+            )
+            assert mock_warning.call_count == first_count
+
+    def test_params_changed_condition_change_re_warns(self):
+        """Different params-changed reason re-emits a new warning."""
+        from unittest.mock import patch
+
+        client, tracker, body, mk_resp = self._make_client(cached_tokens=0)
+
+        with patch("agent_llm_client.warning") as mock_warning:
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.0,
+                hit_reason="params changed: model",
+                body_bytes=body,
+            )
+            first_count = mock_warning.call_count
+            # Different reason string → new dedup key → re-emitted
+            client._report_cache_hit(
+                response=mk_resp(),
+                expected_hit=0.0,
+                hit_reason="params changed: tools",
+                body_bytes=body,
+            )
+            assert mock_warning.call_count > first_count

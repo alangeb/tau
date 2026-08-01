@@ -251,22 +251,14 @@ class TestValidateSingleMessage:
     def test_not_dictionary(self):
         """Test that non-dict message fails validation.
 
-        All messages must be dictionaries. The validate() method catches
-        non-dict messages and reports them as errors.
-
-        NOTE: We can't inject a raw string into _messages because the
-        system_count check at line 192 will crash calling .get() on it.
-        Instead we verify the isinstance check exists in the code.
+        All messages must be dictionaries. The validate_context() function
+        in agent_context_validation catches non-dict messages and reports
+        them as errors.
         """
-        # The validate() code at line 208 has:
-        #   if not isinstance(msg, dict):
-        #       errors.append(f"Message {i} is not a dictionary")
-        #       continue
-        # This proves non-dict messages are handled. We verify the logic
-        # by checking the source code contains the check.
         import inspect
+        from agent_context_validation import validate_context
 
-        source = inspect.getsource(TauContext.validate)
+        source = inspect.getsource(validate_context)
         assert "is not a dictionary" in source
         assert "isinstance(msg, dict)" in source or "not isinstance" in source
 
@@ -485,7 +477,7 @@ class TestValidateContext:
             ]
         )
         errors = context.validate()
-        assert any("pending tool calls" in e for e in errors)
+        assert any("unresolved tool call" in e for e in errors)
         assert "t2" in str(errors)
 
     def test_complete_invalid_context(self):

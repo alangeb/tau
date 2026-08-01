@@ -165,9 +165,7 @@ class TestCommandChaining:
 
         # Patch where invoke_fork_sync is USED (agent_command_handlers imported it)
         with patch("agent_command_handlers.invoke_fork_sync") as mock_fork:
-            mock_fork.return_value = SubAgentResult(
-                output="Fork result", input_tokens=10, output_tokens=5
-            )
+            mock_fork.return_value = "Fork result"
 
             # Process /fork command
             msg = InputMessage.from_interactive("/fork Analyze the code")

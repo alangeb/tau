@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,8 +46,10 @@ class Args:
 
 # ── Execution ──
 
-def run(task: str, agent: "TauErgon", tool_call_id: str | None = None) -> str:
+def run(task: str, _ctx: ToolContext | None = None) -> str:
     """Spawn an isolated subagent with blank-slate context."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     global _last_call
 
     if agent is None:
@@ -76,5 +78,6 @@ def run(task: str, agent: "TauErgon", tool_call_id: str | None = None) -> str:
         system_prompt=agent.context.get_system(),
         parent_agent=agent,
         nesting_count=nesting_count,
+        nesting_stack=agent.nesting_stack,
         tool_filter=None,  # Children always get unrestricted tool access.
     )

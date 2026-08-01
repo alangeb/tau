@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from tools import ToolMetadata
+from tools import ToolMetadata, ToolContext
 
 from .lib.session_utils import validate_session, strip_ansi
 
@@ -81,18 +81,16 @@ def _is_prompt(output: str) -> bool:
 
 # ── Execution ──
 def run(
-    session_name: str,
-    command: str,
-    agent: TauErgon,
-    tool_call_id: str | None = None,
-    wait: bool = True,
-    timeout: float = 30.0,
+    session_name: str, command: str, wait: bool = True, timeout: float = 30.0,
+    _ctx: ToolContext | None = None,
 ) -> str:
     """Execute a command in a tmux session.
     
     When wait=True: polls until shell prompt returns (command completed) or timeout.
     When wait=False: sends command and returns immediately.
     """
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if err := validate_session(session_name):
         return err
 
@@ -111,7 +109,7 @@ def run(
             return f"Sent command to session '{session_name}'"
 
         # Poll for command completion (shell prompt returns)
-        start_time = time.time()
+        time.time()
         poll_interval = 0.2  # 200ms polling
         max_polls = int(timeout / poll_interval)
 

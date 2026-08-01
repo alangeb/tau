@@ -18,11 +18,8 @@ Outputs:
 
 import sys
 import os
-import json
-import re
 import statistics
 from collections import Counter, defaultdict
-from datetime import datetime
 from pathlib import Path
 
 # Add path for imports
@@ -52,7 +49,7 @@ def analyze_all_files(files, batch_size=500):
                 data['_filepath'] = str(fpath)
                 data['_basename'] = fpath.name
                 all_results.append(data)
-            except Exception as e:
+            except Exception:
                 pass
     
     print(f"Processed {len(all_results)}/{total} files", file=sys.stderr)
@@ -272,7 +269,7 @@ def generate_report(results):
     
     avg_lengths = [r['conversation']['avg_assistant_length'] for r in results]
     max_lengths = [r['conversation']['max_assistant_length'] for r in results]
-    min_lengths = [r['conversation']['min_assistant_length'] for r in results]
+    [r['conversation']['min_assistant_length'] for r in results]
     
     lines.append(f"\n  Average assistant response length (chars):")
     lines.append(f"    Mean: {statistics.mean(avg_lengths):.0f}")

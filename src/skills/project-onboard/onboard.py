@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Project onboarding helper — gather project info, generate overview."""
-import subprocess, sys, os, json
+import subprocess, sys, os
 
 def gather_info(path="."):
     """Gather basic project info."""

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """README template helper - generate README structure."""
 
-from typing import Optional
 
 
 def generate_readme_template(project_name: str, description: str = "") -> str:

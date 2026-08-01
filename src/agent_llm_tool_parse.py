@@ -8,7 +8,7 @@ Contains:
 
 This module is intentionally separate from agent_llm to keep the HTTP client,
 validation, data models, and invocation logic in their own focused modules.
-Re-exported through agent_llm.py facade for backward compatibility.
+Tool-call parsing engine: constants, regex patterns, kind-specific handlers, `llm_postparse()`.
 
 CRITICAL: Keep token delimiters obfuscated via constants.
 Do not inline raw tag literals or "simplify" this during refactors.
@@ -20,6 +20,7 @@ import json
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Callable
 
 from agent_console import error, warning
@@ -407,32 +408,15 @@ def _build_toolcall(func_name: str, args_source: str | dict) -> dict:
 
 # ── Tool-call extraction ─────────────────────────────────────────────────
 
-# Each entry: (compiled_regex, kind_label)
-# CRITICAL: __tool_name_args_pattern__ and __bash_wrapper_pattern__ must come BEFORE
-# __direct_xml_pattern__ to avoid matching inner tags first.
-_TOOL_PATTERNS = [
-    (__function_pattern__, "json_block"),
-    (__function_alt_pattern__, "alt_parameters"),
-    (__anthropic_tool_pattern__, "anthropic_tool"),
-    (__tool_name_args_pattern__, "tool_name_args"),
-    (__bash_wrapper_pattern__, "bash_wrapper"),
-    (__bash_flex_pattern__, "bash_flex"),
-    (__function_tag_pattern__, "function_tag"),
-    (__builtins_pattern__, "builtins"),
-    (__inline_json_pattern__, "inline_json"),
-    (__direct_xml_pattern__, "direct_xml"),
-    (__block_tool_pattern__, "block_tool"),
-    (__markdown_json_pattern__, "markdown_json"),
-    (__block_delim_pattern__, "block_delim"),
-]
-
-
-# Auto-derived: all pattern kinds that need tool-name validation.
-# Excludes structural patterns (bash_wrapper, bash_flex, tool_name_args)
-# which match specific syntax, not arbitrary tag names.
-_VALIDATION_KINDS = frozenset(
-    k for _, k in _TOOL_PATTERNS
-) - frozenset({"bash_wrapper", "bash_flex", "tool_name_args"})
+# Consolidated pattern definitions: each entry bundles regex, kind label, handler,
+# and a short description.  The handler is resolved at definition time so that
+# forward references (handlers defined after the list) are handled correctly.
+@dataclass(frozen=True, slots=True)
+class _PatternDef:
+    """A single tool-call extraction pattern with its handler."""
+    regex: re.Pattern[str]
+    kind: str
+    handler: Callable[[re.Match[str], str, str | None], dict | None]
 
 
 def _extract_params_from_block_tool(args_str: str) -> dict | None:
@@ -454,6 +438,36 @@ def _extract_params_from_block_tool(args_str: str) -> dict | None:
     if not args:
         return None
     return args
+
+
+def _try_json_build(
+    match: re.Match[str],
+    group: int,
+    func_name: str,
+    *,
+    extract_name: bool = False,
+) -> dict | None:
+    """Parse JSON from a match group and build a tool-call dict.
+
+    Common pattern for handlers that receive a JSON string in a match group:
+    parse, validate it's a dict, build tool call.  Handles the
+    ``{"name": "...", "arguments": {...}}`` nested format when
+    ``extract_name=True`` (used by the function_tag pattern).
+    """
+    json_str = match.group(group) or "{}"
+    try:
+        json_obj = json.loads(json_str)
+        if extract_name:
+            name = json_obj.get("name", "")
+            args_obj = json_obj.get("arguments", {})
+            if not name:
+                return None
+            return _build_toolcall(name, args_obj)
+        if not isinstance(json_obj, dict):
+            return None
+        return _build_toolcall(func_name, json_obj)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
 
 
 # ── Kind-specific tool-call handlers ──────────────────────────────────────
@@ -536,56 +550,26 @@ def _handle_bash_flex(match: re.Match[str], func_name: str, body: str | None) ->
 def _handle_function_tag(match: re.Match[str], func_name: str, body: str | None) -> dict | None:
     # <|begin_of_function|>{"name": "X", "arguments": {...}}<|end_of_function|>
     # group(1) = JSON payload
-    json_str = match.group(1) or "{}"
-    try:
-        json_obj = json.loads(json_str)
-        name = json_obj.get("name", "")
-        args_obj = json_obj.get("arguments", {})
-        if not name:
-            return None
-        return _build_toolcall(name, args_obj)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
+    return _try_json_build(match, 1, func_name, extract_name=True)
 
 
 def _handle_builtins(match: re.Match[str], func_name: str, body: str | None) -> dict | None:
     # <builtins.tool_name params="{...}">
     # group(1) = tool name (without builtins. prefix)
     # group(2) = JSON arguments
-    json_str = match.group(2) or "{}"
-    try:
-        args_dict = json.loads(json_str)
-        if not isinstance(args_dict, dict):
-            return None
-        return _build_toolcall(func_name, args_dict)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
+    return _try_json_build(match, 2, func_name)
 
 
 def _handle_inline_json(match: re.Match[str], func_name: str, body: str | None) -> dict | None:
     # <tool_name>{JSON} (no closing tag)
     # group(1) = tool name, group(2) = JSON arguments
-    json_str = match.group(2) or "{}"
-    try:
-        args_dict = json.loads(json_str)
-        if not isinstance(args_dict, dict):
-            return None
-        return _build_toolcall(func_name, args_dict)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
+    return _try_json_build(match, 2, func_name)
 
 
 def _handle_block_delim(match: re.Match[str], func_name: str, body: str | None) -> dict | None:
     # ░tool_name\n{json_args}
     # group(1) = tool name, group(2) = JSON string
-    json_str = match.group(2) or "{}"
-    try:
-        args_dict = json.loads(json_str)
-        if not isinstance(args_dict, dict):
-            return None
-        return _build_toolcall(func_name, args_dict)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
+    return _try_json_build(match, 2, func_name)
 
 
 def _handle_alt_parameters(match: re.Match[str], func_name: str, body: str | None) -> dict | None:
@@ -595,27 +579,31 @@ def _handle_alt_parameters(match: re.Match[str], func_name: str, body: str | Non
     return _build_toolcall(func_name, args_dict)
 
 
-# Dispatch table: kind -> handler
-_TOOL_KIND_HANDLERS: dict[str, Callable[[re.Match[str], str, str | None], dict | None]] = {
-    "json_block": _handle_json_block,
-    "alt_parameters": _handle_alt_parameters,
-    "anthropic_tool": _handle_anthropic_tool,
-    "tool_name_args": _handle_tool_name_args,
-    "bash_wrapper": _handle_bash_wrapper,
-    "bash_flex": _handle_bash_flex,
-    "function_tag": _handle_function_tag,
-    "builtins": _handle_builtins,
-    "inline_json": _handle_inline_json,
-    "direct_xml": _handle_direct_xml,
-    "block_tool": _handle_block_tool,
-    "markdown_json": _handle_markdown_json,
-    "block_delim": _handle_block_delim,
-}
+# Consolidated pattern definitions: each entry bundles regex, kind label, and handler.
+# Pattern order is deliberate — more-specific patterns must precede broader ones
+# (e.g. tool_name_args before direct_xml).
+_TOOL_PATTERNS: list[_PatternDef] = [
+    _PatternDef(__function_pattern__, "json_block", _handle_json_block),
+    _PatternDef(__function_alt_pattern__, "alt_parameters", _handle_alt_parameters),
+    _PatternDef(__anthropic_tool_pattern__, "anthropic_tool", _handle_anthropic_tool),
+    _PatternDef(__tool_name_args_pattern__, "tool_name_args", _handle_tool_name_args),
+    _PatternDef(__bash_wrapper_pattern__, "bash_wrapper", _handle_bash_wrapper),
+    _PatternDef(__bash_flex_pattern__, "bash_flex", _handle_bash_flex),
+    _PatternDef(__function_tag_pattern__, "function_tag", _handle_function_tag),
+    _PatternDef(__builtins_pattern__, "builtins", _handle_builtins),
+    _PatternDef(__inline_json_pattern__, "inline_json", _handle_inline_json),
+    _PatternDef(__direct_xml_pattern__, "direct_xml", _handle_direct_xml),
+    _PatternDef(__block_tool_pattern__, "block_tool", _handle_block_tool),
+    _PatternDef(__markdown_json_pattern__, "markdown_json", _handle_markdown_json),
+    _PatternDef(__block_delim_pattern__, "block_delim", _handle_block_delim),
+]
 
-# Invariant: every pattern kind must have a handler
-assert set(k for _, k in _TOOL_PATTERNS) == set(
-    _TOOL_KIND_HANDLERS.keys()
-), f"Pattern kinds mismatch: {set(k for _, k in _TOOL_PATTERNS) ^ set(_TOOL_KIND_HANDLERS.keys())}"
+# Auto-derived: all pattern kinds that need tool-name validation.
+# Excludes structural patterns (bash_wrapper, bash_flex, tool_name_args)
+# which match specific syntax, not arbitrary tag names.
+_VALIDATION_KINDS: frozenset[str] = frozenset(
+    p.kind for p in _TOOL_PATTERNS
+) - frozenset({"bash_wrapper", "bash_flex", "tool_name_args"})
 
 
 def _extract_toolcall(text: str, valid_tool_names: set[str] | None = None) -> tuple[dict | None, str, bool, str | None]:
@@ -636,9 +624,9 @@ def _extract_toolcall(text: str, valid_tool_names: set[str] | None = None) -> tu
     """
     candidates: list[tuple[int, int, str, re.Match[str]]] = []
 
-    for pattern, kind in _TOOL_PATTERNS:
-        for match in pattern.finditer(text):
-            candidates.append((match.start(), match.end(), kind, match))
+    for pdef in _TOOL_PATTERNS:
+        for match in pdef.regex.finditer(text):
+            candidates.append((match.start(), match.end(), pdef.kind, match))
 
     candidates.sort(key=lambda item: item[0])
 
@@ -664,8 +652,7 @@ def _extract_toolcall(text: str, valid_tool_names: set[str] | None = None) -> tu
             if func_name not in valid_tool_names:
                 continue
 
-        handler = _TOOL_KIND_HANDLERS[kind]
-        tool_call = handler(match, func_name, body)
+        tool_call = pdef.handler(match, func_name, body)
         if tool_call is None:
             continue
 

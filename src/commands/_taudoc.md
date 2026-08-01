@@ -34,11 +34,11 @@ Map actual code against documentation:
 ## Step 4: Verify
 
 ```bash
-# Verify no broken references
-grep -rn "DESIGNDECISIONS\|DESIGN_SYNTHETIC" src/ --include="*.py" --include="*.md" | grep -v "was DESIGNDECISIONS"
+# Verify no broken references (check for stale design decision names)
+grep -rn "DESIGNDECISIONS\|DESIGN_SYNTHETIC\|SYNTHETIC_USER_MESSAGE" src/ --include="*.py" --include="*.md" | grep -v "was DESIGN"
 
-# Run tests
-cd src && pytest tests/test_context_synthetic_bridge.py tests/test_recover_invalid_end_of_turn.py
+# Run relevant tests
+cd src && pytest tests/test_context_synthetic_bridge.py tests/test_recover_invalid_end_of_turn.py -x -q
 ```
 
 ## Hard Rules

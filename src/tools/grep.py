@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import subprocess
 from dataclasses import dataclass, field
@@ -23,6 +23,7 @@ metadata = ToolMetadata(
         "`TODO|FIXME` (markers), `target=\\w+` (thread targets), `callback=\\w+` (callbacks). "
         "Use `recursive=True` for directories. Use `output_format='context'` for surrounding lines."
     ),
+    aliases_arg={"search": "pattern", "query": "pattern", "pattern_str": "pattern"},
     max_size=131072,
     timeout=30,
 )
@@ -64,15 +65,13 @@ class Args:
 # ── Execution ────────────────────────────────────────────────────────────────
 
 def run(
-    pattern: str,
-    agent: "TauErgon",
-    tool_call_id: str | None = None,
-    path: str = ".",
-    recursive: bool = False,
-    case_sensitive: bool = False,
-    max_results: int = 50,
+    pattern: str, path: str = ".", recursive: bool = False,
+    case_sensitive: bool = False, max_results: int = 50,
     output_format: str = "lines",
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     search_path, err = validate_path(path, allowed_paths=get_allowed_paths(agent))
     if err:
         return err

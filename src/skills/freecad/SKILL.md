@@ -1,6 +1,6 @@
 ---
 name: freecad
-description: Headless FreeCAD 3D modeling — build geometry via Python, verify with screenshots and volume checks, export FCStd/STEP. CAD, 3D modeling, FreeCAD, parametric, closed-loop verification (also load: background, image)
+description: "Headless FreeCAD 3D modeling — build geometry via Python, verify with screenshots and volume checks (also load: background, image, performance, shell_scripting)"
 category: cad
 keywords: freecad, CAD, 3D, modeling, geometry, STEP, FCStd, parametric, volume, screenshot
 ---
@@ -111,6 +111,7 @@ python3 skills/freecad/verify_model.py         # Volume/bbox verification
 ```
 
 ## Related Skills
-- `image` — image loading and vision models
 - `background` — run FreeCAD scripts in background
+- `image` — image loading and vision models
+- `performance` — profile bottlenecks and optimize
 - `shell_scripting` — automate build/verify pipeline

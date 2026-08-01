@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tools import ToolContext
+
 
 def _make_png_bytes(width=1, height=1, r=255, g=0, b=0):
     """Generate a minimal valid 1x1 PNG file in memory."""
@@ -53,7 +55,7 @@ class TestSeeToolQueuing:
         agent._queued_images = []
         agent._vision_supported = None
 
-        result = run(str(img_path), agent, tool_call_id="call_123", description="a test image")
+        result = run(str(img_path), _ctx=ToolContext(agent=agent, tool_call_id="call_123"), description="a test image")
 
         assert "Queued:" in result
         assert "Will be injected after tool batch completes" in result
@@ -71,7 +73,7 @@ class TestSeeToolQueuing:
         agent = MagicMock()
         agent._vision_supported = False
 
-        result = run("/nonexistent", agent, tool_call_id="call_1")
+        result = run("/nonexistent", _ctx=ToolContext(agent=agent, tool_call_id="call_1"))
         assert "does not support vision" in result
         assert "Do not call see again" in result
 
@@ -82,7 +84,7 @@ class TestSeeToolQueuing:
         agent = MagicMock()
         agent._vision_supported = None
 
-        result = run("/nonexistent/path.png", agent, tool_call_id="call_1")
+        result = run("/any/path.png", _ctx=ToolContext(agent=agent, tool_call_id="call_1"))
         assert "File not found" in result
 
     def test_see_invalid_image(self, tmp_path):
@@ -96,7 +98,7 @@ class TestSeeToolQueuing:
         agent._vision_supported = None
 
         result = str(bad_path)
-        result = run(str(bad_path), agent, tool_call_id="call_1")
+        result = run(str(bad_path), _ctx=ToolContext(agent=agent, tool_call_id="call_1"))
         assert "Not a recognized image file" in result
 
 
@@ -284,7 +286,7 @@ class TestVisionCapabilityCaching:
         agent = MagicMock()
         agent._vision_supported = False
 
-        result = run("/any/path.png", agent, tool_call_id="call_1")
+        result = run("/nonexistent/path.png", _ctx=ToolContext(agent=agent, tool_call_id="call_1"))
         assert "does not support vision" in result
 
     def test_see_proceeds_when_cache_unknown(self):
@@ -304,7 +306,7 @@ class TestVisionCapabilityCaching:
             tmp_path = f.name
 
         try:
-            result = run(tmp_path, agent, tool_call_id="call_1", description="test")
+            result = run(tmp_path, _ctx=ToolContext(agent=agent, tool_call_id="call_1"), description="test")
             assert "Queued:" in result
             assert len(agent._queued_images) == 1
         finally:

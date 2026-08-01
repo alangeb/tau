@@ -1,6 +1,6 @@
 ---
 name: reference
-description: Tau quick reference — commands, configs, patterns, audit log patterns. Reference, cheat sheet, quick lookup, commands, quick reference (also load: command_template, shell_scripting, skill_template)
+description: Tau quick reference — commands, configs, patterns, audit log patterns (also load: command_template, shell_scripting, skill_template)
 category: reference
 keywords: reference, cheat sheet, quick lookup, commands, config, patterns, audit
 ---
@@ -10,10 +10,10 @@ keywords: reference, cheat sheet, quick lookup, commands, config, patterns, audi
 ## When
 "quick reference", "cheat sheet", "tau commands", "tau config", "tau patterns"
 
-## Tau Commands
+## Tau Commands (user-facing, not agent tools)
 ```
-/fork <task>                          # Spawn fork (full memory)
-/subagent <task>                      # Spawn subagent (blank slate)
+/fork <task>                          # Spawn fork (full memory) — agent uses `fork` tool
+/subagent <task>                      # Spawn subagent (blank slate) — agent uses `subagent` tool
 /background <cmd>                     # Run background task
 /status                               # Agent status
 /plan <action>                        # Plan tool
@@ -35,8 +35,12 @@ grep -oP "final_name='[^']*" ~/.local/tau/log/*.audit | sed "s/final_name='"// |
 grep -rh '"skill_name":\s*"[^"]*"' ~/.local/tau/log/*.audit | grep -oP '"skill_name":\s*"\K[^"]+' | sort | uniq -c | sort -rn
 ```
 
+## Helper
+```bash
+python3 skills/reference/ref_helper.py  # Quick reference lookup
+```
+
 ## Related Skills
 - `command_template` — command creation format
 - `shell_scripting` — shell patterns
 - `skill_template` — skill creation format
-- `tau_audit` — log analysis

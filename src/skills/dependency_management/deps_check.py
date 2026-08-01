@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dependency management helpers — venv, pip, requirements."""
-import subprocess, sys, os
+import subprocess
+import sys
 
 def create_venv(path=".venv"):
     """Create virtual environment. Returns True if successful."""

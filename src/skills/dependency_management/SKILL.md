@@ -1,6 +1,6 @@
 ---
 name: dependency_management
-description: Tau dependency management — venv setup, pip installs, package isolation. Dependencies, pip, virtualenv, requirements.txt, pip install, requirements, packages (also load: python_best_practices, project-onboard)
+description: "Tau dependency management — venv setup, pip installs, package isolation, requirements (also load: project-onboard, python_best_practices, graphify, security-audit, tau_testsuite)"
 category: development
 keywords: dependency, pip, venv, virtualenv, requirements, install, package, isolation
 ---
@@ -34,8 +34,8 @@ pip install --upgrade <package>        # Update single
 python3 skills/dependency_management/deps_check.py  # dependency_management helper
 ```
 ## Related Skills
-- `python_best_practices` — linting/formatting installed tools
 - `project-onboard` — discover project dependencies
-- `tau_testsuite` — test dependencies
-
+- `python_best_practices` — linting/formatting installed tools
+- `graphify` — knowledge graph analysis
 - `security-audit` — Security checks
+- `tau_testsuite` — test dependencies

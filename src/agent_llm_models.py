@@ -69,22 +69,40 @@ class Response:
 # ---------------------------------------------------------------------------
 
 class APIError(Exception):
-    """Base exception for all API-related errors."""
+    """Base exception for all API-related errors.
+
+    Attributes:
+        status_code: HTTP status code if available (e.g., 400, 401, 429, 500).
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 class APITimeoutError(APIError):
     """Raised when a request times out."""
 
+    pass
+
 class BadRequestError(APIError):
     """Raised for HTTP 400 Bad Request errors."""
+
+    pass
 
 class RateLimitError(APIError):
     """Raised for HTTP 429 Rate Limit errors."""
 
+    pass
+
 class UnauthorizedError(APIError):
     """Raised for HTTP 401 Unauthorized errors."""
 
+    pass
+
 class APIConnectionError(APIError):
     """Raised when the API endpoint is unreachable (connection refused, TCP RST)."""
+
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -95,21 +113,6 @@ class EmptyModelResponse(ValueError):
     """Model returned no choices. Subclasses ValueError for backward compatibility."""
 
     pass
-
-@dataclass
-class _ToolCallFunction:
-    """Tool function with name and arguments (mimics openai.types.chat.Function)."""
-
-    name: str
-    arguments: str
-
-@dataclass
-class _ToolCall:
-    """Tool call with id, type, and function."""
-
-    id: str
-    type: str
-    function: _ToolCallFunction
 
 @dataclass
 class CallStats:
@@ -192,7 +195,7 @@ class CacheTracker:
 
 # Allowed fields in messages sent to the LLM API.
 ALLOWED_MESSAGE_FIELDS: frozenset[str] = frozenset(
-    ["role", "content", "name", "tool_calls", "tool_call_id"]
+    ["role", "content", "name", "tool_calls", "tool_call_id", "reasoning"]
 )
 
 # Allowed parameters in the OpenAI chat completion body.
@@ -231,7 +234,7 @@ DEFAULT_MAX_OUTPUT_TOKENS: int = 12000
 
 # Overflow compression thresholds
 OVERSIZED_THRESHOLD = 0.20
-COMPRESSION_TARGET_RATIO = 0.30
+COMPRESSION_FACTOR = 0.30
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +296,6 @@ __all__ = [
     "APIConnectionError",
     # Invocation models
     "EmptyModelResponse",
-    "_ToolCallFunction",
-    "_ToolCall",
     "CallStats",
     "CacheTracker",
     # Constants
@@ -303,7 +304,7 @@ __all__ = [
     "_ALLOWED_TOOL_CALL_FIELDS",
     "CONTEXT_OVERFLOW_INDICATORS",
     "OVERSIZED_THRESHOLD",
-    "COMPRESSION_TARGET_RATIO",
+    "COMPRESSION_FACTOR",
     # Config / Response
     "LLMCallConfig",
     "LLMResponse",

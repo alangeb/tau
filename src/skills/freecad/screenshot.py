@@ -13,13 +13,11 @@ import sys
 sys.path.insert(0, '/usr/lib/freecad/lib')
 
 import os
-import math
 import FreeCAD as App
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
 
 def generate_screenshots(fcstd_path, output_dir, angles=None):

@@ -50,66 +50,38 @@ See Also
 
 from __future__ import annotations
 
-import json
 import os
 import queue
 import re
-import shutil
-import subprocess
-import sys
 import threading
 import time
-import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from agent_console import (
     assistant_message_display,
-    context_list_display,
-    context_preview_display,
-    context_restored,
-    context_restore_failure,
-    context_validation_display,
-    context_recovery_display,
-    echo,
-    error,
     exec_tool_fail,
     exec_usage,
-    no_context_file_found,
     no_run_function_error,
-    print_agent_exit_summary,
-    print_context_status,
-    reasoning,
-    restart_fallback_failure,
-    restart_failure,
-    restart_flow,
     show_help,
-    undo_message,
     unknown_command_error,
     unknown_tool_error,
     warning,
 )
-from agent_audit_bridge import log_console_warning
-from agent_command_handlers import CommandHandlersMixin, _command
-from agent_command_registry import CommandSource
+from agent_command_dispatcher import ContextManager, RestartManager
+from agent_command_handlers import CommandHandlersMixin
 from agent_commands import CommandManager
 from agent_config import Config
 from agent_context import TauContext
-from agent_endofturn_validate import ValidationErrorType, is_valid_end_of_turn
-from agent_heartbeat import HeartbeatManager
 from agent_init import resolve_agent_init
 from agent_input import InputHandler
-from agent_lifecycle import AgentLifecycle
-from agent_llm import DEFAULT_MAX_OUTPUT_TOKENS, LLMCallConfig, SimpleOpenAIClient, _invoke_llm_with_retry
-from agent_loop_detect import LoopDetector
-from agent_message_utils import get_last_real_user_prompt
-from agent_loop_escalation import LoopEscalationManager
+from agent_llm_client import SimpleOpenAIClient
+from agent_loop import run_loop
 from agent_models import AgentStatus, InputMessage
 from agent_reflection import ReflectionScheduler
-from agent_session import AgentSessionManager, LOG_DIR, SESSION_PREFIX
-from agent_tool_executor import execute_tool_batch
 from agent_tool_filter import ToolFilter
-from tools import TOOLS
+from tools import ToolContext, TOOLS
 
 if TYPE_CHECKING:
     from agent_audit_writer import AuditWriter
@@ -147,6 +119,7 @@ __all__ = [
 
 
 class TauErgon(CommandHandlersMixin):
+    MAX_OUTER_RECOVERY = 5  # Max recovery attempts before forced termination
     """Chat agent with tool calling, context management, loop detection, and subagent support.
 
     The TauErgon is the main orchestrator for AI agent interactions, providing:
@@ -231,7 +204,7 @@ class TauErgon(CommandHandlersMixin):
         self.max_enhanced_retries = init.max_enhanced_retries
         self.max_explicit_retries = init.max_explicit_retries
 
-        from agent_llm import PrefixCacheTracker
+        from agent_llm_cache import PrefixCacheTracker
 
         self._cache_tracker = PrefixCacheTracker()
         self.client = SimpleOpenAIClient(
@@ -241,6 +214,13 @@ class TauErgon(CommandHandlersMixin):
             cache_tracker=self._cache_tracker,
         )
         self.context: TauContext = TauContext()
+        self.context.set_metadata(
+            pid=os.getpid(),
+            working_dir=os.getcwd(),
+            start_time=datetime.now().isoformat(),
+            model=init.model_name,
+            agent_name=init.agent_name,
+        )
 
         self._sandbox_last_call: str | None = None  # sandbox double-call confirmation (see _run_sandbox_command)
         self.inference_params = init.inference_params
@@ -254,120 +234,67 @@ class TauErgon(CommandHandlersMixin):
     def _init_subsystems(self, init: "AgentInitConfig") -> None:
         """Initialize all agent subsystems.
 
-        Creates and wires up: session manager, loop detector, reflection
-        scheduler, loop escalation manager, heartbeat manager, and all
-        supporting state (audit writer, system prompt, tool registry, etc.).
+        Delegates to agent_subsystems.init_subsystems() which creates and
+        wires up: session manager, loop detector, reflection scheduler,
+        loop escalation manager, EOT protection, and heartbeat manager.
+
+        State variables and None placeholders are initialized directly
+        as assignments after the bundle is returned.
 
         Called once from ``__init__`` after config resolution.
         """
-        # Session management (token tracking, context/audit file paths)
-        self._session = AgentSessionManager()
+        from agent_subsystems import init_subsystems, read_system_prompt
 
-        # Loop detection (sliding-window pattern matching)
-        self.loop_detector = LoopDetector(
-            window_size=init.loop_detection_window_size,
-            repeat_threshold=init.loop_detection_repeat_threshold,
-            replace_unknown_tools=init.loop_detection_replace_unknown_tools,
-        )
+        # Load system prompt (needs session paths for template substitution)
+        system_prompt = read_system_prompt()
 
-        # Reflection scheduler (periodic self-reflection triggers)
-        self.reflection_scheduler = ReflectionScheduler(
-            init.reflection_config,
-        )
+        # Initialize all subsystems
+        bundle = init_subsystems(self, init)
 
-        # Loop escalation (reactive recovery from detected loops)
-        self._loop_escalation = LoopEscalationManager(
-            loop_detector=self.loop_detector,
-            reflection_scheduler=self.reflection_scheduler,
-            context=self.context,
-            agent=self,
-        )
+        # Assign subsystems to self
+        self._session = bundle.session
+        self.loop_detector = bundle.loop_detector
+        self.reflection_scheduler = bundle.reflection_scheduler
+        self._loop_escalation = bundle.loop_escalation
+        self._eot_protection = bundle.eot_protection
+        self._heartbeat = bundle.heartbeat
 
-        # Nesting / CWD tracking
-        self.nesting_count = 0
+        # Assign tool names
+        self.available_tool_names = bundle.available_tool_names
+
+        # Initialize state variables directly (NOT in the bundle)
+        self.nesting_stack: str = ""  # e.g. "SF" = fork in subagent
         self.original_cwd = Path.cwd()
-
-        # Original task for subagent/fork tracking.
-        # When non-None, this agent is a subagent or fork that was spawned to
-        # execute a specific task. The original_task stores the prompt that was
-        # given to the subagent/fork.
+        self._start_time = time.time()
         self.original_task: str | None = None
-
-        # Command-dispatch recursion depth (used by _dispatch_md guard).
         self._cmd_dispatch_depth = 0
-
-        # Generic forced end-of-turn mechanism.
-        # When set to a non-None string, invoke_with_tools_loop appends it as
-        # the final assistant message and returns immediately.
-        # Any tool can set this to force-exit the current turn.
-        # Used by delegate mode (end_turn) to break the delegate loop.
         self.force_end_turn: str | None = None
-
-        # ENDTURN sentinel resolution: tracks the last substantive assistant
-        # message produced during the current turn. When end_turn(message="ENDTURN")
-        # is called, this value becomes the final response so the model doesn't
-        # have to repeat itself.
-        # Set for ANY response with non-empty text (even responses that also have
-        # tool calls). Never overwritten during recovery mode so that recovery-round
-        # noise doesn't clobber the real answer the model already produced.
         self.last_substantive_response: str | None = None
 
-        # Recovery mode flag: set when we inject an end_turn reminder, prevents
-        # overwriting last_substantive_response during the recovery round.
-        # Reset at the start of each invoke_with_tools_loop() call.
-        self._recovery_active: bool = False
-
-        # ── Vision / image queue ────────────────────────────────────────────
-        # Queued images from `see` tool calls. Populated during tool batch
-        # execution; drained after batch completes (post-batch injection).
-        # Each entry: (data_uri, mime_type, description, tool_call_id)
+        # Vision / image queue
         self._queued_images: list[tuple[str, str, str, str]] = []
-        # Vision capability cache: None = unknown, True = supports vision,
-        # False = confirmed no vision (after error recovery).
-        # Prevents repeated vision errors on non-vision models.
         self._vision_supported: bool | None = None
-
-        # Tool call IDs from the last image injection batch. Used for
-        # vision error recovery to mark the corresponding tool results
-        # as errors. Cleared after successful LLM call or recovery.
         self._last_injected_tool_call_ids: list[str] = []
 
-        # Audit writer initialization
-        self._session.init_audit_writer()
+        # A2A state
+        self._pending_a2a_responses: dict[str, dict] = {}
+        self._pending_a2a_chunks: dict[str, list[dict]] = {}  # request_id -> list of chunk dicts
+        self._current_a2a_request_id: str | None = None  # Set during A2A query processing
 
-        # A2A pending responses
-        self._pending_a2a_responses: dict = {}
+        # Turn active tracking (for status endpoint / tauweb running/idle detection)
+        self._turn_active: bool = False
 
-        # System prompt from AGENT.md
-        agent_path = Path(__file__).resolve().parent / "AGENT.md"
-        system_prompt = "You are helpful AI assistant. Do what User asks."
-        if agent_path.exists():
-            try:
-                raw = agent_path.read_text().strip()
-                system_prompt = _safe_format_template(
-                    raw,
-                    log_file=str(self._session.audit_file),
-                    audit_file=str(self._session.audit_file),
-                    context_file=str(self._session.context_file),
-                )
-            except OSError as exc:
-                print(f"WARNING: Could not read AGENT.md: {exc}", file=sys.stderr)
-        self.context.set_system(system_prompt)
+        # Control queue (inter-process supervision)
+        self._control_queue: queue.Queue[str] = queue.Queue(maxsize=100)
+        self._parent_pid: int | None = None
 
-        # Command / tool registration
+        # Commands
         self.available_commands: dict[str, Any] = {}
         self._commands_directory = None
-        self.available_tool_names = list(TOOLS.keys())
-        self._register_skill_tools()
 
-        # Log session start with full system prompt and tool schema
-        self._session.audit_writer.session_start(
-            model=self.model_name,
-            tool_count=len(self.available_tool_names),
-            cwd=os.getcwd(),
-            system_prompt=self.context.get_system() or "",
-            tool_schema=self.get_all_tools(),
-        )
+        # Context and restart managers
+        self._context_manager = ContextManager(self)
+        self._restart_manager = RestartManager(self)
 
         # Input / threading state
         self.input_queue: queue.Queue = queue.Queue()
@@ -377,33 +304,17 @@ class TauErgon(CommandHandlersMixin):
         self._a2a_server = None
         self._keep_alive = False
 
-        # Check for .py/.md command conflicts at startup
-        conflicts = CommandManager._get_registry().find_conflicts()
-        if conflicts:
-            for name in conflicts:
-                warning(
-                    f"Command '{name}' exists as both .py and .md — .py takes precedence"
-                )
+        # Set system prompt in context
+        self.context.set_system(system_prompt)
 
-        # Heartbeat (idle detection and auto-task execution)
-        self._heartbeat = HeartbeatManager(
-            enabled=init.heartbeat_enabled,
-            interval_seconds=init.heartbeat_interval,
-            agent=self,
+        # Log session start with full system prompt and tool schema
+        self._session.audit_writer.session_start(
+            model=self.model_name,
+            tool_count=len(self.available_tool_names),
+            cwd=os.getcwd(),
+            system_prompt=self.context.get_system() or "",
+            tool_schema=self.get_all_tools(),
         )
-
-    def _register_skill_tools(self) -> None:
-        """Register skill-related tools in the available tools list.
-
-        Ensures that skill-related tools (currently only "skill") are included
-        in the agent's available_tool_names list if they exist in the TOOLS registry.
-
-        This method is called during initialization to guarantee skill tools
-        are available for use.
-        """
-        if "skill" in TOOLS:
-            if "skill" not in self.available_tool_names:
-                self.available_tool_names.append("skill")
 
     # ── Vision / image queue management ──────────────────────────────────────
 
@@ -443,10 +354,11 @@ class TauErgon(CommandHandlersMixin):
         # 1. Append synthetic assistant bridge (maintains alternation)
         self.context.append_assistant(
             "[Images loaded from see tool — continuing.]",
+            synthetic=True,
         )
 
         # 2. Append user message with all images
-        self.context.append_user(content_blocks)
+        self.context.append_user(content_blocks, user_type="real")
 
         # 3. Track tool_call_ids for potential recovery, then clear queue
         self._last_injected_tool_call_ids = [
@@ -513,17 +425,139 @@ class TauErgon(CommandHandlersMixin):
         self._last_injected_tool_call_ids.clear()
         return True
 
-    def _get_available_commands(self) -> dict[str, "CommandInfo"]:
-        """Discover and return available commands dynamically.
+    # ── Control queue ────────────────────────────────────────────────────────
 
-        Queries the command discovery system to retrieve all available commands
-        (both built-in and custom commands from the commands/ directory).
+    def _process_control_queue(self) -> None:
+        """Process pending control commands from parent supervisor.
+
+        To be called at turn boundaries by supervisor integration (TASK_05b).
+        Commands are consumed from the queue and applied to the agent's state.
+
+        Command types:
+        - inject: Append synthetic user message to context
+        - terminate: Graceful (finish turn), forceful (exit immediately), or force_kill (SIGKILL)
+        - redirect: Clear context and stale state, start new task
+        - status: Log current status to audit
+        """
+        import json as _json
+
+        processed = 0
+        while not self._control_queue.empty():
+            try:
+                cmd_json = self._control_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            try:
+                cmd = _json.loads(cmd_json)
+            except _json.JSONDecodeError as e:
+                from agent_console import warning
+                warning(f"Control queue: invalid JSON: {e}")
+                continue
+
+            cmd_type = cmd.get("type", "")
+
+            if cmd_type == "inject":
+                # role is informational only (logged in status); always creates user message
+                role = cmd.get("role", "user")
+                content = cmd.get("content", "")
+                if not content:
+                    continue
+                # Use bridge helper to maintain alternation (tool → assistant → user)
+                self.context.append_synthetic_user_with_bridge("parent_inject", content)
+                from agent_console import status
+                status(f"Parent injected {role} message ({len(content)} chars)")
+
+            elif cmd_type == "terminate":
+                graceful = cmd.get("graceful", True)
+                source = cmd.get("source", "parent")  # "parent" or "user"
+                force_kill = cmd.get("force_kill", False)
+                if force_kill:
+                    # Immediate SIGKILL — flush audit first, then die.
+                    # NOTE: SIGKILL is unrecoverable; no cleanup hooks fire.
+                    from agent_audit_bridge import log_console_warning
+                    _pid = os.getpid()
+                    log_console_warning(
+                        f"FORCE_KILL: received from {source}, pid={_pid}"
+                    )
+                    # Flush stdout/stderr so the audit line is actually written
+                    import signal as _signal
+                    import sys as _sys
+                    _sys.stdout.flush()
+                    _sys.stderr.flush()
+                    os.kill(_pid, _signal.SIGKILL)
+                elif graceful:
+                    self.force_end_turn = "user_stop" if source == "user" else "parent_terminate_graceful"
+                    if source == "parent":
+                        # A2A parent: inject summary request
+                        self.context.append_synthetic_user_with_bridge(
+                            "parent_inject",
+                            "Parent supervisor has terminated this task. "
+                            "Please provide a final summary of your work.",
+                        )
+                        from agent_console import status
+                        status("Parent requested graceful termination")
+                    else:
+                        # User steering: just end the turn
+                        from agent_console import status
+                        status("User requested stop — ending turn")
+                else:
+                    from agent_lifecycle import AgentLifecycle
+                    AgentLifecycle.set_exit_requested(True)
+                    from agent_console import status
+                    status("Parent requested forceful termination")
+
+            elif cmd_type == "redirect":
+                new_task = cmd.get("task", "")
+                if not new_task:
+                    continue
+                self.context.clear()
+                self.context.append_user(new_task, user_type="redirect")
+                self.loop_detector.reset()
+                self._eot_protection.reset()
+                self._cache_tracker.reset()
+                # Clear stale state from previous task
+                self._pending_a2a_responses.clear()
+                self._pending_a2a_chunks.clear()
+                self._current_a2a_request_id = None
+                self._queued_images.clear()
+                from agent_console import status
+                status("Redirected to new task by parent")
+
+            elif cmd_type == "status":
+                from agent_audit_bridge import log_console_warning
+                stats = self.loop_detector.get_stats()
+                log_console_warning(
+                    f"STATUS: context={len(self.context)}, "
+                    f"loop_warnings={stats.get('total_warnings', 0)}, "
+                    f"nesting={self.nesting_count}"
+                )
+            else:
+                from agent_console import warning
+                warning(f"Control queue: unknown command type '{cmd_type}'")
+
+            processed += 1
+
+        if processed > 0:
+            from agent_audit_bridge import log_console_warning
+            log_console_warning(f"Processed {processed} control commands")
+
+    def _get_available_commands(self) -> dict[str, "CommandInfo"]:
+        """Discover and return available markdown commands dynamically.
+
+        Queries the command discovery system to retrieve all available
+        markdown commands from the commands/ directory.
         Results are not cached to ensure fresh command list on each call.
 
         Returns:
             dict: Mapping of command names to CommandInfo objects.
         """
-        return {cmd.name: cmd for cmd in CommandManager._get_registry().discover(CommandSource.MD)}
+        from agent_command_registry import CommandSource
+
+        return {
+            cmd.name: cmd
+            for cmd in CommandManager._get_registry().discover(CommandSource.MD)
+        }
 
     def _handle_command(
         self, cmd_name: str, cmd_full: str, msg: Optional[InputMessage] = None
@@ -537,10 +571,8 @@ class TauErgon(CommandHandlersMixin):
             show_help()
             return
 
-        if CommandManager.dispatch(cmd_name, cmd_full, msg, self):
-            return
-
-        unknown_command_error(cmd_name)
+        if not CommandManager.dispatch(cmd_name, cmd_full, msg, self):
+            unknown_command_error(cmd_name)
 
     def resolve_group_params(self) -> dict[str, Any]:
         """Return generation parameters for the current LLM group.
@@ -595,7 +627,7 @@ class TauErgon(CommandHandlersMixin):
                 If False, preserves existing overrides.
 
         Raises:
-            ValueError: If the current LLM group is not found.
+            ValueError: If the current LLM group is not found or has invalid config.
         """
         group = self.llm_groups.get(self.current_group_name)
         if not group:
@@ -607,9 +639,18 @@ class TauErgon(CommandHandlersMixin):
             self._llm_model_override = None
             self._llm_base_url_override = None
             self._llm_context_override = None
+
+        base_url = self._llm_base_url_override or group.api_base
+        if not base_url:
+            raise ValueError(
+                f"LLM group '{self.current_group_name}' has no valid api_base "
+                f"(override={self._llm_base_url_override!r}, "
+                f"group.api_base={group.api_base!r}). Cannot rebuild client."
+            )
+
         self._current_api_key = group.api_key
         self.client = SimpleOpenAIClient(
-            base_url=self._llm_base_url_override or group.api_base,
+            base_url=base_url,
             api_key=self._current_api_key,
             timeout=group.timeout,
             cache_tracker=self._cache_tracker,
@@ -628,11 +669,25 @@ class TauErgon(CommandHandlersMixin):
             self.reflection_scheduler = ReflectionScheduler(group.reflection)
             self._loop_escalation.set_reflection_scheduler(self.reflection_scheduler)
 
-    def get_all_tools(self) -> list[dict]:
-        """Return filtered tools in OpenAI function-calling format.
+    def _is_restricted_nesting(self) -> bool:
+        """Check if current nesting type allows relaxed EOT (no sentinel required).
 
-        Retrieves all available tools, applies the tool filter, and converts
-        them to the OpenAI function-calling schema format.
+        Returns True for 'T' (think) and 'K' (skill) nesting types.
+        These types accept a basic assistant message as end-of-turn without
+        requiring the explicit sentinel confirmation.
+        """
+        return self.nesting_stack and self.nesting_stack[-1] in ("T", "K")
+
+    def get_all_tools(self) -> list[dict]:
+        """Return ALL tools in OpenAI function-calling format.
+
+        Always returns the full tool list regardless of the tool filter.
+        The tool filter is applied at execution time (agent_tool_executor
+        line 219) where blocked tool calls are rejected with the denied message.
+
+        CRITICAL: Never change the tool list sent to the LLM — this breaks
+        prefix cache stability. The model always sees the same tools; the
+        filter only blocks execution, not the API call.
 
         Returns:
             list[dict]: List of tool definitions in OpenAI format, each containing:
@@ -641,8 +696,6 @@ class TauErgon(CommandHandlersMixin):
         """
         all_tools = []
         for name in self.available_tool_names:
-            if not self.tool_filter.should_include(name):
-                continue
             tool_info = TOOLS.get(name)
             if not tool_info:
                 continue
@@ -677,11 +730,17 @@ class TauErgon(CommandHandlersMixin):
         Returns:
             The final assistant response text (or error message).
         """
-        self._session.audit_writer.user(user_input)
-        self.context.append_user(user_input)
-        result = self.invoke_with_tools_loop()
-        self._session.audit_writer.flush()
-        return result
+        self._turn_active = True
+        try:
+            self._session.audit_writer.user(user_input)
+            if self.original_task is None:
+                self.original_task = user_input
+            self.context.append_user(user_input, user_type="real")
+            result = self.invoke_with_tools_loop()
+            self._session.audit_writer.flush()
+            return result
+        finally:
+            self._turn_active = False
 
     def invoke_with_tools_loop(self) -> str:
         """Core loop: call LLM, execute tool calls, repeat until final response.
@@ -692,9 +751,14 @@ class TauErgon(CommandHandlersMixin):
 
         Message alternation invariant maintained throughout:
           - After LLM returns tool_calls: assistant(tool_calls) -> tool results -> loop
-          - After LLM returns plain text: assistant(response) -> recovery reminder -> loop
-          - After end_turn tool call: assistant(force_end_turn) -> turn complete
-          - After recovery: assistant(response) -> user(correction) -> continue
+          - After LLM returns plain text: potential EOT -> confirmation -> accept or rewind
+          - After forced end-of-turn: assistant(force_end_turn) -> turn complete
+
+        Accidental EOT protection:
+          When the LLM returns plain text without tool calls, we inject a synthetic
+          user message asking for confirmation. The LLM must reply with the sentinel
+          string (ENDOFTURN) to confirm, or continue with tool calls. If the budget
+          (_ACCIDENTAL_EOT_BUDGET) is exhausted, the turn is force-closed.
 
         This method is safe to call when the context ends with:
           - A user message (normal entry point)
@@ -706,338 +770,7 @@ class TauErgon(CommandHandlersMixin):
         Returns:
             The final assistant response text (or error message).
         """
-        self.loop_detector.reset()
-        outer_recovery_counter = 0
-        max_outer_recovery = 5
-
-        self.force_end_turn: str | None = None
-        self.last_substantive_response: str | None = None
-        self._recovery_active = False  # Reset recovery mode at start of each turn
-
-        # Early entry reflection (microplan) before first LLM call
-        _early_reflection_done = False
-        if (
-            self.reflection_scheduler.cfg.enabled
-            and self.reflection_scheduler.cfg.initial_think
-        ):
-            self._loop_escalation.inject_early_reflection()
-            _early_reflection_done = True
-
-        while True:
-            if AgentLifecycle.is_exit_requested():
-                self.context.close_turn("[Session ended]")
-                break
-
-            if AgentLifecycle.is_interrupted():
-                self.context.close_turn("[Interrupted]")
-                break
-
-            all_tools = self.get_all_tools()
-
-            errors = self.context.validate()
-            if errors:
-                last = self.context[-1] if self.context else None
-                last_role = last.get("role", "empty") if last else "empty"
-                context_validation_display(errors, context_len=len(self.context),
-                                           last_role=last_role)
-                recovered, fixes = self.context.attempt_recovery()
-                if fixes:
-                    context_recovery_display(fixes, recovered)
-                    if not recovered:
-                        log_console_warning(
-                            f"Context recovery incomplete: {len(self.context.validate())} "
-                            "errors remain after recovery attempt"
-                        )
-
-            try:
-                extra_kwargs = self.resolve_group_params()
-
-                config = LLMCallConfig(
-                    log_on_failure=True,
-                    log_file=self._session.audit_file,
-                    context=self.context,
-                    extra_kwargs=extra_kwargs,
-                    compress_client=self.client,
-                    compress_model=self.model_name,
-                    compress_tools=all_tools,
-                    compress_extra_kwargs=extra_kwargs,
-                    compress_audit_writer=self._session.audit_writer,
-                    agent=self,
-                    max_context_tokens=self.max_context_tokens,
-                    max_output_tokens=self.max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
-                )
-                resp, compressed = _invoke_llm_with_retry(
-                    self.client,
-                    self.model_name,
-                    self.context,
-                    all_tools,
-                    "auto",
-                    stream=False,
-                    config=config,
-                    valid_tool_names=set(self.available_tool_names),
-                )
-                # LLM call succeeded — clear vision recovery tracking.
-                # Images are now safely in context; no recovery needed.
-                self._last_injected_tool_call_ids.clear()
-
-                response_text = resp.text
-                reasoning_content = resp.reasoning
-                call_stats = resp.stats
-
-                # Record content quality for adaptive interval
-                self.reflection_scheduler.record_llm_response(
-                    assistant_bytes=len(response_text or ""),
-                    reasoning_bytes=len(reasoning_content or ""),
-                )
-
-                # Persist compressed context back to agent context.
-                if compressed is not None:
-                    self.context.set_messages(compressed)
-
-                # Transform resp.tool_calls (SDK + postparse-recovered) into executor format.
-                # resp.tool_calls is the authoritative list — do NOT re-read from
-                # the raw SDK response, which would miss postparse-extracted calls.
-                # NOTE: Tool calls are processed even for best-effort responses.
-                #  Previously, validation failures would skip tool execution.
-                tool_calls = []
-                for tc in resp.tool_calls:
-                    args_str = tc["function"]["arguments"] or ""
-                    try:
-                        args_dict = json.loads(args_str) if args_str else {}
-                    except json.JSONDecodeError:
-                        args_dict = {}
-                    tool_calls.append(
-                        {
-                            "id": tc["id"],
-                            "name": tc["function"]["name"],
-                            "args": args_str,
-                            "args_dict": args_dict,
-                        }
-                    )
-
-                # Token fields may be None when the API does not report usage.
-                # Use ``or 0`` for arithmetic; store raw (possibly None) for display.
-                self._session.record_call_stats(call_stats)
-
-                print_context_status(self.get_status())
-
-                if reasoning_content:
-                    reasoning(reasoning_content.strip())
-                if response_text:
-                    assistant_message_display(response_text.strip())
-
-                # Compression check: use API tokens when available, fall back to
-                # estimation (including pending message) when not.  This MUST happen
-                # BEFORE appending the assistant message, so we estimate the
-                # post-append context size to avoid lagging estimates.
-                pending = (
-                    len(response_text or "") + len(reasoning_content or "")
-                ) // 3 + 15
-                if (
-                    self._session.last_exact_context_tokens is not None
-                    and self._session.last_exact_context_tokens > 0
-                ):
-                    total_tokens = self._session.last_exact_context_tokens + pending
-                else:
-                    total_tokens = self.context.estimate_tokens(pending)
-                compress_threshold = 0.85
-
-                if total_tokens / self.max_context_tokens >= compress_threshold:
-                    self.context.compress(0.30, self, self.get_all_tools())
-
-                # Track substantive response for potential ENDTURN resolution.
-                # Track ALL responses with text (even with tool calls) so ENDTURN
-                # resolves correctly. Never overwrite existing during recovery mode.
-                if response_text and response_text.strip() and (self.last_substantive_response is None or not self._recovery_active):
-                    self.last_substantive_response = response_text.strip()
-
-                if tool_calls:
-                    # Validate: end_turn must be the sole tool call.
-                    # If mixed with other tools, execute them but reject end_turn.
-                    has_end_turn = any(tc["name"] == "end_turn" for tc in tool_calls)
-                    if has_end_turn and len(tool_calls) > 1:
-                        # Separate end_turn from other tool calls
-                        other_tool_calls = [tc for tc in tool_calls if tc["name"] != "end_turn"]
-                        
-                        # Execute the other tool calls
-                        if other_tool_calls:
-                            execute_tool_batch(other_tool_calls, self, reasoning=reasoning_content, audit_writer=self._session.audit_writer)
-                        
-                        # Reject end_turn with concise reminder
-                        warning(
-                            "end_turn must be called alone. "
-                            "Finish your work, then call end_turn by itself."
-                        )
-                        self.context.append_synthetic_user(
-                            "end_turn_rejection",
-                            "end_turn must be called alone. Finish your work, then call end_turn by itself.",
-                        )
-                        continue
-
-                    outer_recovery_counter = 0
-                    execute_tool_batch(tool_calls, self, reasoning=reasoning_content, audit_writer=self._session.audit_writer)
-
-                    # ── Post-batch image injection ──────────────────────────
-                    # Inject all queued images as a single multimodal user message.
-                    # Maintains clean alternation: tool_results → synthetic_assistant → user(images)
-                    self._inject_queued_images()
-
-                    # Count this as a tool-loop step
-                    self.reflection_scheduler.tick()
-
-                    info = self.loop_detector.get_escalation_info()
-                    # Signal distress so scheduler narrows interval
-                    if info["escalation_level"] >= 1 or self._session.has_error_burst():
-                        self.reflection_scheduler.on_distress()
-                    # Check reflection — periodic OR reactive
-                    if self.reflection_scheduler.should_reflect():
-                        self.reflection_scheduler.mark_reflection_started()
-                        self._loop_escalation.inject_reflection()
-                        continue
-                    if self.reflection_scheduler.should_reflect_reactive(
-                        has_loop_warning=info["escalation_level"] >= 1,
-                        has_error_burst=self._session.has_error_burst(),
-                    ):
-                        self.reflection_scheduler.mark_reflection_started()
-                        self._loop_escalation.inject_reflection()
-                        continue
-
-                    # (tool_filter is never changed at runtime — prefix cache safety)
-
-                    # Check for forced end-of-turn (set by end_turn or any tool)
-                    if self.force_end_turn is not None:
-                        # close_turn() handles synthetic message cleanup automatically
-                        self.context.close_turn(self.force_end_turn)
-                        return self.force_end_turn
-
-                    # Check for interrupt after tool execution
-                    if AgentLifecycle.is_interrupted():
-                        self.context.close_turn("[Interrupted]")
-                        break
-
-                    errors = self.context.validate_tool_resolution()
-                    if errors:
-                        for err in errors:
-                            warning(f"Tool resolution warning: {err}")
-
-                    # Check for loop escalation after tool batch
-                    if not self._loop_escalation.handle_loop_escalation():
-                        if self.force_end_turn is not None:
-                            # close_turn() handles synthetic message cleanup automatically
-                            self.context.close_turn(self.force_end_turn)
-                            return self.force_end_turn
-
-                    continue
-
-                # ── No tool calls: validate structure, then require end_turn ──
-                # Plain text responses NEVER end the turn. The model MUST call the
-                # end_turn tool to complete the turn. Here we check for structural
-                # errors (truncation, unclosed tags, malformed tool calls) and then
-                # inject a recovery reminder forcing the model to call end_turn.
-
-                # Check for structural errors (truncation, unclosed tags, malformed tool calls)
-                validation_error = is_valid_end_of_turn(
-                    response_text, call_stats.finish_reason, reasoning_content
-                )
-                if validation_error is not None:
-                    if validation_error.error_type == ValidationErrorType.TRUNCATED:
-                        warning("output truncated (finish_reason=length, hit max_tokens)")
-                    outer_recovery_counter += 1
-                    if outer_recovery_counter >= max_outer_recovery:
-                        warning(
-                            f"[Recovery budget exhausted ({max_outer_recovery} attempts), "
-                            f"returning best-effort response.]"
-                        )
-                        self.context.close_turn(
-                            "[Recovery budget exhausted — turn forced closed]"
-                        )
-                        best_response = self.last_substantive_response or response_text or ""
-                        self._session.audit_writer.assistant(best_response)
-                        return best_response
-                    self._loop_escalation.recover_from_invalid_end_of_turn(
-                        response_text,
-                        reasoning_content,
-                    )
-                    continue
-
-                # ── Plain text without end_turn: inject recovery, continue ──
-                # The model must explicitly call end_turn to end the turn.
-                outer_recovery_counter += 1
-                if outer_recovery_counter >= max_outer_recovery:
-                    warning(
-                        f"[Recovery budget exhausted ({max_outer_recovery} attempts), "
-                        f"returning best-effort response.]"
-                    )
-                    self.context.close_turn(
-                        "[Recovery budget exhausted — turn forced closed]"
-                    )
-                    best_response = self.last_substantive_response or response_text or ""
-                    self._session.audit_writer.assistant(best_response)
-                    return best_response
-
-                # Inject recovery reminder and continue loop
-                self._recover_from_missing_end_turn(response_text, reasoning_content)
-                continue
-
-            except Exception as e:  # pylint: disable=W0718
-                if isinstance(e, (MemoryError, RecursionError)):
-                    error(f"[FATAL] {type(e).__name__}: {e}")
-                    raise  # No recovery possible — process state is undefined
-
-                traceback.print_exc()
-
-                error_detail = f"{type(e).__name__}: {e}"
-                error_lower = error_detail.lower()
-                if "timeout" in error_lower or "timed out" in error_lower:
-                    error_response = (
-                        f"Error: Failed to invoke model after retries - {error_detail}"
-                    )
-                else:
-                    error_response = f"Error: Failed to invoke model - {error_detail}"
-
-                self._session.audit_writer.assistant(error_response)
-                self.context.append_assistant(error_response, None)
-                error(f"[ERROR] {error_response}")
-                return error_response
-
-    def _recover_from_missing_end_turn(
-        self,
-        response_text: str | None,
-        reasoning_content: str | None,
-    ) -> None:
-        """Inject recovery message when model returns plain text without end_turn.
-
-        Preserves the model's response (and reasoning) as an assistant message,
-        then injects a synthetic user reminder to call end_turn.
-
-        Context alternation: assistant (plain text + reasoning) → synthetic user → LLM.
-        Since undo() skips synthetic messages, the undo boundary is preserved.
-
-        Sets _recovery_active to prevent overwriting last_substantive_response
-        during the recovery round.
-        """
-        # Append the model's response (with reasoning) to preserve its work
-        if response_text is not None:
-            self.context.append_assistant(response_text, reasoning=reasoning_content)
-
-        # Lock last_substantive_response — recovery responses should not overwrite it
-        self._recovery_active = True
-
-        # Build the reminder with context about what ENDTURN will resolve to
-        reminder = (
-            "You must call the end_turn tool to end your turn. "
-            "If your answer is already above, pass 'ENDTURN' as the message. "
-            "Otherwise, provide your final response as the message."
-        )
-
-        # Get the last real user prompt to provide context
-        last_real_prompt = get_last_real_user_prompt(self.context.get_messages())
-
-        # Build the synthetic user message content
-        synthetic_content = f"{reminder}\n\nOriginal prompt for this turn:\n{last_real_prompt}"
-
-        # Append the synthetic user message via public method
-        self.context.append_synthetic_user("end_turn_reminder", synthetic_content)
+        return run_loop(self)
 
     def run(
         self,
@@ -1114,8 +847,7 @@ class TauErgon(CommandHandlersMixin):
             no_run_function_error(tool_name)
             return
 
-        tool_args["agent"] = self
-        tool_args["tool_call_id"] = "0"
+        tool_args["_ctx"] = ToolContext(agent=self, tool_call_id="0")
 
         # Fill optional parameter defaults from the tool's Args dataclass.
         # This must happen AFTER tool resolution so that alias-resolved canonical
@@ -1130,191 +862,6 @@ class TauErgon(CommandHandlersMixin):
             assistant_message_display(result)
         except (TypeError, KeyError, RuntimeError) as e:
             exec_tool_fail(str(e))
-
-    def clear_context(self) -> str:
-        """Clear all messages except the system prompt and reset token counters.
-
-        Removes all conversation messages from the context while preserving
-        the system prompt. Resets all token counters and cache tracker.
-
-        Returns:
-            str: Confirmation message "Context cleared."
-        """
-        self.context.clear()
-        self._session.clear_tokens()
-        return "Context cleared."
-
-    @_command("undo", "u")
-    def _undo_last(
-        self, cmd_full: str = "", msg: Optional[InputMessage] = None
-    ) -> None:
-        """Undo the last conversation turn.
-
-        Removes messages from the last user message onward, effectively
-        reverting the last turn. This allows correcting mistakes or trying
-        a different approach.
-
-        Displays the number of messages removed via the console.
-        """
-        old_len = len(self.context)
-        self.context.undo()
-        undo_message(old_len - len(self.context))
-
-    def _load_context_by_id(self, idx: int) -> dict | None:
-        """Load a context file by its ID from the context list.
-
-        Retrieves a context file entry from the list of available contexts
-        using a 1-based index.
-
-        Args:
-            idx: 1-based index of the context to load.
-
-        Returns:
-            dict | None: The context dictionary containing 'name' and 'file' keys
-                if the ID is valid, otherwise None.
-
-        Displays:
-            - Error message if ID is out of range
-        """
-        from agent_input import list_context_files
-
-        contexts = list_context_files()
-        if not contexts or idx < 1 or idx > len(contexts):
-            echo(f"ID {idx} out of range (1-{len(contexts)})")
-            return None
-        return contexts[idx - 1]
-
-    def _copy_plan_file(self, old_context_file: Path) -> None:
-        """Copy the old session's .plan file to the new session's plan path.
-
-        Called after /continue loads a context from a previous session so that
-        plan entries survive session restoration.
-        """
-        old_plan = old_context_file.with_suffix(".plan")
-        if not old_plan.exists():
-            return
-
-        if not SESSION_PREFIX:
-            return
-
-        new_plan = LOG_DIR / f"{SESSION_PREFIX}.plan"
-        if old_plan != new_plan:
-            try:
-                shutil.copy2(old_plan, new_plan)
-            except OSError as e:
-                warning(f"Failed to copy plan file {old_plan} -> {new_plan}: {e}")
-
-    def _copy_audit_file(self, old_context_file: Path) -> None:
-        """Copy the old session's .audit file into the current session's audit file.
-
-        Called after /continue loads a context from a previous session so that
-        /audit shows the full history (old + new session records).
-
-        Appends old audit content to the current audit file so the audit writer
-        can continue writing to the same file without losing history.
-        """
-        old_audit = old_context_file.with_suffix(".audit")
-        if not old_audit.exists():
-            return
-
-        new_audit = self._session.audit_file
-        if old_audit != new_audit:
-            try:
-                with open(old_audit, "r", encoding="utf-8") as src:
-                    content = src.read()
-                with open(new_audit, "a", encoding="utf-8") as dst:
-                    dst.write(content)
-            except OSError as e:
-                warning(f"Failed to copy audit file {old_audit} -> {new_audit}: {e}")
-
-    def _handle_continue(self, args: str) -> None:
-        """Handle the /continue command to load previous contexts.
-
-        Supports multiple subcommands for loading and previewing saved contexts:
-        - No arguments: Load the latest context from the same terminal session
-        - "list": List saved contexts (default 25, or specify count)
-        - "<n>": Load context by ID
-        - "preview <n>": Preview the last 3 messages of context by ID
-
-        Args:
-            args: Command arguments. Examples:
-                - "" (empty) - Load latest context
-                - "list" - List contexts
-                - "list 50" - List last 50 contexts
-                - "5" - Load context #5
-                - "preview 5" - Preview context #5
-
-        Displays:
-            - Context restoration success/failure messages
-            - List of contexts for "list" subcommand
-            - Preview of context for "preview" subcommand
-            - Usage help for invalid arguments
-        """
-        from agent_input import (
-            get_context_file_by_parent_ppid,
-            list_context_files,
-            preview_context,
-        )
-
-        if not args:
-            target_ctx = get_context_file_by_parent_ppid()
-            if target_ctx:
-                self._session.context_file = target_ctx
-                if self.context.load_from_file(self._session.context_file):
-                    self._copy_plan_file(self._session.context_file)
-                    self._copy_audit_file(self._session.context_file)
-                    context_restored(len(self.context), target_ctx)
-                else:
-                    context_restore_failure(target_ctx)
-            else:
-                no_context_file_found()
-            return
-
-        parts = args.split(maxsplit=1)
-        sub_cmd = parts[0].lower()
-
-        if sub_cmd == "list":
-            n_str = (parts[1].strip() if len(parts) > 1 else "").strip()
-            n = int(n_str) if n_str.isdigit() and int(n_str) > 0 else 25
-            if n_str and not n_str.isdigit():
-                echo("Usage: /continue list [<n>]")
-                return
-            context_list_display(list_context_files(limit=n))
-
-        elif sub_cmd == "preview":
-            if len(parts) < 2 or not parts[1].strip():
-                echo("Usage: /continue preview <n>")
-                return
-            try:
-                idx = int(parts[1].strip())
-            except ValueError:
-                echo(f"Invalid ID: {parts[1].strip()}")
-                return
-            ctx = self._load_context_by_id(idx)
-            if ctx is None:
-                return
-            context_preview_display(
-                ctx["name"], preview_context(ctx["file"])
-            )
-
-        else:
-            try:
-                idx = int(args.strip())
-            except ValueError:
-                echo(
-                    f"Unknown /continue argument: {args}\nUsage: /continue | /continue list [<n>] | /continue <n> | /continue preview <n>"
-                )
-                return
-            ctx = self._load_context_by_id(idx)
-            if ctx is None:
-                return
-            self._session.context_file = ctx["file"]
-            if self.context.load_from_file(self._session.context_file):
-                self._copy_plan_file(self._session.context_file)
-                self._copy_audit_file(self._session.context_file)
-                context_restored(len(self.context), self._session.context_file)
-            else:
-                context_restore_failure(self._session.context_file)
 
     def get_status(self) -> AgentStatus:
         """Return an encapsulated view of agent status for display functions.
@@ -1355,6 +902,9 @@ class TauErgon(CommandHandlersMixin):
             session_in=self._session.input_tokens,
             session_out=self._session.output_tokens,
             session_cached=self._session.cached_tokens,
+            session_in_bytes=self._session.input_bytes,
+            session_out_bytes=self._session.output_bytes,
+            session_cached_bytes=self._session.cached_bytes,
             # Cache
             has_cache_data=self._session.cache_tracker.has_cache_data,
             cumulative_hit_rate=self._session.cache_tracker.cumulative_hit_rate,
@@ -1365,97 +915,20 @@ class TauErgon(CommandHandlersMixin):
             agent_name=self.agent_name,
             context_file=str(self._session.context_file),
             nesting_count=self.nesting_count,
+            nesting_stack=self.nesting_stack,
+            turn_active=self._turn_active,
             # Loop detection
             loop_stats=self.loop_detector.get_stats(),
             # Commands
             available_commands=list(self._get_available_commands().keys()),
         )
 
-    def _handle_restart(self, restart_args: str) -> None:
-        """Restart the agent with the same configuration.
-
-        Restarts the agent process while preserving the current context and
-        configuration. Filters out irrelevant flags and ensures the -c flag
-        is set to continue from the saved context.
-
-        Args:
-            restart_args: Additional arguments to pass to the restarted agent.
-
-        Displays:
-            - Restart command being executed
-            - Error messages if restart fails
-
-        Actions:
-            - Saves current context to file
-            - Clears bytecode cache
-            - Attempts execvp for clean restart
-            - Falls back to subprocess.Popen if execvp fails
-        """
-        self._session.clear_tokens()  # Clear stale cache stats from previous session
-        skip_flags = {
-            "--pid",
-            "--card",
-            "--timeout",
-            "--list",
-            "--list-all",
-            "--listjson",
-            "--listjson-all",
-            "--query",
-        }
-
-        filtered_args = []
-        i = 0
-        while i < len(sys.argv[1:]):
-            arg = sys.argv[i + 1]  # +1 because sys.argv[0] is script name
-            if arg in skip_flags:
-                i += 2
-                continue
-            if not arg.startswith("-"):
-                i += 1
-                continue
-            filtered_args.append(arg)
-            if (
-                "=" not in arg
-                and i + 2 < len(sys.argv)
-                and not sys.argv[i + 2].startswith("-")
-            ):
-                filtered_args.append(sys.argv[i + 2])
-                i += 2
-            else:
-                i += 1
-
-        if not any(arg in ("-c", "--continue") for arg in filtered_args):
-            filtered_args.append("-c")
-
-        cmd = [sys.executable, sys.argv[0]] + filtered_args
-        if restart_args:
-            cmd.extend(restart_args.split())
-
-        restart_flow(" ".join(cmd))
-        print_agent_exit_summary(self)
-        self.context.close_turn("[Restart]")
-        self.context.save_to_file(self._session.context_file, force=True)
-        time.sleep(0.1)
-
-        # Clear bytecode cache
-        import shutil
-
-        for cache_dir in ("tools/__pycache__", "__pycache__"):
-            path = Path(__file__).parent / cache_dir
-            if path.exists():
-                shutil.rmtree(path)
-
-        try:
-            os.execvp(cmd[0], cmd)
-        except OSError as e:
-            restart_failure(str(e))
-            try:
-                subprocess.Popen(cmd)
-            except OSError as e2:
-                restart_fallback_failure(str(e2))
-        sys.exit(0)
-
     # ── Backward-compatible property wrappers (tests access these directly) ──
+
+    @property
+    def nesting_count(self) -> int:
+        """Nesting depth derived from nesting_stack length."""
+        return len(self.nesting_stack)
 
     @property
     def audit_file(self) -> Path:

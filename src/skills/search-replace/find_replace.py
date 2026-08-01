@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Search and replace helper — find patterns, verify replacements."""
-import subprocess, sys, os, re
+import subprocess, sys
 
 def find_occurrences(pattern: str, path=".", file_pattern="*", exclude=None):
     """Find all occurrences of pattern in files."""

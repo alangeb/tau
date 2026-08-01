@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolMetadata, ToolContext
 
 import subprocess
 from dataclasses import dataclass, field
@@ -32,9 +32,12 @@ class Args:
 
 # ── Execution ──
 def run(
-    agent: TauErgon, tool_call_id: str | None = None, all_sessions: bool = False
+    all_sessions: bool = False,
+    _ctx: ToolContext | None = None,
 ) -> str:
     """List active tmux sessions."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     try:
         result = subprocess.run(
             ["tmux", "list-sessions", "-F", "#{session_name}"],

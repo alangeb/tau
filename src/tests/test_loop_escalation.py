@@ -62,74 +62,94 @@ class TestCumulativeTracking:
 
 
 class TestEscalationLevels:
-    """Test escalation level computation."""
+    """Test escalation level computation (new 5-level structure)."""
 
     def test_level_0_below_threshold(self):
-        """No escalation below warn_threshold."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            warn_threshold=3,
-        )
+        """No escalation below 3 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
         # Trigger 2 warnings (below threshold)
         for _ in range(2):
             detector.detect_tool_loop("tool", {})
 
         assert detector.escalation_level == 0
 
-    def test_level_1_at_warn_threshold(self):
-        """Level 1 at warn_threshold."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            warn_threshold=3,
-            inject_threshold=7,
-        )
+    def test_level_1_at_3_warnings(self):
+        """Level 1 at 3 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
         for _ in range(3):
             detector.detect_tool_loop("tool", {})
 
         assert detector.escalation_level == 1
 
-    def test_level_2_at_inject_threshold(self):
-        """Level 2 at inject_threshold."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            warn_threshold=3,
-            inject_threshold=7,
-            force_think_threshold=11,
-        )
-        for _ in range(7):
+    def test_level_1_at_5_warnings(self):
+        """Level 1 at 5 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
+        for _ in range(5):
+            detector.detect_tool_loop("tool", {})
+
+        assert detector.escalation_level == 1
+
+    def test_level_2_at_6_warnings(self):
+        """Level 2 at 6 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
+        for _ in range(6):
             detector.detect_tool_loop("tool", {})
 
         assert detector.escalation_level == 2
 
-    def test_level_3_at_force_think_threshold(self):
-        """Level 3 at force_think_threshold."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            warn_threshold=3,
-            inject_threshold=7,
-            force_think_threshold=11,
-            end_turn_threshold=15,
-        )
+    def test_level_2_at_8_warnings(self):
+        """Level 2 at 8 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
+        for _ in range(8):
+            detector.detect_tool_loop("tool", {})
+
+        assert detector.escalation_level == 2
+
+    def test_level_3_at_9_warnings(self):
+        """Level 3 at 9 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
+        for _ in range(9):
+            detector.detect_tool_loop("tool", {})
+
+        assert detector.escalation_level == 3
+
+    def test_level_3_at_11_warnings(self):
+        """Level 3 at 11 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
         for _ in range(11):
             detector.detect_tool_loop("tool", {})
 
         assert detector.escalation_level == 3
 
-    def test_level_4_at_end_turn_threshold(self):
-        """Level 4 at end_turn_threshold."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            warn_threshold=3,
-            inject_threshold=7,
-            force_think_threshold=11,
-            end_turn_threshold=15,
-        )
-        for _ in range(15):
+    def test_level_4_at_12_warnings(self):
+        """Level 4 at 12 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
+        for _ in range(12):
             detector.detect_tool_loop("tool", {})
 
         assert detector.escalation_level == 4
 
+    def test_level_4_at_14_warnings(self):
+        """Level 4 at 14 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
+        for _ in range(14):
+            detector.detect_tool_loop("tool", {})
 
+        assert detector.escalation_level == 4
+
+    def test_level_5_at_15_warnings(self):
+        """Level 5 at 15 warnings (termination)."""
+        detector = LoopDetector(repeat_threshold=1)
+        for _ in range(15):
+            detector.detect_tool_loop("tool", {})
+
+        assert detector.escalation_level == 5
+
+    def test_level_5_at_20_warnings(self):
+        """Level 5 at 20 warnings."""
+        detector = LoopDetector(repeat_threshold=1)
+        for _ in range(20):
+            detector.detect_tool_loop("tool", {})
 class TestEscalationInfo:
     """Test get_escalation_info() method."""
 
@@ -145,11 +165,9 @@ class TestEscalationInfo:
 
     def test_needs_injection_at_level_2(self):
         """needs_injection is True at level 2+."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            inject_threshold=3,
-        )
-        for _ in range(3):
+        detector = LoopDetector(repeat_threshold=1)
+        # Trigger 6 warnings to reach level 2
+        for _ in range(6):
             detector.detect_tool_loop("tool", {})
 
         info = detector.get_escalation_info()
@@ -157,17 +175,13 @@ class TestEscalationInfo:
 
     def test_needs_force_think_at_level_3(self):
         """needs_force_think is True at level 3+."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            force_think_threshold=5,
-        )
-        for _ in range(5):
+        detector = LoopDetector(repeat_threshold=1)
+        # Trigger 9 warnings to reach level 3
+        for _ in range(9):
             detector.detect_tool_loop("tool", {})
 
         info = detector.get_escalation_info()
         assert info["needs_force_think"] is True
-
-
 class TestWarningMessages:
     """Test escalating warning message content."""
 
@@ -175,8 +189,6 @@ class TestWarningMessages:
         """Level 1 message includes cumulative count."""
         detector = LoopDetector(
             repeat_threshold=1,
-            warn_threshold=1,
-            inject_threshold=100,  # High to stay at level 1
         )
         warning = detector.detect_tool_loop("test_tool", {})
 
@@ -184,37 +196,29 @@ class TestWarningMessages:
         assert "test_tool" in warning
         assert "#1" in warning  # Cumulative count
 
-    def test_level_2_message_mentions_think(self):
-        """Level 2 message suggests think tool."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            warn_threshold=1,
-            inject_threshold=2,
-            force_think_threshold=100,
-        )
-        # Trigger level 1 warning
-        detector.detect_tool_loop("tool", {})
-        # Trigger level 2 warning
-        warning = detector.detect_tool_loop("tool", {})
+    def test_level_2_message_format(self):
+        """Level 2 message includes escalation info."""
+        detector = LoopDetector(repeat_threshold=1)
+        # Trigger 6 warnings to reach level 2
+        for _ in range(6):
+            detector.detect_tool_loop("tool", {})
 
-        assert warning is not None
-        assert "think" in warning.lower()
+        # The warning message is returned by detect_tool_loop
+        # At level 2, the message should include warning count
+        info = detector.get_escalation_info()
+        assert info["escalation_level"] == 2
+        assert info["total_warnings"] == 6
 
-    def test_level_3_message_is_critical(self):
-        """Level 3 message is critical and directive."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            warn_threshold=1,
-            inject_threshold=2,
-            force_think_threshold=3,
-            end_turn_threshold=100,
-        )
-        detector.detect_tool_loop("tool", {})
-        detector.detect_tool_loop("tool", {})
-        warning = detector.detect_tool_loop("tool", {})
+    def test_level_3_message_format(self):
+        """Level 3 message is critical."""
+        detector = LoopDetector(repeat_threshold=1)
+        # Trigger 9 warnings to reach level 3
+        for _ in range(9):
+            detector.detect_tool_loop("tool", {})
 
-        assert warning is not None
-        assert "MUST" in warning or "CRITICAL" in warning
+        info = detector.get_escalation_info()
+        assert info["escalation_level"] == 3
+        assert info["total_warnings"] == 9
 
 
 class TestContextCompliance:
@@ -283,35 +287,37 @@ class TestSyntheticLoopSimulation:
     """Simulate a looping agent and verify escalation."""
 
     def test_loop_detection_progression(self):
-        """Simulate loop calls and verify escalation progression."""
-        detector = LoopDetector(
-            repeat_threshold=1,
-            warn_threshold=1,
-            inject_threshold=3,
-            force_think_threshold=5,
-            end_turn_threshold=8,
-        )
+        """Simulate loop calls and verify escalation progression (new levels)."""
+        detector = LoopDetector(repeat_threshold=1)
 
         escalation_history = []
-        for i in range(10):
+        for i in range(20):
             detector.detect_tool_loop("same_tool", {"arg": 1})
             info = detector.get_escalation_info()
             escalation_history.append(info["escalation_level"])
 
-        # Verify escalation progression
-        assert escalation_history[0] == 1  # Level 1 at warning 1
-        assert escalation_history[2] == 2  # Level 2 at warning 3
-        assert escalation_history[4] == 3  # Level 3 at warning 5
-        assert escalation_history[7] == 4  # Level 4 at warning 8
+        # Verify escalation progression (new 5-level structure)
+        assert escalation_history[0] == 0  # Warning 1: level 0
+        assert escalation_history[1] == 0  # Warning 2: level 0
+        assert escalation_history[2] == 1  # Warning 3: level 1
+        assert escalation_history[4] == 1  # Warning 5: level 1
+        assert escalation_history[5] == 2  # Warning 6: level 2
+        assert escalation_history[7] == 2  # Warning 8: level 2
+        assert escalation_history[8] == 3  # Warning 9: level 3
+        assert escalation_history[10] == 3  # Warning 11: level 3
+        assert escalation_history[11] == 4  # Warning 12: level 4
+        assert escalation_history[13] == 4  # Warning 14: level 4
+        assert escalation_history[14] == 5  # Warning 15: level 5
+        assert escalation_history[19] == 5  # Warning 20: level 5
 
     def test_recovery_after_reset(self):
         """After reset, escalation starts fresh."""
-        detector = LoopDetector(repeat_threshold=1, warn_threshold=2)
+        detector = LoopDetector(repeat_threshold=1)
 
         # Trigger escalation
         for _ in range(5):
             detector.detect_tool_loop("tool", {})
-        assert detector.escalation_level >= 1
+        assert detector.escalation_level == 1
 
         # Reset
         detector.reset()

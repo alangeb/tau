@@ -19,8 +19,8 @@ from unittest.mock import Mock
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from tools import get_all_tools, get_tool_module
+from tools import ToolContext
 
 
 class TestAllToolsRegistered:
@@ -231,8 +231,7 @@ class TestToolBasicFunctionality:
             result = file_write.run(
                 file_path=str(test_file),
                 content="Hello, world!",
-                agent=mock_agent,
-                tool_call_id="test-tool-call-id",
+                _ctx=ToolContext(agent=mock_agent, tool_call_id="test-tool-call-id"),
             )
             assert "ERROR" not in result, f"file_write should succeed, got: {result}"
             assert test_file.exists(), "File should be created"
@@ -242,8 +241,7 @@ class TestToolBasicFunctionality:
                 file_path=str(test_file),
                 offset=1,
                 limit=100,
-                agent=mock_agent,
-                tool_call_id="test-tool-call-id-2",
+                _ctx=ToolContext(agent=mock_agent, tool_call_id="test-tool-call-id-2"),
             )
             assert "Hello, world!" in result, f"Content not found in result: {result}"
 
@@ -274,8 +272,7 @@ class TestToolBasicFunctionality:
             result = file_write.run(
                 file_path=str(test_file),
                 content="Test content",
-                agent=mock_agent,
-                tool_call_id="test-tool-call-id",
+                _ctx=ToolContext(agent=mock_agent, tool_call_id="test-tool-call-id"),
             )
             assert "ERROR" not in result
             assert test_file.exists()
@@ -311,8 +308,7 @@ class TestToolBasicFunctionality:
             file_write.run(
                 file_path=str(test_file),
                 content=content,
-                agent=mock_agent,
-                tool_call_id="test-tool-call-id",
+                _ctx=ToolContext(agent=mock_agent, tool_call_id="test-tool-call-id"),
             )
 
             # Read with offset and limit
@@ -320,8 +316,7 @@ class TestToolBasicFunctionality:
                 file_path=str(test_file),
                 offset=2,
                 limit=2,
-                agent=mock_agent,
-                tool_call_id="test-tool-call-id-2",
+                _ctx=ToolContext(agent=mock_agent, tool_call_id="test-tool-call-id-2"),
             )
             assert "Line 2" in result
             assert "Line 3" in result
@@ -352,8 +347,7 @@ class TestToolBasicFunctionality:
             file_path=str(Path.cwd() / ".test_tmp" / "nonexistent.txt"),
             offset=1,
             limit=10,
-            agent=mock_agent,
-            tool_call_id="test-tool-call-id",
+            _ctx=ToolContext(agent=mock_agent, tool_call_id="test-tool-call-id"),
         )
         assert "ERROR" in result or "not found" in result.lower()
 

@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0, '/usr/lib/freecad/lib')
 import FreeCAD as App
 import Part
-import math
 import os
 
 

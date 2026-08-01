@@ -2,7 +2,6 @@
 """Git advanced helper - advanced git operations."""
 
 import subprocess
-from typing import Optional
 
 
 def git_log_analysis(path: str = ".", since: str = "1 week ago") -> list[dict]:

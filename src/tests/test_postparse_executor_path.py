@@ -12,8 +12,8 @@ from unittest.mock import Mock, patch, call
 
 import pytest
 
-from agent_llm import LLMResponse, CallStats
-from agent_llm import llm_postparse
+from agent_llm_models import LLMResponse, CallStats
+from agent_llm_tool_parse import llm_postparse
 
 
 class TestPostparseRecovery:

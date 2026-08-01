@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from agent_core import TauErgon
 
 from .lib.sandbox import check_path, get_allowed_paths
 
@@ -23,7 +19,7 @@ metadata = ToolMetadata(
         "Supports directory listing, image/PDF preview, and fuzzy filename matching. "
     ),
     aliases_cmd=["read_file", "read"],
-    aliases_arg={"path": "file_path", "file": "file_path"},
+    aliases_arg={"path": "file_path", "file": "file_path", "filename": "file_path", "file_read": "file_path"},
     max_size=131072,
 )
 
@@ -41,10 +37,21 @@ class Args:
 # ── Execution ─────────────────────────────────────────────────────
 
 def run(
-    file_path: str, agent: "TauErgon", tool_call_id: str | None,
-    offset: int = 1, limit: int = 100,
+    file_path: str, offset: int = 1, limit: int = 100,
+    _ctx: ToolContext | None = None,
 ) -> str:
     """Read a text file with line numbers."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
+    # Defensive type coercion: LLM may pass str instead of int, or malformed strings
+    try:
+        offset = int(offset) if not isinstance(offset, int) else offset
+    except (ValueError, TypeError):
+        offset = 1
+    try:
+        limit = int(limit) if not isinstance(limit, int) else limit
+    except (ValueError, TypeError):
+        limit = 100
     if offset < 1:
         return "ERROR: offset must be >= 1"
     if limit < 1:

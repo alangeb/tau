@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import difflib
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from agent_core import TauErgon
 
 from .lib.sandbox import check_path, get_allowed_paths
 # ── Tool interface ────────────────────────────────────────────────
@@ -21,7 +17,7 @@ metadata = ToolMetadata(
         "Returns a unified diff on overwrite. For targeted edits, use file_edit."
     ),
     aliases_cmd=["write_file", "write"],
-    aliases_arg={"file": "file_path"},
+    aliases_arg={"file": "file_path", "path": "file_path"},
     max_size=8192,
 )
 
@@ -39,8 +35,10 @@ class Args:
 
 # ── Execution ─────────────────────────────────────────────────────
 
-def run(file_path: str, content: str, agent: "TauErgon", tool_call_id: str | None) -> str:
+def run(file_path: str, content: str, _ctx: ToolContext | None = None) -> str:
     """Create or overwrite a file with content."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if not file_path:
         return "ERROR: file_path is required."
 

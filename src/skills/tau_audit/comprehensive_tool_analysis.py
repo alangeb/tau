@@ -17,109 +17,15 @@ Covers 10 analysis points:
 
 import sys
 import os
-import re
-import json
 import time
-import gzip
 from collections import Counter, defaultdict
 from pathlib import Path
-from datetime import datetime
 
-# Local imports from same directory
-from analyze_audit import analyze_audit
-from batch_analyze import find_audit_files, analyze_batch
+from _audit_parse import parse_line, strip_quotes
 
 def get_all_audit_files(log_dir):
     """Get all audit files in the log directory."""
     return sorted(Path(log_dir).glob('*.audit'))
-
-def parse_tool_chains(audit_file):
-    """Parse tool call chains from a single audit file."""
-    chains = []
-    current_chain = []
-    in_assistant = False
-    assistant_content = []
-    
-    with open(audit_file, 'r', encoding='utf-8', errors='replace') as f:
-        for line in f:
-            line = line.rstrip('\n')
-            
-            # Check for entry start
-            entry_m = re.match(r'^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]\s+(\w+)', line)
-            if not entry_m:
-                # Accumulate content for ASSISTANT entries
-                if in_assistant and line.startswith('  | '):
-                    assistant_content.append(line[4:])
-                continue
-            
-            ts_str = entry_m.group(1)
-            entry_type = entry_m.group(2)
-            
-            # Flush assistant content
-            if entry_type in ('USER', 'TOOL_CALL', 'TOOL_RESULT', 'TOOL_BLOCKED', 'CONSOLE_ERROR', 'CONSOLE_WARNING') and in_assistant:
-                if assistant_content:
-                    current_chain.append({
-                        'type': 'assistant_response',
-                        'content': '\n'.join(assistant_content)[:200],
-                        'timestamp': ts_str
-                    })
-                in_assistant = False
-                assistant_content = []
-            
-            if entry_type == 'ASSISTANT':
-                in_assistant = True
-                assistant_content = []
-                continue
-            
-            elif entry_type == 'USER':
-                # End any pending chain
-                if current_chain:
-                    chains.append(current_chain)
-                    current_chain = []
-                in_assistant = False
-                continue
-            
-            elif entry_type == 'TOOL_CALL':
-                name_m = re.search(r"original_name='([^']+)'|final_name='([^']+)'", line)
-                if name_m:
-                    tool_name = name_m.group(1) or name_m.group(2)
-                    fixes_m = re.search(r"fixes=(\w+)", line)
-                    fixes = fixes_m.group(1) if fixes_m else 'none'
-                    current_chain.append({
-                        'type': 'tool_call',
-                        'tool': tool_name,
-                        'fixes': fixes,
-                        'timestamp': ts_str
-                    })
-            
-            elif entry_type == 'TOOL_RESULT':
-                status_m = re.search(r'status=(\w+)', line)
-                dur_m = re.search(r'duration_ms=(\d+)', line)
-                status = status_m.group(1) if status_m else 'unknown'
-                duration = int(dur_m.group(1)) if dur_m else 0
-                current_chain.append({
-                    'type': 'tool_result',
-                    'status': status,
-                    'duration_ms': duration,
-                    'timestamp': ts_str
-                })
-            
-            elif entry_type == 'TOOL_BLOCKED':
-                tool_m = re.search(r"tool='([^']+)'", line)
-                available_m = re.search(r'available=(.+)', line)
-                tool_name = tool_m.group(1) if tool_m else 'unknown'
-                available = available_m.group(1).strip() if available_m else ''
-                current_chain.append({
-                    'type': 'tool_blocked',
-                    'tool': tool_name,
-                    'available': available,
-                    'timestamp': ts_str
-                })
-    
-    if current_chain:
-        chains.append(current_chain)
-    
-    return chains
 
 def parse_raw_audit_data(audit_file):
     """Parse raw data from audit file for detailed analysis."""
@@ -136,87 +42,69 @@ def parse_raw_audit_data(audit_file):
         'entry_types': Counter(),
         'timestamps': [],
     }
-    
+
     with open(audit_file, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
-            line = line.rstrip('\n')
-            
-            entry_m = re.match(r'^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]\s+(\w+)', line)
-            if not entry_m:
+            record = parse_line(line)
+            if record is None:
                 continue
-            
-            ts_str = entry_m.group(1)
-            entry_type = entry_m.group(2)
-            
-            data['entry_types'][entry_type] += 1
-            data['timestamps'].append(ts_str)
-            
-            if entry_type == 'SESSION_START':
-                # Extract cwd
-                cwd_m = re.search(r"cwd='([^']+)'", line)
-                if cwd_m:
-                    data['session_start']['cwd'] = cwd_m.group(1)
-                # Extract model
-                model_m = re.search(r"model='([^']+)'", line)
-                if model_m:
-                    data['session_start']['model'] = model_m.group(1)
-                # Extract tools count
-                tools_m = re.search(r'tools=(\d+)', line)
-                if tools_m:
-                    data['session_start']['tools_count'] = int(tools_m.group(1))
-            
-            elif entry_type == 'USER':
+
+            data['entry_types'][record.record_type] += 1
+            data['timestamps'].append(record.timestamp)
+
+            if record.record_type == 'SESSION_START':
+                data['session_start']['cwd'] = strip_quotes(record.fields.get('cwd', ''))
+                data['session_start']['model'] = strip_quotes(record.fields.get('model', ''))
+                tools = record.fields.get('tools', '0')
+                data['session_start']['tools_count'] = int(tools)
+
+            elif record.record_type == 'USER':
                 data['user_turns'] += 1
-            
-            elif entry_type == 'ASSISTANT':
+
+            elif record.record_type == 'ASSISTANT':
                 data['assistant_turns'] += 1
-            
-            elif entry_type == 'TOOL_CALL':
-                name_m = re.search(r"original_name='([^']+)'|final_name='([^']+)'", line)
-                if name_m:
-                    tool_name = name_m.group(1) or name_m.group(2)
-                    fixes_m = re.search(r"fixes=(\w+)", line)
-                    fixes = fixes_m.group(1) if fixes_m else 'none'
-                    data['tool_calls'].append({
-                        'tool': tool_name,
-                        'fixes': fixes,
-                        'timestamp': ts_str
-                    })
-                    data['fixes'][fixes] += 1
-            
-            elif entry_type == 'TOOL_RESULT':
-                status_m = re.search(r'status=(\w+)', line)
-                dur_m = re.search(r'duration_ms=(\d+)', line)
-                if status_m:
-                    status = status_m.group(1)
-                    data['tool_results'].append({
-                        'status': status,
-                        'timestamp': ts_str
-                    })
-                    if status == 'error':
-                        # Find the corresponding tool call
-                        for tc in reversed(data['tool_calls']):
-                            if tc['timestamp'] < ts_str:
-                                data['tool_errors'][tc['tool']] += 1
-                                break
-                if dur_m:
-                    duration = int(dur_m.group(1))
-                    # Find the corresponding tool call
+
+            elif record.record_type == 'TOOL_CALL':
+                tool_name = strip_quotes(record.fields.get('final_name', record.fields.get('original_name', '')))
+                fixes = record.fields.get('fixes', 'none')
+                data['tool_calls'].append({
+                    'tool': tool_name,
+                    'fixes': fixes,
+                    'timestamp': record.timestamp,
+                })
+                data['fixes'][fixes] += 1
+
+            elif record.record_type == 'TOOL_RESULT':
+                status = record.fields.get('status', '')
+                data['tool_results'].append({
+                    'status': status,
+                    'timestamp': record.timestamp,
+                })
+                if status == 'error':
                     for tc in reversed(data['tool_calls']):
-                        if tc['timestamp'] < ts_str:
-                            data['tool_durations'][tc['tool']].append(duration)
+                        if tc['timestamp'] < record.timestamp:
+                            data['tool_errors'][tc['tool']] += 1
                             break
-            
-            elif entry_type == 'TOOL_BLOCKED':
-                tool_m = re.search(r"tool='([^']+)'", line)
-                available_m = re.search(r'available=(.+)', line)
-                if tool_m:
-                    data['tool_blocked'].append({
-                        'tool': tool_m.group(1),
-                        'available': available_m.group(1).strip() if available_m else '',
-                        'timestamp': ts_str
-                    })
-    
+
+                dur_str = record.fields.get('duration_ms', '0')
+                try:
+                    duration = int(dur_str)
+                except ValueError:
+                    duration = 0
+                for tc in reversed(data['tool_calls']):
+                    if tc['timestamp'] < record.timestamp:
+                        data['tool_durations'][tc['tool']].append(duration)
+                        break
+
+            elif record.record_type == 'TOOL_BLOCKED':
+                tool = strip_quotes(record.fields.get('tool', ''))
+                available = record.fields.get('available', '')
+                data['tool_blocked'].append({
+                    'tool': tool,
+                    'available': available.strip(),
+                    'timestamp': record.timestamp,
+                })
+
     return data
 
 def analyze_batch_comprehensive(audit_files):
@@ -237,7 +125,7 @@ def analyze_batch_comprehensive(audit_files):
     session_tool_counts = []  # (file, tool_count, assistant_turns, user_turns, cwd)
     session_fix_rates = []  # (file, fix_count, total_tool_calls)
     session_chains = []  # (file, chain_length)
-    session_durations = defaultdict(list)  # tool -> [durations]
+    defaultdict(list)  # tool -> [durations]
     session_assistant_zero = []  # files with 0 assistant turns but tool calls
     
     # Chain analysis
@@ -260,7 +148,7 @@ def analyze_batch_comprehensive(audit_files):
         
         try:
             data = parse_raw_audit_data(audit_file)
-        except Exception as e:
+        except Exception:
             errors += 1
             continue
         
@@ -496,7 +384,7 @@ def print_report(results):
     p95_idx = int(len(tool_counts_sorted) * 0.95)
     p95_threshold = tool_counts_sorted[p95_idx] if tool_counts_sorted else 0
     p99_idx = int(len(tool_counts_sorted) * 0.99)
-    p99_threshold = tool_counts_sorted[p99_idx] if tool_counts_sorted else 0
+    tool_counts_sorted[p99_idx] if tool_counts_sorted else 0
     
     print(f"  High tool count sessions (>P95={p95_threshold}):")
     high_tool_sessions = [(name, count) for name, count, _, _, _ in results['session_tool_counts'] if count > p95_threshold]
@@ -509,7 +397,7 @@ def print_report(results):
     
     # Sessions with high error rates
     print(f"\n  Tool error distribution:")
-    error_counts = Counter()
+    Counter()
     for name, count, _, _, _ in results['session_tool_counts']:
         # We don't have per-session error counts here, skip
         pass
@@ -602,7 +490,7 @@ def print_report(results):
     print(f"{'='*80}")
 
 def main():
-    log_dir = '~/.local/tau/log'
+    log_dir = os.path.expanduser('~/.local/tau/log')
     
     if not os.path.isdir(log_dir):
         print(f"Error: Directory not found: {log_dir}", file=sys.stderr)

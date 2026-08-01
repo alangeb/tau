@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """graphify pipeline helper — resolves interpreter, runs detect/extract/build."""
 from __future__ import annotations
-import json, sys, os, glob
+import json, os, glob, shutil
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -12,7 +12,6 @@ def resolve_python() -> str:
     # uv tool
     if not python:
         try:
-            import shutil
             if shutil.which("uv"):
                 import subprocess
                 result = subprocess.run(
@@ -78,7 +77,6 @@ def step_build(extraction: dict, directed: bool = False) -> tuple:
     from graphify.cluster import cluster, score_all
     from graphify.analyze import god_nodes, surprising_connections, suggest_questions
     from graphify.report import generate
-    from graphify.export import to_json
 
     G = build_from_json(extraction, directed=directed)
     communities = cluster(G)

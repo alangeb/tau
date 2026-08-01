@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import ast
 import json
@@ -30,7 +30,7 @@ metadata = ToolMetadata(
 
 @dataclass
 class Args:
-    path: str = field(metadata={"description": "File or directory to analyze"})
+    path: str = field(default=".", metadata={"description": "File or directory to analyze"})
     check_unused: bool = field(default=True, metadata={"description": "Check for unused functions"})
     check_imports: bool = field(default=True, metadata={"description": "Check for unused imports"})
     verify_findings: bool = field(default=True, metadata={"description": "Verify findings with grep"})
@@ -102,14 +102,12 @@ def _format_markdown(results: dict[str, list | str]) -> str:
 # ── Execution ────────────────────────────────────────────────────
 
 def run(
-    path: str,
-    check_unused: bool = True,
-    check_imports: bool = True,
-    verify_findings: bool = True,
-    output_format: str = "markdown",
-    agent: TauErgon = None,
-    tool_call_id: str | None = None,
+    path: str, check_unused: bool = True, check_imports: bool = True,
+    verify_findings: bool = True, output_format: str = "markdown",
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     target_path = Path(path)
     if not target_path.exists():
         return f"ERROR: Path not found: {path}"

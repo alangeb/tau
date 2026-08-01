@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from .lib.sandbox import get_allowed_paths, validate_path
-if TYPE_CHECKING:
-    from agent_core import TauErgon
 
 
 # ── Tool metadata ────────────────────────────────────────────────────────────
@@ -44,12 +41,11 @@ class Args:
 # ── Execution ────────────────────────────────────────────────────────────────
 
 def run(
-    pattern: str,
-    agent: "TauErgon",
-    tool_call_id: str | None = None,
-    path: str = ".",
-    recursive: bool = True,
+    pattern: str, path: str = ".", recursive: bool = True,
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     base_path, err = validate_path(path, allowed_paths=get_allowed_paths(agent))
     if err:
         return err

@@ -1,6 +1,6 @@
 ---
 name: task_creation
-description: Create tasks for dream execution — .md files in tasks/1_todo/, self-initiated improvements. Create task, new task, queue task, schedule improvement, defer work, dream task, add task (also load: task, dream, idea, skill_template)
+description: "Create tasks for dream execution — .md files in tasks/1_todo/. Queue task, schedule improvement, defer work (also load: task, dream, idea, skill_template)"
 category: orchestration
 keywords: task creation, create task, new task, queue task, schedule improvement, defer work, dream task, add task, task file, task format, task queue
 ---
@@ -14,7 +14,7 @@ keywords: task creation, create task, new task, queue task, schedule improvement
 Tasks are `.md` files in `tasks/1_todo/`. Dream.py picks them up via `/_taudotask`.
 
 ## Tau May Create Tasks
-**Tau is AUTHORIZED to create tasks on its own.** When Tau encounters a deficiency, bug, missing feature, or improvement opportunity, create task immediately. Do NOT wait for permission.
+**Tau is AUTHORIZED to create tasks on its own.** Deficiency, bug, missing feature, or improvement opportunity → create task immediately. Do NOT wait for permission.
 
 ## Task File Format
 ```markdown
@@ -34,10 +34,18 @@ created: "YYYY-MM"
 ```
 
 ## Naming
-- Lowercase-with-dashes: `my-feature.md`
+- **Recommended**: `TASK_##.md` format (e.g., `TASK_01.md`) — processed in numerical order
+- Alternative: lowercase-with-dashes (e.g., `my-feature.md`) — sorts alphabetically
 - Place in `tasks/1_todo/`
 - One task per file, concise
 - Enough detail for `/_taudotask` to execute without clarification
+
+## Task Ordering (CRITICAL)
+Tasks processed in **filename-sorted order** (lexicographic):
+- `TASK_##.md` files: `TASK_01.md` → `TASK_02.md` → `TASK_03.md`
+- Non-TASK files sort alphabetically relative to `TASK_` files
+- Use `tasks/queue.sh "description"` to auto-generate numbered files
+- Manual files: use `TASK_##.md` format to control order
 
 ## Privacy
 - NO personal info, real timestamps, user names, email addresses
@@ -54,19 +62,8 @@ Auto-generates numbered file in `1_todo/`.
 python3 skills/task_creation/task_create.py <title> [high|medium|low]
 ```
 
-## Task Lifecycle Overview
-
-```
-Idea (subconscious/ideas/) → Task (tasks/1_todo/) → 2_inprogress/ → 3_done/ or 3_failed/
-```
-
-1. Capture idea: `skill('idea')`
-2. Create task: this skill
-3. Dream executes: `skill('dream')`
-4. Verify status: `skill('task')`
-
 ## Related Skills
-- `task` — Complete task framework, verification, state management
 - `dream` — Orchestrator that consumes these tasks
 - `idea` — Capture ideas before formalizing as tasks
-- `skill_template` — Format for creating skills
+- `task` — Complete task framework, verification, state management
+- `skill_template` — Skill creation format

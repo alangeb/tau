@@ -1,6 +1,6 @@
 ---
 name: docker
-description: Docker container management — build, run, compose, SWE-bench testbeds. Docker, container, docker-compose, build image, run container, testbed, SWE-bench environment (also load: background, bug_investigation)
+description: "Docker container management — build, run, compose, exec, logs, SWE-bench testbeds (also load: background, bug_investigation, context_management, dependency_management, shell_scripting, swe_bench)"
 category: development
 keywords: docker, container, docker-compose, build image, run container, testbed, SWE-bench, environment, up, down, logs
 ---
@@ -44,13 +44,6 @@ docker logs <container>
 - Port conflicts: check `docker ps` before starting
 - Image caching: `--no-cache` for fresh builds
 
-## Related Skills
-- `swe_bench` — SWE-bench workflow
-- `background` — run containers in background
-- `shell_scripting` — automate docker workflows
-- `bug_investigation` — debug container issues
-- `context_management` — delegate container tasks
-
 ## Helper
 ```bash
 python3 skills/docker/docker_helper.py        # Status
@@ -58,3 +51,11 @@ python3 skills/docker/docker_helper.py up      # Start
 python3 skills/docker/docker_helper.py down    # Stop
 python3 skills/docker/docker_helper.py logs    # Tail logs
 ```
+
+## Related Skills
+- `background` — run containers in background
+- `bug_investigation` — debug container issues
+- `context_management` — delegate container tasks
+- `dependency_management` — venv setup and pip installs
+- `shell_scripting` — automate docker workflows
+- `swe_bench` — SWE-bench workflow

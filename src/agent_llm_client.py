@@ -104,7 +104,7 @@ class RetryBackoff:
 class SimpleChatCompletion:
     """Wrapper providing chat.completions.create() interface."""
 
-    def __init__(self, client: "SimpleOpenAIClient"):
+    def __init__(self, client: SimpleOpenAIClient):
         self._client = client
 
     def create(self, **kwargs) -> Any:
@@ -152,6 +152,11 @@ class SimpleOpenAIClient:
         timeout: int = 300,
         cache_tracker: PrefixCacheTracker | None = None,
     ):
+        if not base_url:
+            raise ValueError(
+                f"SimpleOpenAIClient requires a valid base_url, got: {base_url!r}. "
+                "Check LLM group configuration (api_base setting)."
+            )
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key or os.environ.get("API_KEY", "")
         self.timeout = timeout
@@ -228,7 +233,7 @@ class SimpleOpenAIClient:
                 pass
 
             exc_class = _HTTP_ERROR_MAP.get(e.code, APIError)
-            raise exc_class(f"{exc_class.__name__}: {error_body}") from e
+            raise exc_class(f"{exc_class.__name__}: {error_body}", status_code=e.code) from e
 
         except urllib.error.URLError as e:
             if self._is_timeout(e):
@@ -266,7 +271,13 @@ class SimpleOpenAIClient:
     def _report_cache_hit(
         self, response: Any, expected_hit: float, hit_reason: str, body_bytes: bytes
     ) -> None:
-        """Warn on cache hit anomalies (warnings are always emitted).
+        """Report cache-hit anomalies, deduplicating repeated conditions.
+
+        Each warning key (e.g. ``"gap:75%:0%"``, ``"low_act:0%"``) is emitted
+        once via ``PrefixCacheTracker.should_warn``; persistent conditions are
+        suppressed on subsequent calls so the log isn't flooded.  Distinct
+        conditions (e.g. a hit-rate shift from 0% to 50%) produce a new key and
+        are re-emitted.
 
         Passes *body_bytes* to ``diagnose_miss`` so it can compare the current
         request body against the previous one (``_prev_request_body``).
@@ -284,23 +295,36 @@ class SimpleOpenAIClient:
                 return
             actual_hit = cached_tokens / prompt_tokens
 
+            tracker = self._cache_tracker
+
             gap = expected_hit - actual_hit
             if gap >= 0.20:
-                warning(
-                    f":: cache: expected {expected_hit:.0%} -> actual {actual_hit:.0%} "
-                    f"(gap {gap:.0%}, prefix cache MISS)"
-                )
-                # Diagnose miss with divergence context
-                tracker = self._cache_tracker
-                if tracker is not None:
-                    diag = tracker.diagnose_miss(body_bytes)
-                    warning(f":: cache diag: {diag}")
+                gap_key = f"gap:{expected_hit:.0%}:{actual_hit:.0%}"
+                if tracker is None or tracker.should_warn(gap_key):
+                    warning(
+                        f":: cache: expected {expected_hit:.0%} -> actual {actual_hit:.0%} "
+                        f"(gap {gap:.0%}, prefix cache MISS)"
+                    )
+                    # Diagnose miss with divergence context
+                    if tracker is not None:
+                        diag = tracker.diagnose_miss(body_bytes)
+                        warning(f":: cache diag: {diag}")
             if "params changed" in hit_reason:
-                warning(f":: cache: invalidated — {hit_reason}")
+                if tracker is None or tracker.should_warn(hit_reason):
+                    warning(f":: cache: invalidated — {hit_reason}")
             if expected_hit < 0.25:
-                warning(f":: cache: low expected {expected_hit:.0%} ({hit_reason})")
+                exp_key = f"low_exp:{expected_hit:.0%}"
+                if tracker is None or tracker.should_warn(exp_key):
+                    warning(f":: cache: low expected {expected_hit:.0%} ({hit_reason})")
+                    if tracker is not None:
+                        div_lines = tracker.format_divergence_lines(body_bytes)
+                        if div_lines:
+                            for line in div_lines.split("\n"):
+                                warning(line)
             if actual_hit < 0.25:
-                warning(f":: cache: low actual {actual_hit:.0%} (cache underperforming)")
+                act_key = f"low_act:{actual_hit:.0%}"
+                if tracker is None or tracker.should_warn(act_key):
+                    warning(f":: cache: low actual {actual_hit:.0%} (cache underperforming)")
         except Exception:
             pass
 

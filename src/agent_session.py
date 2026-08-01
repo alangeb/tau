@@ -11,26 +11,21 @@ Responsibilities:
 - Token tracking (session-wide totals + per-turn snapshots + cache tracking)
 - Utility functions for oversized output and failed API requests
 
-Audit logging (AuditWriter, ErrorRateTracker, _classify_error) has been
-extracted to agent_audit_writer.py for modularity. This module re-exports
-them for backward compatibility.
+Audit logging has been extracted to agent_audit_writer.py for modularity.
+This module re-exports AuditWriter for backward compatibility.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime as dt
 from pathlib import Path
-from typing import Any
 
-# Re-export audit writer components for backward compatibility.
+# Re-export AuditWriter for backward compatibility.
 # Direct imports should prefer agent_audit_writer.
-from agent_audit_writer import (
-    AuditWriter,
-    ErrorRateTracker,
-    _classify_error,
-)
+from agent_audit_writer import AuditWriter
 
 from agent_console import log_dir_error
 from agent_audit_bridge import emit_console_warning, set_audit_writer
@@ -41,8 +36,6 @@ __all__ = [
     "SESSION_PREFIX",
     # Re-exported from agent_audit_writer (backward compatibility)
     "AuditWriter",
-    "ErrorRateTracker",
-    "_classify_error",
     # Defined here
     "AgentSessionManager",
     "write_oversized_output",
@@ -106,8 +99,22 @@ def write_oversized_output(output: str, prefix: str | None) -> str | None:
         return None
 
 
-def log_failed_api_request(request_body: dict, log_file: Path | None = None) -> None:
-    """Write failed LLM request body to a JSON file for debugging."""
+def log_failed_api_request(
+    request_body: dict,
+    log_file: Path | None = None,
+    error_type: str | None = None,
+    error_message: str | None = None,
+    status_code: int | None = None,
+) -> None:
+    """Write failed LLM request body to a JSON file for debugging.
+
+    Args:
+        request_body: The request kwargs that caused the failure.
+        log_file: Path to derive output directory/prefix from.
+        error_type: Exception class name (e.g., "BadRequestError", "TimeoutError").
+        error_message: Human-readable error string from the exception.
+        status_code: HTTP status code if available (e.g., 400, 401, 429, 500).
+    """
     try:
         if log_file is not None:
             out_dir = log_file.parent
@@ -126,11 +133,33 @@ def log_failed_api_request(request_body: dict, log_file: Path | None = None) -> 
             "timestamp": dt.now().isoformat(),
             "pid": os.getpid(),
             "ppid": os.getppid(),
+            "error": {
+                "type": error_type or "unknown",
+                "message": error_message or "",
+                "status_code": status_code,
+            },
             "request": request_body,
         }
         filepath.write_text(
             json.dumps(record, indent=2, default=str), encoding="utf-8"
         )
+
+        # Run cleanup to maintain retention policy on failed request files.
+        # Lazy import to avoid circular dependency.
+        try:
+            from agent_log_cleanup import cleanup_failed_requests
+            from agent_config import get_config
+            config = get_config()
+            if getattr(config, "log_cleanup", None) and config.log_cleanup.enabled:
+                cleanup_failed_requests(
+                    log_dir=out_dir,
+                    retention=config.log_cleanup.retention,
+                    compress_age_days=config.log_cleanup.compress_age_days,
+                )
+            else:
+                cleanup_failed_requests(log_dir=out_dir)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -138,12 +167,14 @@ def log_failed_api_request(request_body: dict, log_file: Path | None = None) -> 
 # ── AgentSessionManager ────────────────────────────────────────────
 
 
-class AgentSessionManager:
+class AgentSessionManager(TokenTracker):
     """Manages session lifecycle: file paths, audit writer, error detection,
     and token tracking.
 
-    Extracted from TauErgon to reduce the god class. Provides a focused
-    interface for session file management, audit logging, and token accounting.
+    Inherits from ``TokenTracker`` to provide token accounting directly
+    (session totals, per-turn snapshots, cache tracking) without composition
+    boilerplate. Provides a focused interface for session file management,
+    audit logging, and token accounting.
     """
 
     def __init__(
@@ -161,10 +192,11 @@ class AgentSessionManager:
             audit_file: Explicit audit file path (overrides env / prefix logic).
             context_file: Explicit context file path (overrides env / prefix logic).
         """
+        super().__init__()
         self._audit_file = audit_file
         self._context_file = context_file
         self._audit_writer: AuditWriter | None = None
-        self._tokens = TokenTracker()
+        self._prefix: str | None = None
 
         if setup_files:
             global SESSION_PREFIX
@@ -181,6 +213,7 @@ class AgentSessionManager:
             else:
                 prefix = SESSION_PREFIX
 
+            self._prefix = prefix
             self._audit_file = LOG_DIR / f"{prefix}.audit"
             self._context_file = LOG_DIR / f"{prefix}.context"
 
@@ -195,28 +228,6 @@ class AgentSessionManager:
             parent_audit = os.getenv("TAU_PARENT_AUDIT_FILE")
             if parent_audit:
                 self._audit_file = Path(parent_audit)
-
-    # TokenTracker attributes delegated via __getattr__/__setattr__ (whitelist-based).
-    _TOKEN_ATTRS = frozenset((
-        "input_tokens", "output_tokens", "cached_tokens",
-        "last_turn_input_tokens", "last_turn_output_tokens",
-        "last_turn_cached_tokens", "last_exact_context_tokens",
-        "cache_tracker",
-        "record_call_stats", "clear_tokens", "reset_last_turn",
-    ))
-
-    def __getattr__(self, name: str) -> Any:
-        """Delegate TokenTracker attributes to the internal tracker."""
-        if name in self._TOKEN_ATTRS:
-            return getattr(self._tokens, name)
-        raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        """Delegate TokenTracker attribute writes to the internal tracker."""
-        if name in self._TOKEN_ATTRS:
-            setattr(self._tokens, name, value)
-        else:
-            super().__setattr__(name, value)
 
     # ── File paths ──────────────────────────────────────────────────────────
     @property
@@ -241,11 +252,43 @@ class AgentSessionManager:
     def context_file(self, path: Path) -> None:
         self._context_file = path
 
+    # ── Session identity ──────────────────────────────────────────────────────
+    @property
+    def prefix(self) -> str | None:
+        """Session prefix (a.k.a. ``session_id``) used for log file naming.
+
+        Returns the prefix the session was initialised with, or ``None`` if
+        session files were not set up (e.g. in unit tests). Used to expose
+        ``session_id`` in the A2A agent card.
+        """
+        if self._prefix is not None:
+            return self._prefix
+        if self._context_file is not None:
+            return self._context_file.stem
+        return None
+
     # ── Audit writer ────────────────────────────────────────────────────────
 
     def _create_audit_writer(self) -> AuditWriter:
-        """Create, register, and return a new AuditWriter for the session."""
-        initial_nesting = int(os.getenv("TAU_FORK_NESTING", "0"))
+        """Create, register, and return a new AuditWriter for the session.
+        
+        Includes pre-flight disk writability check to catch audit failures early.
+        Uses graceful degradation — a transient disk glitch shouldn't kill the process.
+        """
+        # Pre-flight: verify the audit file's parent directory is writable
+        audit_dir = self.audit_file.parent
+        try:
+            # Test writability by creating and deleting a temp file
+            test_file = audit_dir / ".audit_writability_test"
+            test_file.write_text("test")
+            test_file.unlink()
+        except (PermissionError, OSError) as e:
+            # Graceful degradation: warn but continue. The actual write will fail
+            # (and retry) in _flush() if the disk is truly flaky.
+            sys.stderr.write(f"WARNING: Audit directory check failed: {audit_dir}\n{e}\n")
+            sys.stderr.flush()
+
+        initial_nesting = len(os.getenv("TAU_FORK_NESTING", ""))
         writer = AuditWriter(self.audit_file, initial_nesting=initial_nesting)
         set_audit_writer(writer)
         return writer

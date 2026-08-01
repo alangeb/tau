@@ -100,7 +100,8 @@ def mock_agent():
     agent.base_url = "http://test:8000/v1"
     agent.model_name = "test-model"
     agent.max_context_tokens = 200000
-    agent.nesting_count = 0
+    agent.nesting_stack = ""
+    agent.nesting_count = 0  # Derived from len(nesting_stack)
     agent.current_group_name = "default"
     agent.context = TauContext(
         [

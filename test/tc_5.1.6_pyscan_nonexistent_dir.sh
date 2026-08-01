@@ -28,7 +28,7 @@ start_time=$(date +%s.%N)
 # Run pyscan on nonexistent directory
 result=$(cd /tmp && PYTHONPATH=$HOME/tau/src /usr/bin/env python3 -c "
 from tools.pyscan import run
-print(run(agent=None, path='/tmp/nonexistent_directory_xyz'))
+print(run(path='/tmp/nonexistent_directory_xyz'))
 ")
 
 pass=1

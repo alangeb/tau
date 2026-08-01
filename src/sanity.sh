@@ -3,9 +3,36 @@
 # Tests: CLI, positional args, tool calling, fork functionality, continue command
 # Each test is a SINGLE invocation of tau.py
 
-# IMPORTANT: The prompts (questions) are deliberately crafted the way they are - they should NOT be modified by LLM
-
-# CRITICAL RULE: NEVER MODIFY TESTS, PROMPTS, etc. ...
+# ============================================================================
+# CRITICAL: sanity.sh IS THE GOLD STANDARD. IT MUST PASS 100%.
+# ============================================================================
+#
+# ABSOLUTE RULES:
+#   1. sanity.sh MUST pass 100% — zero failures, zero exceptions.
+#   2. "Pre-existing error" or "not caused by current edits" is NOT valid.
+#   3. If sanity.sh fails, STOP EVERYTHING and fix the root cause.
+#   4. Do NOT assume model failure — always investigate the code.
+#   5. NEVER modify tests, prompts, or expectations in sanity.sh.
+#   6. You cannot move forward until sanity.sh passes 100%.
+#
+# WHY THIS MATTERS:
+#   sanity.sh is the only gate between broken code and production. A single
+#   failure means something fundamental is broken. Patching around failures
+#   or blaming the model compounds technical debt. The correct response to
+#   ANY failure is: investigate, find root cause, fix the code, re-run.
+#
+# WHEN sanity.sh FAILS:
+#   1. Read the full log: cat $SANITY_LOG
+#   2. Check agent log: cat $SANITY_AGENT_LOG
+#   3. Reproduce the failing test manually
+#   4. Investigate the code path that caused the failure
+#   5. Fix the root cause — never change the test
+#   6. Re-run sanity.sh until it passes 100%
+#
+# ============================================================================
+# The prompts (questions) are deliberately crafted the way they are -
+# they should NOT be modified by LLM.
+# ============================================================================
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -22,9 +49,9 @@ FAILED=0
 DUTFILE="./tau-sanity.py"
 cp ./tau.py $DUTFILE
 pkill -f $DUTFILE
-DUT="$DUTFILE"
+DUT="$DUTFILE --llm cuda"
 
-# Optional: pass a positional parameter to add --llm <value> to all tau calls
+# Optional: pass a positional parameter to override the LLM group
 if [ $# -ge 1 ]; then
     DUT="$DUTFILE --llm $1"
 fi

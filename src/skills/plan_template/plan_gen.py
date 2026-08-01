@@ -2,7 +2,6 @@
 """Plan template helper - generate and manage plan files."""
 
 from datetime import datetime
-from typing import Optional
 
 
 def generate_plan(task: str, phases: list[dict] = None) -> str:

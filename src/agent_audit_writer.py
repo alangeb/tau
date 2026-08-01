@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from datetime import datetime as dt
@@ -135,8 +136,6 @@ class ErrorRateTracker:
         self._error_type_counts: dict[str, int] = {}
         # Per-category tracking for structured error analysis
         self._category_counts: dict[str, int] = {}
-        self._category_timestamps: dict[str, list[float]] = {}
-        self._recent_bursts: list[dict] = []
         self._last_alert_time: float = 0.0
         self._alert_cooldown: float = 60.0
         # Cooldown for burst detection: after a burst fires, wait this long
@@ -159,11 +158,10 @@ class ErrorRateTracker:
                 self._error_type_counts.get(error_type, 0) + 1
             )
 
-            # Track category counts and timestamps
+            # Track category counts
             self._category_counts[category] = (
                 self._category_counts.get(category, 0) + 1
             )
-            self._category_timestamps.setdefault(category, []).append(now)
 
             self._check_burst(now)
             return self._check_alert(now)
@@ -181,15 +179,6 @@ class ErrorRateTracker:
         recent = [t for t in self._error_timestamps if t >= window_start]
 
         if len(recent) >= self.burst_threshold:
-            summary = {
-                "timestamp": now,
-                "size": len(recent),
-                "window": self.burst_window,
-                "error_types": dict(self._error_type_counts),
-                "error_categories": dict(self._category_counts),
-                "tools_affected": list(self._tool_error_timestamps.keys()),
-            }
-            self._recent_bursts.append(summary)
             self._last_burst_time = now
 
     def _check_alert(self, now: float) -> bool:
@@ -220,54 +209,6 @@ class ErrorRateTracker:
             recent = [t for t in timestamps if t >= cutoff]
             return len(recent) / max(self.window_size / 60.0, 0.001)
 
-    def get_session_error_rate(self) -> float:
-        """Overall session error rate (errors/minute)."""
-        return self.get_error_rate()
-
-    def get_tool_error_rates(self) -> dict[str, float]:
-        """Error rates for all tracked tools."""
-        now = time.time()
-        cutoff = now - self.window_size
-        rates: dict[str, float] = {}
-
-        with self._lock:
-            for tool, timestamps in self._tool_error_timestamps.items():
-                recent = [t for t in timestamps if t >= cutoff]
-                rates[tool] = len(recent) / max(self.window_size / 60.0, 0.001)
-
-        return rates
-
-    def get_category_error_rates(self) -> dict[str, float]:
-        """Error rates per category over sliding window."""
-        now = time.time()
-        cutoff = now - self.window_size
-        rates: dict[str, float] = {}
-
-        with self._lock:
-            for cat, timestamps in self._category_timestamps.items():
-                recent = [t for t in timestamps if t >= cutoff]
-                rates[cat] = len(recent) / max(self.window_size / 60.0, 0.001)
-
-        return rates
-
-    def get_top_error_categories(self, n: int = 5) -> list[tuple[str, int]]:
-        """Return top-N error categories by count."""
-        with self._lock:
-            sorted_cats = sorted(self._category_counts.items(), key=lambda x: x[1], reverse=True)
-        return sorted_cats[:n]
-
-    def get_summary(self) -> dict:
-        """Comprehensive error summary for debugging/monitoring."""
-        with self._lock:
-            return {
-                "total_errors": len(self._error_timestamps),
-                "error_rate_per_min": self.get_session_error_rate(),
-                "error_type_distribution": dict(self._error_type_counts),
-                "error_category_distribution": dict(self._category_counts),
-                "tool_error_rates": self.get_tool_error_rates(),
-                "bursts_detected": len(self._recent_bursts),
-            }
-
     def should_alert(self) -> bool:
         """Check if current error rate exceeds alert threshold."""
         return self.get_error_rate() >= self.alert_threshold
@@ -281,14 +222,15 @@ class AuditWriter:
 
     Writes structured text records to an audit file with synchronous
     flush-at-turn-boundaries. No truncation — audit is never truncated.
+
+    Format: [TIMESTAMP] RECORD_TYPE nesting=N field1=value1 field2=value2
+            | continuation_line
     """
 
     def __init__(self, audit_file: Path, pid: int | None = None, initial_nesting: int = 0):
         self._file = audit_file
         self._pid = pid or os.getppid()
         self._buffer: list[str] = []
-        self._total_tool_calls = 0
-        self._session_start_time = dt.now()
 
         # Single source of truth for error rates — AuditWriter delegates here.
         self._error_tracker = ErrorRateTracker()
@@ -322,14 +264,24 @@ class AuditWriter:
             with open(self._file, "a", encoding="utf-8") as f:
                 f.write(data)
             self._buffer.clear()  # Only clear after successful write
-        except Exception:
-            # Don't clear buffer — data is preserved for next attempt
-            pass
+        except Exception as e:
+            # Graceful degradation: log to stderr, retain buffer for retry.
+            sys.stderr.write(
+                f"CRITICAL: Audit write failed: {e}\n"
+                f"File: {self._file}\n"
+                f"Buffer: {len(data)} bytes (retained for retry)\n"
+            )
+            sys.stderr.flush()
+            # Buffer is NOT cleared — next flush will retry the write.
 
     def _emit(self, record_type: str, fields: str, continuations: list[str] | None = None) -> None:
         ts = self._ts()
         nesting = f"nesting={self._nesting_level}"
-        header = f"[{ts}] {record_type} {fields} {nesting}\n" if fields else f"[{ts}] {record_type} {nesting}\n"
+        # Format: [TS] RECORD_TYPE nesting=N fields
+        if fields:
+            header = f"[{ts}] {record_type} {nesting} {fields}\n"
+        else:
+            header = f"[{ts}] {record_type} {nesting}\n"
         self._enqueue(header)
         if continuations:
             for line in continuations:
@@ -355,26 +307,23 @@ class AuditWriter:
         schema_json = json.dumps(tool_schema, default=str)
         self._enqueue_indented("tool_schema", schema_json)
 
-    def session_end(self, reason: str, context_msgs: int, total_tool_calls: int) -> None:
-        duration = (dt.now() - self._session_start_time).total_seconds()
-        fields = f"reason={reason!r} duration_s={duration:.1f} context_msgs={context_msgs} total_tool_calls={total_tool_calls}"
-        self._emit("SESSION_END", fields)
-        self.flush()
-
     # --- Message logging -----------------------------------------------------------
 
     def user(self, content: str | list) -> None:
+        """Log a user message (backward compatible — no truncation)."""
         if isinstance(content, list):
             image_count = sum(1 for p in content if p.get("type") == "image_url")
             text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
             audit_text = f"[{image_count} image(s), {len(text_parts)} text block(s)]"
             if text_parts:
-                audit_text += ": " + text_parts[0][:200]
+                # NO TRUNCATION — log full content
+                audit_text += ": " + text_parts[0]
             self._emit("USER", "", [audit_text])
         else:
             self._emit("USER", "", [content])
 
     def assistant(self, content: str, reasoning: str | None = None) -> None:
+        """Log an assistant response (backward compatible)."""
         parts = [f"content_len={len(content)}"]
         if reasoning:
             parts.append(f"reasoning_len={len(reasoning)}")
@@ -384,16 +333,6 @@ class AuditWriter:
             self._enqueue_indented("content", content)
         if reasoning:
             self._enqueue_indented("reasoning", reasoning)
-
-    def turn_end(
-        self,
-        tokens_in: int,
-        tokens_out: int,
-        cached: int,
-        context_msgs: int,
-    ) -> None:
-        fields = f"tokens_in={tokens_in} tokens_out={tokens_out} cached={cached} context_msgs={context_msgs}"
-        self._emit("TURN_END", fields)
 
     # --- Tool logging ---------------------------------------------------------------
 
@@ -406,7 +345,6 @@ class AuditWriter:
         final_args: dict,
         fixes: list[str],
     ) -> None:
-        self._total_tool_calls += 1
         orig_json = json.dumps(original_args, default=str)
         final_json = json.dumps(final_args, default=str)
         fixes_str = "; ".join(fixes) if fixes else "none"
@@ -478,12 +416,7 @@ class AuditWriter:
         tool_name: str,
         available_str: str,
     ) -> None:
-        """Log a blocked tool invocation (expected, not an error).
-
-        Unlike ``tool_error``, this does NOT record against ErrorRateTracker
-        or trigger burst detection.  Blocked tools are an expected outcome
-        of the filter, not a failure.
-        """
+        """Log a blocked tool invocation (expected, not an error)."""
         fields = (
             f"id={call_id} tool={tool_name!r} "
             f"available={available_str}"
@@ -493,21 +426,8 @@ class AuditWriter:
     # --- Error tracking (delegates to ErrorRateTracker) -----------------------------
 
     def should_alert(self) -> bool:
-        """Return True if the error rate exceeds the alert threshold.
-
-        Public facade for ``_error_tracker.should_alert()`` so callers
-        never need to peer into ``audit_writer._error_tracker``.
-        """
+        """Return True if the error rate exceeds the alert threshold."""
         return self._error_tracker.should_alert()
-
-    def get_error_summary(self) -> dict:
-        """Comprehensive error summary for debugging/monitoring."""
-        session_dur = (dt.now() - self._session_start_time).total_seconds()
-        base = self._error_tracker.get_summary()
-        return {
-            **base,
-            "session_duration_s": session_dur,
-        }
 
     # --- Subagent / fork logging ---------------------------------------------------
 
@@ -549,16 +469,7 @@ class AuditWriter:
         )
         self._emit("TOOL_TRUNCATED", fields)
 
-    def context_compress(
-        self,
-        before_tokens: int,
-        after_tokens: int,
-        ratio: float,
-    ) -> None:
-        fields = f"before_tokens={before_tokens} after_tokens={after_tokens} ratio={ratio:.2f}"
-        self._emit("CONTEXT_COMPRESS", fields)
-
-    # --- Compression logging ----------------------------------------------------------------
+    # --- Compression logging (backward compatible) ---------------------------------
 
     def compress_start(self, step_name: str, bytes_before: int, msgs_before: int) -> None:
         """Log the start of a compression pipeline step."""
@@ -575,7 +486,41 @@ class AuditWriter:
         fields = f"step={step_name!r} bytes_after={bytes_after} msgs_after={msgs_after} status={status!r}"
         self._emit("COMPRESS_STEP_END", fields)
 
-    # --- Console-to-audit bridging -------------------------------------------------
+    # --- Compression logging (pipeline) -------------------------------------------
+
+    def compress_pipeline_start(self, original_size: int, target_size: int, compression_factor: float, last_known_tokens: int | None) -> None:
+        """Log the start of the compression pipeline with metadata."""
+        fields = f"original_size={original_size} target_size={target_size} compression_factor={compression_factor} last_known_tokens={last_known_tokens}"
+        self._emit("COMPRESS_PIPELINE_START", fields)
+
+    def compress_pipeline_end(self, final_size: int, algorithms_used: list[str], bytes_saved: int) -> None:
+        """Log the end of the compression pipeline with final metrics."""
+        fields = f"final_size={final_size} algorithms_used={algorithms_used!r} bytes_saved={bytes_saved}"
+        self._emit("COMPRESS_PIPELINE_END", fields)
+
+    # --- Context logging ------------------------------------------------------------
+
+    def context_add(self, count: int, total: int, bytes_total: int) -> None:
+        """Log context messages added."""
+        fields = f"count={count} total={total} bytes_total={bytes_total}"
+        self._emit("CONTEXT_ADD", fields)
+
+    def context_remove(self, count: int, total: int, bytes_total: int) -> None:
+        """Log context messages removed."""
+        fields = f"count={count} total={total} bytes_total={bytes_total}"
+        self._emit("CONTEXT_REMOVE", fields)
+
+    def context_merge(self, source: str, target: str, count: int) -> None:
+        """Log context messages merged."""
+        fields = f"source={source!r} target={target!r} count={count}"
+        self._emit("CONTEXT_MERGE", fields)
+
+    def context_snapshot(self, total: int, bytes_total: int, max_tokens: int) -> None:
+        """Log a context snapshot."""
+        fields = f"total={total} bytes_total={bytes_total} max_tokens={max_tokens}"
+        self._emit("CONTEXT_SNAPSHOT", fields)
+
+    # --- Console-to-audit bridging (backward compatible) ---------------------------
 
     def console_error(self, message: str) -> None:
         """Log a console error message to audit."""
@@ -585,6 +530,14 @@ class AuditWriter:
         """Log a console warning message to audit."""
         self._emit("CONSOLE_WARNING", "", [message])
 
+    def console_info(self, message: str) -> None:
+        """Log a console info message to audit."""
+        self._emit("CONSOLE_INFO", "", [message])
+
+    def console_success(self, message: str) -> None:
+        """Log a console success message to audit."""
+        self._emit("CONSOLE_SUCCESS", "", [message])
+
     # --- Flush / close ------------------------------------------------------------
 
     def flush(self) -> None:
@@ -593,6 +546,3 @@ class AuditWriter:
     def close(self) -> None:
         self._flush()
 
-    @property
-    def total_tool_calls(self) -> int:
-        return self._total_tool_calls

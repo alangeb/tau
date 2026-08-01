@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolMetadata, ToolContext
 
 import subprocess
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .lib.session_utils import session_exists, validate_session, strip_ansi
+from .lib.session_utils import validate_session
 
 if TYPE_CHECKING:
     from agent_core import TauErgon
@@ -31,8 +31,10 @@ class Args:
 
 
 # ── Execution ──
-def run(session_name: str, text: str, agent: TauErgon, tool_call_id: str | None) -> str:
+def run(session_name: str, text: str, _ctx: ToolContext | None = None) -> str:
     """Send keystrokes to a tmux session without execution."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if err := validate_session(session_name):
         return err
     if not text:

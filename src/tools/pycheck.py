@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import ast
 import builtins
@@ -43,9 +43,26 @@ def _get_imports(tree: ast.AST) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                # Add the module name (e.g., "os" from "import os")
                 imports.add(alias.name.split(".")[0])
+                # Add the alias name if it's different (e.g., "pd" from "import pandas as pd")
+                if alias.asname:
+                    imports.add(alias.asname)
         elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module.split(".")[0])
+            # Skip __future__ imports — they're special and never "used" as names
+            if node.module == "__future__":
+                continue
+            # Add each imported name (e.g., "echo" from "from agent_console import echo")
+            # Do NOT add the module name — it's the source of the import, not a used name.
+            # Adding only the module name caused false "missing import" and "unused import"
+            # reports for every `from X import Y` statement.
+            for alias in node.names:
+                if alias.name == "*":
+                    continue  # Skip wildcard imports
+                if alias.asname:
+                    imports.add(alias.asname)
+                else:
+                    imports.add(alias.name)
     return imports
 
 
@@ -56,7 +73,20 @@ def _get_names(tree: ast.AST) -> set[str]:
 def _get_defined_names(tree: ast.AST) -> set[str]:
     defined: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+            # Collect all function arguments as defined names
+            for arg in node.args.args:
+                defined.add(arg.arg)
+            for arg in node.args.posonlyargs:
+                defined.add(arg.arg)
+            for arg in node.args.kwonlyargs:
+                defined.add(arg.arg)
+            if node.args.vararg:
+                defined.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                defined.add(node.args.kwarg.arg)
+        elif isinstance(node, ast.ClassDef):
             defined.add(node.name)
         elif isinstance(node, ast.Assign):
             for target in node.targets:
@@ -64,18 +94,12 @@ def _get_defined_names(tree: ast.AST) -> set[str]:
                     defined.add(target.id)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             defined.add(node.target.id)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for arg in node.args.args:
-                defined.add(arg.arg)
-            if node.args.vararg:
-                defined.add(node.args.vararg.arg)
-            if node.args.kwarg:
-                defined.add(node.args.kwarg.arg)
-            for default in node.args.defaults:
-                if isinstance(default, ast.Name):
-                    defined.add(default.id)
         elif isinstance(node, ast.Lambda):
             for arg in node.args.args:
+                defined.add(arg.arg)
+            for arg in node.args.posonlyargs:
+                defined.add(arg.arg)
+            for arg in node.args.kwonlyargs:
                 defined.add(arg.arg)
         elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
             for gen in node.generators:
@@ -109,6 +133,9 @@ def _get_defined_names(tree: ast.AST) -> set[str]:
 
 _BUILTIN_NAMES = set(dir(builtins)) | {"__name__", "__doc__", "__file__", "__annotations__", "self", "cls"}
 
+# Modules whose imports affect parser behavior or are type-only — can't be detected as "used" by AST
+_IGNORE_UNUSED = {"__future__", "typing"}
+
 
 def check_file(filepath: Path) -> dict:
     result: dict = {"file": str(filepath), "missing_imports": [], "unused_imports": [], "errors": []}
@@ -132,7 +159,7 @@ def check_file(filepath: Path) -> dict:
 
     if imports:
         used_names = names - defined
-        unused = imports - (imports & used_names)
+        unused = (imports - _IGNORE_UNUSED) - (imports & used_names)
         if unused:
             result["unused_imports"] = sorted(unused)
 
@@ -192,13 +219,12 @@ def _format_markdown(results: dict) -> str:
 # ── Execution ────────────────────────────────────────────────────
 
 def run(
-    path: str,
-    check_missing: bool = True,
-    check_unused: bool = True,
+    path: str, check_missing: bool = True, check_unused: bool = True,
     output_format: str = "markdown",
-    agent: TauErgon = None,
-    tool_call_id: str | None = None,
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     target_path = Path(path)
     if not target_path.exists():
         return f"ERROR: Path not found: {path}"

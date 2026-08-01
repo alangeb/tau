@@ -5,6 +5,7 @@ Monitors a tmux session's output and returns when:
 - Output has been idle (idle_seconds)
 - Keywords found in output
 - Session died
+- Process exited (bash prompt detected after running command)
 """
 
 from __future__ import annotations
@@ -14,8 +15,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from tools import ToolMetadata
-from .lib.session_utils import session_exists, validate_session, capture_pane
+from tools import ToolMetadata, ToolContext
+from .lib.session_utils import session_exists, validate_session, capture_pane, detect_prompt_return
 
 if TYPE_CHECKING:
     from agent_core import TauErgon
@@ -41,7 +42,6 @@ metadata = ToolMetadata(
     ),
     timeout=3600,
 )
-
 
 # ── Args schema ──
 @dataclass
@@ -91,16 +91,13 @@ def _format_result(current_output: str, tail_lines: int) -> str:
 
 # ── Execution ──
 def run(
-    session_name: str,
-    agent: "TauErgon",
-    tool_call_id: str | None = None,
-    max_seconds: int = 60,
-    idle_seconds: int = 30,
-    keywords: str = "",
-    tail_lines: int = 30,
-    poll_interval: int = 1,
+    session_name: str, max_seconds: int = 60, idle_seconds: int = 30,
+    keywords: str = "", tail_lines: int = 30, poll_interval: int = 1,
+    _ctx: ToolContext | None = None,
 ) -> str:
     """Wait for background session with idle/keyword detection."""
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     if err := validate_session(session_name):
         return err
     if max_seconds < 1:
@@ -150,6 +147,13 @@ def run(
         if keyword_pattern and keyword_pattern.search(current_output):
             return (
                 f"KEYWORD MATCH: '{keywords}' found after {elapsed:.0f}s\n"
+                f"Output:\n{_format_result(current_output, tail_lines)}"
+            )
+
+        # Check for prompt return (process exited)
+        if last_output and detect_prompt_return(current_output, last_output):
+            return (
+                f"PROCESS EXITED: Bash prompt detected after {elapsed:.0f}s\n"
                 f"Output:\n{_format_result(current_output, tail_lines)}"
             )
 

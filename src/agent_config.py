@@ -19,6 +19,7 @@ __all__ = [
     "DelegateConfig",
     "ExternalServicesConfig",
     "PathSecurityConfig",
+    "WikiConfig",
     "LLMGroup",
     "Config",
     "get_config",
@@ -104,6 +105,26 @@ class PathSecurityConfig:
 
 
 @dataclass(frozen=True)
+class WikiConfig:
+    """Wiki storage location configuration."""
+    path: str = field(default_factory=lambda: os.path.expanduser("~/.local/tau/wiki"))
+
+
+@dataclass(frozen=True)
+class LogCleanupConfig:
+    """Log file cleanup and retention configuration.
+
+    Controls how failed_request.json files are managed:
+    - ``retention``: Number of recent files to keep per session prefix
+    - ``compress_age_days``: Compress files older than this many days
+    - ``enabled``: Whether automatic cleanup runs after each failed request
+    """
+    retention: int = 5
+    compress_age_days: int = 7
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class LLMGroup:
     """Named LLM configuration with model, API, and generation parameters."""
     name: str
@@ -150,6 +171,8 @@ class Config:
     reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
     external_services: ExternalServicesConfig = field(default_factory=ExternalServicesConfig)
     path_security: PathSecurityConfig = field(default_factory=PathSecurityConfig)
+    wiki: WikiConfig = field(default_factory=WikiConfig)
+    log_cleanup: LogCleanupConfig = field(default_factory=LogCleanupConfig)
 
     # LLM inference parameters (forwarded directly to API, passthrough)
     inference_params: dict[str, Any] | None = None
@@ -179,6 +202,7 @@ class Config:
         ("TAU_TOOL_POLL_INTERVAL", "tool_execution", "poll_interval", float),
         ("TAU_TOOL_DEFAULT_TIMEOUT", "tool_execution", "default_timeout", int),
         ("TAU_TOOL_LONG_RUNNING_TIMEOUT", "tool_execution", "long_running_timeout", int),
+        ("TAU_WIKI_DIR", "wiki", "path", str),
     )
 
     # Mapping of config keys to their nested dataclass types
@@ -191,6 +215,8 @@ class Config:
         "external_services": ExternalServicesConfig,
         "path_security": PathSecurityConfig,
         "reflection": ReflectionConfig,
+        "wiki": WikiConfig,
+        "log_cleanup": LogCleanupConfig,
     }
 
     @classmethod
@@ -260,18 +286,23 @@ class Config:
         return cls(**merged)
 
 
+# Module-level config cache — explicit, type-safe, and easy to reason about.
+_config_cache: Config | None = None
+
+
 def get_config() -> Config:
     """Load and return the global configuration.
 
     Cached after first call — subsequent calls return the same Config instance.
     Call ``reset_config_cache()`` to force a reload.
     """
-    if not hasattr(get_config, "_cache"):
-        get_config._cache = Config.load()  # type: ignore[attr-defined]
-    return get_config._cache  # type: ignore[attr-defined]
+    global _config_cache
+    if _config_cache is None:
+        _config_cache = Config.load()
+    return _config_cache
 
 
 def reset_config_cache() -> None:
     """Force ``get_config()`` to reload from disk on next call."""
-    if hasattr(get_config, "_cache"):
-        delattr(get_config, "_cache")
+    global _config_cache
+    _config_cache = None

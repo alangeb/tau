@@ -1,6 +1,6 @@
 ---
 name: caveman
-description: Make output concise — drop articles, remove filler, speak caveman style. Concise, brief, short, compress, terse (also load: command_template, skill_template, tauskillmaintenance)
+description: "Concise output style — drop articles, remove filler, fragments OK, maximize info density (also load: command_template, skill_template, tauskillmaintenance, code-simplifier, documentation)"
 category: communication
 keywords: concise, brief, short, compress, terse, drop articles, remove filler
 ---
@@ -32,5 +32,6 @@ python3 skills/caveman/compress.py <input> [output]  # Compress text
 ## Related Skills
 - `command_template` — writing concise commands
 - `skill_template` — writing concise skills
-- `code-simplifier` — simplifying code style
 - `tauskillmaintenance` — audit skill content for conciseness
+- `code-simplifier` — simplifying code style
+- `documentation` — write concise docs

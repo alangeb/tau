@@ -1,6 +1,6 @@
 ---
 name: skill_template
-description: Create new skill or modify existing skills. Create skill, skill format, skill definition (also load: tool_template, command_template, tau_audit, tauskillmaintenance, _taudoc, caveman, readme_template, documentation, reference)
+description: "Create and modify skills — format, structure, helper. Skill definition, skill file, SKILL.md, skill creation, skill format (also load: tool_template, command_template, caveman, _taudoc, readme_template, documentation)"
 category: development
 keywords: create skill, skill format, skill definition, new skill, skill template, write skill
 ---
@@ -14,9 +14,9 @@ keywords: create skill, skill format, skill definition, new skill, skill templat
 ```yaml
 ---
 name: skill_name
-description: One-liner for search
+description: "Brief description (also load: related_skill1, related_skill2)"
 category: category_name
-keywords: create skill, skill format, skill definition, new skill, skill template, write skill
+keywords: keyword1, keyword2, keyword3
 ---
 ```
 Missing header = skill fails to load.
@@ -27,42 +27,36 @@ Missing header = skill fails to load.
 - No leading underscore in filenames
 
 ## Rules
-- Project-specific knowledge only — not general Python/CLI basics
+- Project-specific knowledge only — no general Python/CLI basics
 - One topic per skill
 - Concise — skip what the model already knows
 - Include code examples
+- Write in caveman style (load `caveman` skill)
 
 ## Autonomy
-
-**Tau is AUTHORIZED to create skills on its own.** Do NOT wait for user permission. When Tau identifies a repeated pattern, missing capability, or knowledge gap, create the skill immediately. This is a core self-improvement behavior.
+**Tau is AUTHORIZED to create skills autonomously.** Repeated pattern, missing capability, or knowledge gap → create skill immediately. Core self-improvement behavior.
 
 ## Privacy
-
-**NO personal information in skills, source code, or any project file.** Never include:
+**NO personal info in skills, source code, or any project file.** Never include:
 - Real timestamps (use `YYYY-MM` or relative dates)
 - User names, email addresses, personal paths
 - Anything identifying outside the project
 
-Use `$HOME` instead of `/home/alangeb`. The only acceptable personal reference is `alangeb` in the context of `$HOME` paths, and even that should be avoided where possible.
+Use `$HOME` instead of `/home/alangeb`.
 
 ## Discovery
-- Auto-discovered on startup. List via `skill`. Search via `skill <keywords>`. Load via `skill {"skill_name": "name"}`.
+- Auto-discovered on startup. List via `skill`. Search via `skill <keywords>`. Load via `skill <name>`.
 - Full content injected into context as tool result message when loaded.
 
 ## Helper
-
 ```bash
-python3 skills/skill_template/skill_gen.py  # skill_template helper
+python3 skills/skill_template/skill_gen.py <name> <description> <category>  # Generate skill template
 ```
-## Related Skills
-- `tool_template` — creating agent tools (sibling concept)
-- `command_template` — creating commands (sibling concept)
-- `tauskillmaintenance` — audit and maintain skills
-- `caveman` — concise writing style
-- `_taudoc` — documentation structure
-- `tau_audit` — analyze agent behavior
-- `dream` — self-improvement orchestrator
-- `task_creation` — creating tasks for dream execution
 
-- `reference` — Tau quick reference
+## Related Skills
+- `_taudoc` — documentation structure
+- `caveman` — concise writing style
+- `command_template` — creating commands (sibling concept)
 - `readme_template` — README structure
+- `tool_template` — creating agent tools (sibling concept)
+- `documentation` — docstring and changelog patterns

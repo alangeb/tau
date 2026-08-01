@@ -1,5 +1,7 @@
 """Health command — model server health monitoring dashboard."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -67,7 +69,7 @@ def _display_status_dashboard(status: HealthStatus) -> None:
     blank_line()
 
 
-def run(agent: "TauErgon", args: list[str]) -> None:
+def run(agent: TauErgon, args: list[str]) -> None:
     """Execute the health command."""
     subcommand = args[0] if args else "status"
 

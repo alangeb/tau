@@ -1,6 +1,6 @@
 ---
 name: swe_bench
-description: SWE-bench workflow — fix agent, eval pipeline, analysis, artifacts. SWE-bench, SWE-lite, SWE-live, fix agent, eval, patch, benchmark (also load: docker, background, bug_investigation, tau_audit, git)
+description: SWE-bench workflow — fix agent, eval pipeline, analysis, artifacts (also load: docker, background, bug_investigation, tau_audit, git)
 category: benchmark
 keywords: SWE-bench, SWE-lite, SWE-live, fix agent, eval, patch, benchmark, test case, pipeline
 ---

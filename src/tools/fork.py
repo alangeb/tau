@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from agent_subagent import NESTING_DEPTH_THRESHOLD, invoke_fork_sync
-
-if TYPE_CHECKING:
-    from agent_core import TauErgon
 
 
 # ── Tool metadata ────────────────────────────────────────────────────────────
@@ -21,7 +17,8 @@ metadata = ToolMetadata(
         "SYNCHRONOUS — this call BLOCKS until the fork completes and returns its result (fork does not run in background). "
         "For TRUE background/async work, use background_* tools to start a separate tau.py process. "
         "Use when: task needs your complete knowledge, outcome matters more than process. "
-        "Avoid when: isolation needed (use subagent instead), very large context. "
+        "Avoid when: isolation needed (use `subagent` tool instead), very large context. "
+        "IMPORTANT: `subagent` is a DIFFERENT tool from this fork tool. `subagent` creates an isolated subagent with no conversation history. "
         "A fork is synchronous — it helps preserve context capacity."
     ),
     timeout=86400,
@@ -45,8 +42,11 @@ class Args:
 
 # ── Execution ────────────────────────────────────────────────────────────────
 
-def run(task: str, agent: "TauErgon", tool_call_id: str | None) -> str:
+def run(task: str, _ctx: ToolContext | None = None) -> str:
     global _last_call
+
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
 
     if agent is None:
         return "ERROR: fork tool must be invoked via TauErgon (agent parameter is None)"
@@ -73,7 +73,8 @@ def run(task: str, agent: "TauErgon", tool_call_id: str | None) -> str:
         prompt=task,
         parent_context=agent.context,
         parent_agent=agent,
-        nesting_count=nesting_count,
+        nesting_stack=agent.nesting_stack,
+        nesting_type="F",
         tool_call_id=tool_call_id,
         tool_filter=None,  # Children always get unrestricted tool access.
     )

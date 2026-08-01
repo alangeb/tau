@@ -24,7 +24,9 @@ from agent_command_registry import (
 from agent_console import (
     command_file_not_found,
     dynamic_command_result,
+    echo,
     error,
+    show_command_help,
     warning,
 )
 from agent_models import InputMessage
@@ -182,8 +184,6 @@ class CommandManager:
     @staticmethod
     def _show_help(cmd_name: str, cmd_full: str, agent: TauErgon) -> None:
         """Show help for a command (builtin or external)."""
-        from agent_console import echo, show_command_help
-
         # Check builtin commands first
         info = get_command_info(cmd_name)
         if info is not None:

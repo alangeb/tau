@@ -2,8 +2,6 @@
 """Security audit helper - quick security scanning utilities."""
 
 import subprocess
-import re
-from typing import Optional
 
 
 def scan_secrets(path: str = ".") -> list[dict]:

@@ -9,53 +9,96 @@ Usage: python3 analyze_audit.py <audit_file> [--json] [--top N]
 """
 
 import sys
-import re
 import json
-import time
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
 
-def parse_timestamp(line):
-    """Extract timestamp from audit line like [2026-06-28T15:08:01+00:00]"""
-    m = re.match(r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)', line)
-    if m:
-        try:
-            return datetime.fromisoformat(m.group(1))
-        except:
-            return None
-    return None
+from _audit_parse import (
+    get_continuation_text,
+    is_continuation,
+    parse_line,
+    strip_quotes,
+)
 
-def parse_session_start(line):
-    """Extract metadata from SESSION_START line."""
-    info = {}
-    m = re.search(r'pid=(\d+)', line)
-    if m: info['pid'] = int(m.group(1))
-    m = re.search(r"model='([^']+)'", line)
-    if m: info['model'] = m.group(1)
-    m = re.search(r'tools=(\d+)', line)
-    if m: info['tools_count'] = int(m.group(1))
-    m = re.search(r"cwd='([^']+)'", line)
-    if m: info['cwd'] = m.group(1)
-    # Extract tool names from tool_schema JSON
-    schema_m = re.search(r'tool_schema:\s*(\[.*\])', line)
-    if schema_m:
-        try:
-            schema = json.loads(schema_m.group(1))
-            info['tools'] = [t['function']['name'] for t in schema if 'function' in t]
-        except:
-            info['tools'] = []
-    return info
 
-def extract_tool_schema(line):
-    """Extract tool names from SESSION_START line."""
-    schema_m = re.search(r'tool_schema:\s*(\[.*\])', line)
-    if schema_m:
-        try:
-            schema = json.loads(schema_m.group(1))
-            return [t['function']['name'] for t in schema if 'function' in t]
-        except:
-            pass
-    return []
+def _analyze_assistant_content(
+    content_text, turn_number, ts_str, current_timestamp,
+    errors, error_types, error_locations, skill_calls,
+    content_quality, uncertainty_words, confidence_words,
+    self_correction_words, recent_fingerprints, loop_candidates
+):
+    """Analyze assistant content for patterns."""
+    # Check for errors
+    if re.search(r'Error:|Exception:|Traceback|FAILED|failed to|timed out|timeout|retry', content_text):
+        if not content_text.strip().startswith('**') and not content_text.strip().startswith('##'):
+            errors.append({
+                'turn': turn_number,
+                'timestamp': ts_str if current_timestamp else None,
+                'content': content_text[:200]
+            })
+            if 'timeout' in content_text.lower() or 'timed out' in content_text.lower():
+                error_types['timeout'] += 1
+            elif 'exception' in content_text.lower() or 'traceback' in content_text.lower():
+                error_types['exception'] += 1
+            elif 'failed' in content_text.lower() or 'failed to' in content_text.lower():
+                error_types['failed'] += 1
+            elif 'retry' in content_text.lower():
+                error_types['retry'] += 1
+            else:
+                error_types['other_error'] += 1
+            error_locations.append((turn_number, content_text[:100]))
+
+    # Check for skill/fork/subagent calls
+    for s in re.findall(r"skill\(['\"]([^'\"]+)['\"]\)", content_text):
+        skill_calls[s] += 1
+
+    # Content quality analysis
+    content_lower = content_text.lower()
+    for uw in uncertainty_words:
+        if uw in content_lower:
+            content_quality['uncertainty_count'] += 1
+            break
+    for cw in confidence_words:
+        if cw in content_lower:
+            content_quality['confidence_count'] += 1
+            break
+    for sc in self_correction_words:
+        if sc in content_lower:
+            content_quality['self_correction_count'] += 1
+            break
+
+    # Track long/short responses
+    if len(content_text) > 1000:
+        content_quality['long_responses'].append({'turn': turn_number, 'length': len(content_text)})
+    if 0 < len(content_text) < 30:
+        content_quality['short_responses'].append({'turn': turn_number, 'length': len(content_text)})
+
+    # Loop detection
+    content_stripped = content_text.strip()
+    if len(content_text) > 100:
+        content_normalized = re.sub(r'\s+', ' ', content_stripped.lower())[:200]
+        content_fingerprint = hash(content_normalized)
+        recent_fingerprints.append((turn_number, content_fingerprint, content_normalized[:80]))
+        for prev_turn, prev_fp, _prev_norm in recent_fingerprints[-15:]:
+            if prev_fp == content_fingerprint and abs(turn_number - prev_turn) >= 3:
+                loop_candidates.append({
+                    'turns': [prev_turn, turn_number],
+                    'content_preview': content_text[:100],
+                    'severity': 'high' if turn_number - prev_turn < 10 else 'medium'
+                })
+        if len(recent_fingerprints) > 30:
+            recent_fingerprints.pop(0)
+
+
+def _extract_tool_names_from_schema(schema_str):
+    """Extract tool names from tool_schema JSON string."""
+    try:
+        schema = json.loads(schema_str)
+        return [t['function']['name'] for t in schema if 'function' in t]
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return []
+
 
 def analyze_audit(filepath, output_json=False):
     """Main analysis function."""
@@ -85,12 +128,7 @@ def analyze_audit(filepath, output_json=False):
     # Phase 5: Skills
     skill_calls = Counter()
     
-    # Phase 6: Fork/Subagent
-    fork_calls = 0
-    subagent_calls = 0
-    fork_tasks = []
-    
-    # Phase 7: Time analysis
+    # Phase 6: Time analysis
     turn_timestamps = []  # (timestamp, role)
     entry_timestamps = []  # (timestamp, entry_type)
     
@@ -130,18 +168,17 @@ def analyze_audit(filepath, output_json=False):
     current_content = []
     current_timestamp = None
     turn_number = 0
-    in_tool_call = False
-    in_tool_result = False
     current_tool_name = None
     current_tool_status = None
     current_tool_duration = None
+    last_record_type = None
     
     for line_idx, line in enumerate(lines):
         line = line.rstrip('\n')
         
-        # Check for entry start
-        entry_m = re.match(r'^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]\s+(\w+)', line)
-        if entry_m:
+        # Try to parse as a structured record
+        record = parse_line(line)
+        if record:
             # Flush previous content
             if current_role and current_content:
                 content_text = '\n'.join(current_content)
@@ -150,12 +187,13 @@ def analyze_audit(filepath, output_json=False):
                 elif current_role == 'ASSISTANT':
                     assistant_contents.append(content_text)
             
-            ts_str = entry_m.group(1)
-            entry_type = entry_m.group(2)
+            ts_str = record.timestamp
+            entry_type = record.record_type
+            last_record_type = entry_type
             
             try:
                 ts = datetime.fromisoformat(ts_str)
-            except:
+            except Exception:
                 ts = None
             
             entry_timestamps.append((ts, entry_type))
@@ -163,8 +201,13 @@ def analyze_audit(filepath, output_json=False):
             
             # Handle different entry types
             if entry_type == 'SESSION_START':
-                session_meta = parse_session_start(line)
-                tool_names = extract_tool_schema(line)
+                session_meta = {
+                    'pid': record.fields.get('pid', ''),
+                    'model': strip_quotes(record.fields.get('model', '')),
+                    'tools_count': record.fields.get('tools', ''),
+                    'cwd': strip_quotes(record.fields.get('cwd', '')),
+                }
+                tool_names = []  # Will be populated from continuations
                 current_role = None
                 current_content = []
                 continue
@@ -186,36 +229,26 @@ def analyze_audit(filepath, output_json=False):
                 continue
             
             elif entry_type == 'TOOL_CALL':
-                # Parse structured tool call
-                in_tool_call = True
-                name_m = re.search(r"original_name='([^']+)'", line)
-                if not name_m:
-                    name_m = re.search(r"final_name='([^']+)'", line)
-                if name_m:
-                    current_tool_name = name_m.group(1)
+                raw_name = record.fields.get('original_name', '') or record.fields.get('final_name', '')
+                current_tool_name = strip_quotes(raw_name) if raw_name else ''
+                if current_tool_name:
                     tool_calls[current_tool_name] += 1
-                
-                fixes_m = re.search(r"fixes=(\w+)", line)
                 current_tool_status = 'success'
-                if fixes_m and fixes_m.group(1) != 'none':
-                    current_tool_status = 'fixed'
-                
                 current_content = []
                 continue
             
             elif entry_type == 'TOOL_RESULT':
-                # Parse structured tool result
-                in_tool_result = True
-                status_m = re.search(r'status=(\w+)', line)
-                if status_m:
-                    current_tool_status = status_m.group(1)
+                current_tool_status = record.fields.get('status', '')
+                if current_tool_status:
                     tool_results[current_tool_status] += 1
                 
-                dur_m = re.search(r'duration_ms=(\d+)', line)
-                if dur_m:
-                    current_tool_duration = int(dur_m.group(1))
-                    if current_tool_name:
-                        tool_durations[current_tool_name].append(current_tool_duration)
+                current_tool_duration = None
+                dur_str = record.fields.get('duration_ms')
+                if dur_str:
+                    try:
+                        current_tool_duration = int(dur_str)
+                    except ValueError:
+                        pass
                 
                 if current_tool_name and current_tool_status:
                     tool_call_details.append({
@@ -224,13 +257,10 @@ def analyze_audit(filepath, output_json=False):
                         'duration_ms': current_tool_duration,
                     })
                 
-                # Track tool errors
                 if current_tool_status == 'error':
                     tool_errors[current_tool_name] += 1
                 
                 current_content = []
-                in_tool_call = False
-                in_tool_result = False
                 current_tool_name = None
                 current_tool_status = None
                 current_tool_duration = None
@@ -246,124 +276,30 @@ def analyze_audit(filepath, output_json=False):
                 continue
             
             else:
-                # Unknown entry type
                 current_role = None
                 current_content = []
                 continue
         
-        # Accumulate content for USER/ASSISTANT entries
-        if line.startswith('  | ') and current_role in ('USER', 'ASSISTANT'):
-            content_text = line[4:]  # Remove '  | ' prefix
-            current_content.append(content_text)
+        # Handle continuation lines
+        if is_continuation(line):
+            content_text = get_continuation_text(line)
             
-            # Analyze content for patterns
-            if current_role == 'ASSISTANT' and turn_number > 0:
-                # Check for errors (avoid false positives like "No errors found")
-                if re.search(r'Error:|Exception:|Traceback|FAILED|failed to|timed out|timeout|retry', content_text):
-                    # Avoid false positives from tool result output
-                    if not content_text.strip().startswith('**') and not content_text.strip().startswith('##'):
-                        errors.append({
-                            'turn': turn_number,
-                            'timestamp': ts_str if current_timestamp else None,
-                            'content': content_text[:200]
-                        })
-                        # Classify error type
-                        if 'timeout' in content_text.lower() or 'timed out' in content_text.lower():
-                            error_types['timeout'] += 1
-                        elif 'exception' in content_text.lower() or 'traceback' in content_text.lower():
-                            error_types['exception'] += 1
-                        elif 'failed' in content_text.lower() or 'failed to' in content_text.lower():
-                            error_types['failed'] += 1
-                        elif 'retry' in content_text.lower():
-                            error_types['retry'] += 1
-                        else:
-                            error_types['other_error'] += 1
-                        error_locations.append((turn_number, content_text[:100]))
-                
-                # Check for skill/fork/subagent calls
-                skill_m = re.findall(r"skill\(['\"]([^'\"]+)['\"]\)", content_text)
-                for s in skill_m:
-                    skill_calls[s] += 1
-                
-                fork_m = re.findall(r'fork\(\s*task\s*=\s*["\']([^"\']+)["\']', content_text)
-                for f in fork_m:
-                    fork_calls += 1
-                    if len(f) < 200:
-                        fork_tasks.append(f)
-                
-                subagent_m = re.findall(r'subagent\(\s*task\s*=\s*["\']([^"\']+)["\']', content_text)
-                for s in subagent_m:
-                    subagent_calls += 1
-                
-                # Content quality analysis
-                content_lower = content_text.lower()
-                for uw in uncertainty_words:
-                    if uw in content_lower:
-                        content_quality['uncertainty_count'] += 1
-                        break
-                
-                for cw in confidence_words:
-                    if cw in content_lower:
-                        content_quality['confidence_count'] += 1
-                        break
-                
-                for sc in self_correction_words:
-                    if sc in content_lower:
-                        content_quality['self_correction_count'] += 1
-                        break
-                
-                # Track long/short responses
-                if len(content_text) > 1000:
-                    content_quality['long_responses'].append({
-                        'turn': turn_number,
-                        'length': len(content_text)
-                    })
-                if len(content_text) < 30 and len(content_text) > 0:
-                    content_quality['short_responses'].append({
-                        'turn': turn_number,
-                        'length': len(content_text)
-                    })
-                
-                # Loop detection (improved with content filtering and similarity)
-                # Skip boilerplate responses that cause false positives
-                content_stripped = content_text.strip()
-                boilerplate_patterns = [
-                    r'Hi! I\'m', r"Hi! I'm", r'Done\. All three tools', r'All three tools have been',
-                    r'Ready for your next', r'How can I help', r'Hello', r'Greetings',
-                    r'Thank you', r'You\'re welcome', r'No problem', r'Here\'s', r"Here's",
-                    r'Let me know', r'Feel free', r'Please let me know',
-                    r'That\'s all', r'That is all', r'Hope this helps',
-                    r'Is there anything', r'Anything else',
-                ]
-                is_boilerplate = any(re.search(p, content_stripped, re.IGNORECASE) for p in boilerplate_patterns)
-                
-                # Only detect loops in substantive content
-                if len(content_text) > 100 and not is_boilerplate:
-                    # Use content fingerprint (normalized) for better detection
-                    content_normalized = re.sub(r'\s+', ' ', content_stripped.lower())[:200]
-                    content_fingerprint = hash(content_normalized)
-                    
-                    # Track recent fingerprints
-                    recent_fingerprints.append((turn_number, content_fingerprint, content_normalized[:80]))
-                    
-                    # Check for similar fingerprints in recent turns
-                    for prev_turn, prev_fp, prev_norm in recent_fingerprints[-15:]:
-                        if prev_fp == content_fingerprint and abs(turn_number - prev_turn) >= 3:
-                            # Same content but not consecutive - likely a loop
-                            loop_candidates.append({
-                                'turns': [prev_turn, turn_number],
-                                'content_preview': content_text[:100],
-                                'severity': 'high' if turn_number - prev_turn < 10 else 'medium'
-                            })
-                    
-                    # Keep window manageable
-                    if len(recent_fingerprints) > 30:
-                        recent_fingerprints.pop(0)
-        
-        # Accumulate content for CONSOLE_WARNING
-        if line.startswith('  | ') and entry_type == 'CONSOLE_WARNING' and console_warnings:
-            content_text = line[4:]
-            if console_warnings:
+# Extract tool_schema from continuations
+            if last_record_type == 'SESSION_START' and content_text.startswith('tool_schema:'):
+                schema_str = content_text[len('tool_schema:'):].strip()
+                tool_names = _extract_tool_names_from_schema(schema_str)
+            elif last_record_type == 'SESSION_START' and content_text.startswith('system_prompt:'):
+                pass  # System prompt is in continuations
+            elif current_role in ('USER', 'ASSISTANT'):
+                current_content.append(content_text)
+                if current_role == 'ASSISTANT' and turn_number > 0:
+                    _analyze_assistant_content(
+                        content_text, turn_number, ts_str, current_timestamp,
+                        errors, error_types, error_locations, skill_calls,
+                        content_quality, uncertainty_words, confidence_words,
+                        self_correction_words, recent_fingerprints, loop_candidates
+                    )
+            elif last_record_type == 'CONSOLE_WARNING' and console_warnings:
                 console_warnings[-1]['content'] += content_text
     
     # Final flush
@@ -385,7 +321,7 @@ def analyze_audit(filepath, output_json=False):
     # (LLM_CALL entries from previous sessions can appear before SESSION_START)
     # Also handle negative durations by using min/max timestamps from all entries
     session_duration = None
-    session_start_timestamps = [ts for ts, etype in entry_timestamps if etype == 'SESSION_START' and ts]
+    [ts for ts, etype in entry_timestamps if etype == 'SESSION_START' and ts]
     all_timestamps = [ts for ts, _ in entry_timestamps if ts]
     if all_timestamps:
         first_ts = min(all_timestamps)
@@ -478,9 +414,9 @@ def analyze_audit(filepath, output_json=False):
         },
         'skills': dict(skill_calls.most_common(10)),
         'forking': {
-            'fork_calls': fork_calls,
-            'subagent_calls': subagent_calls,
-            'sample_tasks': fork_tasks[:10],
+            'fork_calls': fork_start_count,
+            'subagent_calls': subagent_start_count,
+            'sample_tasks': fork_tasks_from_entries[:10],
             'fork_tasks_from_entries': fork_tasks_from_entries[:10],
             'subagent_tasks_from_entries': subagent_tasks_from_entries[:10],
         },
@@ -640,7 +576,6 @@ def main():
     
     filepath = sys.argv[1]
     output_json = '--json' in sys.argv
-    top_n = 10
     
     results = analyze_audit(filepath)
     

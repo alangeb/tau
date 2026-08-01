@@ -1,6 +1,6 @@
 ---
 name: graphify
-description: Turn codebases into persistent knowledge graphs — community detection, query/path/explain. Code graph, knowledge graph, architecture visualization (also load: bug_investigation, web-research, code-review-workflow)
+description: "Turn codebases into persistent knowledge graphs — community detection, query, path, explain. Architecture analysis (also load: bug_investigation, code-review-workflow, web-research, wiki)"
 category: analysis
 keywords: knowledge graph, code graph, dependency graph, call graph, graph analysis
 ---
@@ -59,7 +59,13 @@ graphify explain "Node"                              # Plain explanation
 - Never hide cohesion scores
 - Never run HTML viz on >5,000 nodes without warning
 
+## Helper
+```bash
+python3 skills/graphify/pipeline.py <path> [flags...]  # Run full pipeline
+```
+
 ## Related Skills
 - `bug_investigation` — graph-based bug analysis
 - `code-review-workflow` — uses pyscan/pygraph for Python projects (sibling)
 - `web-research` — graphify for web content
+- `wiki` — knowledge storage and retrieval

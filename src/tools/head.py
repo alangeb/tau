@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import subprocess
 from dataclasses import dataclass, field
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 metadata = ToolMetadata(
     name="head",
     description="Display the first N lines of a file. Useful for quick previews of large files.",
+    aliases_arg={"file_path": "path", "file": "path", "filename": "path"},
     max_size=32768,
     timeout=10,
 )
@@ -32,8 +33,11 @@ class Args:
 # ── Execution ────────────────────────────────────────────────────────────────
 
 def run(
-    path: str, agent: TauErgon, tool_call_id: str | None = None, lines: int = 10
+    path: str, lines: int = 10,
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     try:
         result = subprocess.run(
             ["head", "-n", str(lines), path],

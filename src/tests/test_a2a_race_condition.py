@@ -30,6 +30,11 @@ class _AgentStub:
         self._start_time = time.time()
         self.input_queue = None
         self._pending_a2a_responses: dict = {}
+        # Extension-004 agent card metadata fields
+        self.original_task = None
+        self.current_group_name = "test"
+        self.max_context_tokens = 128000
+        self._session = None
 
 
 @pytest.fixture

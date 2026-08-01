@@ -237,7 +237,7 @@ class TestBatchedToolCallsE2E:
         )
         errors = context.validate()
         assert len(errors) > 0
-        assert any("pending tool calls" in e for e in errors)
+        assert any("unresolved tool call" in e for e in errors)
         assert "t2" in str(errors)
 
     def test_invalid_tool_reference(self):

@@ -170,18 +170,30 @@ from agent_console import (
     agent_status,
     assistant_message_display,
     blank_line,
-    compress_fail, compress_success,
-    context_cleared_success, context_dump_with_json,
+    compress_fail,
+    compress_success,
+    context_cleared_success,
+    context_dump_with_json,
     echo,
-    fork_display, fork_error, fork_usage,
-    show_agent_card, show_commands, show_help, show_tools, show_tools_json,
+    fork_display,
+    fork_error,
+    fork_usage,
+    show_agent_card,
+    show_commands,
+    show_help,
+    show_tools,
+    show_tools_json,
     status,
-    subagent_error, subagent_output_footer, subagent_output_header,
-    subagent_start_display, subagent_usage,
+    subagent_error,
+    subagent_output_footer,
+    subagent_output_header,
+    subagent_start_display,
+    subagent_usage,
     warning,
 )
 from agent_lifecycle import AgentLifecycle
 from agent_models import InputMessage
+from agent_project import append_context, find_project_root, init_project
 from agent_subagent import invoke_fork_sync, invoke_subagent_sync
 
 __all__ = [
@@ -399,17 +411,18 @@ class CommandHandlersMixin:
                 system_prompt=self.context.get_system(),
                 parent_agent=self,
                 nesting_count=self.nesting_count,
+                nesting_stack=self.nesting_stack,
             )
             subagent_output_header()
             blank_line()
             echo(result)
             blank_line()
             subagent_output_footer()
-            self.context.append_user(f"{task}")
+            self.context.append_user(f"{task}", user_type="subagent")
             self.context.append_assistant(result, None)
         except (TypeError, KeyError, RuntimeError) as e:
             subagent_error(str(e))
-            self.context.append_user(f"{task}")
+            self.context.append_user(f"{task}", user_type="subagent")
             self.context.append_assistant(f"Subagent failed with error: {e}", None)
 
     @_command("fork", subcommands=())
@@ -447,14 +460,14 @@ class CommandHandlersMixin:
                 prompt=task,
                 parent_context=self.context,
                 parent_agent=self,
-                nesting_count=self.nesting_count,
+                nesting_stack=self.nesting_stack,
             )
             assistant_message_display(result)
-            self.context.append_user(f"{task}")
+            self.context.append_user(f"{task}", user_type="fork")
             self.context.append_assistant(result, None)
         except (TypeError, KeyError, RuntimeError) as e:
             fork_error(str(e))
-            self.context.append_user(f"{task}")
+            self.context.append_user(f"{task}", user_type="fork")
             self.context.append_assistant(f"Fork failed with error: {e}", None)
 
     @_command("ctx", subcommands=("full", "summary", "tool", "trace", "user", "assistant"))
@@ -561,7 +574,7 @@ class CommandHandlersMixin:
             - Restart command being executed
             - Error messages if restart fails
         """
-        self._handle_restart(cmd_full.removeprefix("/restart").strip() or "")
+        self._restart_manager.handle_restart(cmd_full.removeprefix("/restart").strip() or "")
 
     @_command("clear", subcommands=())
     def _cmd_clear(self, cmd_full: str, msg: Optional[InputMessage] = None) -> None:
@@ -574,10 +587,27 @@ class CommandHandlersMixin:
             cmd_full: Full command string (unused, kept for interface consistency).
             msg: Optional InputMessage object (unused, kept for interface consistency).
         """
-        self.clear_context()
+        self._context_manager.clear()
         context_cleared_success()
 
-    @_command("continue", subcommands=("list", "preview"))
+    @_command("undo", "u", subcommands=())
+    def _cmd_undo(self, cmd_full: str, msg: Optional[InputMessage] = None) -> None:
+        """Handle the /undo command to revert the last conversation turn.
+
+        Removes messages from the last user message onward, effectively
+        reverting the last turn. This allows correcting mistakes or trying
+        a different approach.
+
+        Args:
+            cmd_full: Full command string (unused, kept for interface consistency).
+            msg: Optional InputMessage object (unused, kept for interface consistency).
+
+        Displays:
+            - Number of messages removed
+        """
+        self._context_manager.undo()
+
+    @_command("continue", subcommands=("list", "preview", "project"))
     def _cmd_continue(self, cmd_full: str, msg: Optional[InputMessage] = None) -> None:
         """Handle the /continue command to load previous contexts.
 
@@ -586,6 +616,9 @@ class CommandHandlersMixin:
         - "list": List saved contexts (default 25, or specify count)
         - "<n>": Load context by ID
         - "preview <n>": Preview the last 3 messages of context by ID
+        - "project": Load most recent project context (.tau/contexts)
+        - "project <n>": Load project context by index (0=most recent)
+        - "project list": List project context chain
 
         Args:
             cmd_full: Full command string. Examples:
@@ -594,6 +627,9 @@ class CommandHandlersMixin:
                 - "/continue list 50" - List last 50 contexts
                 - "/continue 5" - Load context #5
                 - "/continue preview 5" - Preview context #5
+                - "/continue project" - Load most recent project context
+                - "/continue project -1" - Second most recent
+                - "/continue project list" - List project chain
             msg: Optional InputMessage object (unused, kept for interface consistency).
 
         Displays:
@@ -602,7 +638,28 @@ class CommandHandlersMixin:
             - Preview of context for "preview" subcommand
             - Usage help for invalid arguments
         """
-        self._handle_continue(cmd_full.removeprefix("/continue").strip())
+        self._context_manager.handle_continue(cmd_full.removeprefix("/continue").strip())
+
+    @_command("init", subcommands=())
+    def _cmd_init(self, cmd_full: str, msg: Optional[InputMessage] = None) -> None:
+        """Initialize a project for context persistence.
+
+        Creates a ``.tau/`` directory with a ``contexts`` file in the
+        current working directory. Subsequent tau sessions will automatically
+        record and allow continuation from saved contexts.
+
+        Usage:
+            /init    Initialize project in current directory
+        """
+        project_dir = find_project_root()
+        if project_dir is not None:
+            echo(f"Project already initialized: {project_dir}")
+            return
+        project_dir = init_project()
+        # Record the current session's context so /continue project works immediately
+        ctx_path = self._session.context_file
+        append_context(project_dir, ctx_path)
+        echo(f"Project initialized: {project_dir}")
 
     @_command("name", subcommands=())
     def _cmd_name(self, cmd_full: str, msg: Optional[InputMessage] = None) -> None:
@@ -656,7 +713,7 @@ class CommandHandlersMixin:
             /audit /path/to/file.audit    → specified file, short mode
             /audit short /path/file.audit → specified file, short mode
         """
-        from agent_console_audit import show_audit
+        from agent_console import show_audit
 
         # Parse arguments: positional only — first token is mode, second is file.
         # This avoids ambiguity when a filename contains "short", "long", or "full".

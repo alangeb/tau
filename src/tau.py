@@ -17,7 +17,8 @@ for complex tasks. It features:
 - **Context Management**: Maintains conversation history with configurable
   context limits and persistence
 - **A2A (Agent-to-Agent) Communication**: Built-in server for agent discovery
-  and inter-agent communication via Unix sockets
+  and inter-agent communication via Unix sockets. See `src/designs/A2A_PROTOCOL.md`
+  for the full v1.0 contract.
 - **Subagent Support**: Can spawn child agents (forks/subagents) for parallel
   task execution
 - **Loop Detection**: Automatic detection and handling of conversation loops
@@ -51,14 +52,18 @@ The module provides a rich CLI with the following options:
         --debug            Enable debug output
 
     Context Options:
-        -c, --continue     Continue from saved context file
-        inputs ...         Input messages (non-interactive mode)
+        -c, --continue          Continue from saved context file
+        --continue-from FILE    Continue from a specific context file path
+        -p, --continue-project  Continue from last project context (.tau/contexts)
+        --init-project          Initialize a project (.tau/contexts) for session tracking
+        inputs ...              Input messages (non-interactive mode)
 
     A2A Query Options:
         --list             List active agents
         --list-all         List all agents including stale
         --listjson         List active agents (JSON format)
         --listjson-all     List all agents (JSON format)
+        --list-sessions    List all sessions from LOG_DIR (JSON format)
         --pid PID          Query agent by PID
         --name NAME        Query agent by name
         --card             Get agent card (JSON format)
@@ -169,12 +174,20 @@ import argparse
 import os
 import sys
 import traceback
+from pathlib import Path
 
 from agent_a2a import A2AServer, a2a_cli_mode
 from agent_config import get_config
 from agent_core import TauErgon
 from agent_input import get_context_file_by_parent_ppid
 from agent_models import InputMessage
+from agent_project import (
+    append_context,
+    find_project_root,
+    get_all_entries,
+    get_context_by_index,
+    init_project,
+)
 from agent_console import (
     a2a_started_message,
     assistant_message_display,
@@ -215,6 +228,32 @@ def _validate_llm_group(config, llm_group_name: str | None) -> None:
         f"Define groups in tau.json under 'llm_groups'."
     )
     sys.exit(1)
+
+
+def _restore_and_display_context(agent, target_ctx: Path) -> bool:
+    """Restore context from a file and display last user/assistant messages.
+
+    Returns True if context was loaded successfully, False otherwise.
+    """
+    agent._session.context_file = target_ctx
+    if not agent.context.load_from_file(agent._session.context_file):
+        context_restore_failure(target_ctx)
+        return False
+
+    context_restored(len(agent.context), target_ctx)
+    for role, display_fn in [
+        ("user", user_message_display),
+        ("assistant", assistant_message_display),
+    ]:
+        msgs = [m for m in agent.context if m.get("role") == role]
+        if msgs:
+            raw = msgs[-1].get("content", "")
+            if isinstance(raw, list):
+                text_parts = [p.get("text", "") for p in raw if p.get("type") == "text"]
+                raw = " ".join(text_parts) if text_parts else "[image]"
+            display_fn(raw)
+    return True
+
 
 def main():
     """Main entry point."""
@@ -267,6 +306,26 @@ def main():
         help="Continue from saved context file (LOG_DIR/{prefix}.context)",
     )
     parser.add_argument(
+        "--continue-from",
+        dest="continue_from",
+        type=str,
+        default=None,
+        help="Continue from a specific context file path",
+    )
+    parser.add_argument(
+        "-p",
+        "--continue-project",
+        dest="continue_project",
+        action="store_true",
+        help="Continue from the last project context (.tau/contexts)",
+    )
+    parser.add_argument(
+        "--init-project",
+        dest="init_project",
+        action="store_true",
+        help="Initialize a project: create .tau/contexts for session tracking",
+    )
+    parser.add_argument(
         "inputs", nargs="*", help="Input messages to process (non-interactive mode)"
     )
     parser.add_argument(
@@ -291,6 +350,11 @@ def main():
         action="store_true",
         help="List all agents including unreachable/stale (JSON format)",
     )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="List all sessions from LOG_DIR as JSON (scanning context files)",
+    )
     parser.add_argument("--name", help="Agent name to query (instead of --pid)")
     parser.add_argument(
         "--agent-name",
@@ -298,7 +362,7 @@ def main():
         help="Agent name for this instance (default: from config or 'default')",
     )
     parser.add_argument(
-        "--pid", type=int, help="Agent PID to query (required for --card)"
+        "--pid", type=int, help="Agent PID to query (for --card or query mode)"
     )
     parser.add_argument(
         "--card", action="store_true", help="Get agent card (JSON format)"
@@ -325,6 +389,7 @@ def main():
             args.list_all,
             args.listjson,
             args.listjson_all,
+            args.list_sessions,
             args.pid,
             args.name,
         )
@@ -359,27 +424,57 @@ def main():
     a2a_server.start()
     a2a_started_message(a2a_server.sock_path)
 
-    if args.continue_from_file:
+    # --- Project context handling ---
+
+    # --init-project cannot be combined with any context restore flag
+    if args.init_project and (args.continue_project or args.continue_from or args.continue_from_file):
+        error("--init-project cannot be used with -c, -p, or --continue-from")
+        sys.exit(1)
+
+    # --init-project: create .tau/ + .tau/contexts (idempotent)
+    if args.init_project:
+        proj_dir = init_project(Path.cwd())
+        status(f"Project initialized: {proj_dir}")
+
+    # Context restore priority: --continue-from (explicit) > -p (project) > -c (parent PID)
+    if args.continue_from:
+        target_ctx = Path(args.continue_from)
+        if not target_ctx.exists():
+            error(f"Context file not found: {target_ctx}")
+            sys.exit(1)
+        if not _restore_and_display_context(agent, target_ctx):
+            error(f"Failed to load context file: {target_ctx}")
+            sys.exit(1)
+    elif args.continue_project:
+        proj_dir = find_project_root(Path.cwd())
+        if proj_dir is None:
+            error("No project found. Run `tau --init-project` to initialize a project.")
+        else:
+            target_ctx = get_context_by_index(proj_dir, 0)
+            if target_ctx is None:
+                if get_all_entries(proj_dir):
+                    error("No valid (non-stale) contexts in project. Starting with empty context.")
+                else:
+                    error("No contexts saved in project yet. Starting with empty context.")
+            else:
+                _restore_and_display_context(agent, target_ctx)
+    elif args.continue_from_file:
         target_ctx = get_context_file_by_parent_ppid()
         if target_ctx:
-            agent._session.context_file = target_ctx
-            if agent.context.load_from_file(agent._session.context_file):
-                context_restored(len(agent.context), target_ctx)
-                for role, display_fn in [
-                    ("user", user_message_display),
-                    ("assistant", assistant_message_display),
-                ]:
-                    msgs = [m for m in agent.context if m.get("role") == role]
-                    if msgs:
-                        raw = msgs[-1].get("content", "")
-                        if isinstance(raw, list):
-                            text_parts = [p.get("text", "") for p in raw if p.get("type") == "text"]
-                            raw = " ".join(text_parts) if text_parts else "[image]"
-                        display_fn(raw)
-            else:
-                context_restore_failure(target_ctx)
+            _restore_and_display_context(agent, target_ctx)
         else:
             no_context_file_found()
+
+    # Always append current context to .tau/contexts if project exists
+    proj_dir = find_project_root(Path.cwd())
+    if proj_dir is not None:
+        ctx_path = agent._session.context_file
+        # Ensure the context file exists on disk before recording its path
+        agent.context.save_to_file(ctx_path, force=True)
+        if not ctx_path.exists():
+            ctx_path.parent.mkdir(parents=True, exist_ok=True)
+            ctx_path.touch()
+        append_context(proj_dir, ctx_path)
 
     # Put command-line inputs in queue
     if args.inputs:

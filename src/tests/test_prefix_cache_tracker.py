@@ -12,7 +12,7 @@ Covers:
 import json
 import pytest
 
-from agent_llm import PrefixCacheTracker
+from agent_llm_cache import PrefixCacheTracker
 
 
 def _make_body(messages=None, model="test-model", tools=None, **extra):
@@ -173,6 +173,46 @@ class TestReset:
         expected_after, reason = tracker.compute_expected_hit(body)
         assert expected_after == 0.0
         assert "first call" in reason
+
+
+class TestShouldWarn:
+    """Test PrefixCacheTracker.should_warn() deduplication."""
+
+    def test_first_call_returns_true(self):
+        """First call with any key always warns."""
+        tracker = PrefixCacheTracker()
+        assert tracker.should_warn("low_act:0%") is True
+
+    def test_same_key_returns_false(self):
+        """Repeated identical key is suppressed."""
+        tracker = PrefixCacheTracker()
+        assert tracker.should_warn("low_act:0%") is True
+        assert tracker.should_warn("low_act:0%") is False
+        assert tracker.should_warn("low_act:0%") is False
+
+    def test_different_key_returns_true(self):
+        """Different key is emitted (condition changed)."""
+        tracker = PrefixCacheTracker()
+        assert tracker.should_warn("low_act:0%") is True
+        assert tracker.should_warn("low_act:0%") is False
+        assert tracker.should_warn("low_act:50%") is True  # condition changed
+        assert tracker.should_warn("low_act:50%") is False
+
+    def test_distinct_keys_interleave(self):
+        """Different unique keys are each emitted once."""
+        tracker = PrefixCacheTracker()
+        assert tracker.should_warn("low_act:0%") is True
+        assert tracker.should_warn("low_exp:10%") is True
+        assert tracker.should_warn("low_act:0%") is False  # already seen
+
+    def test_reset_clears_warn_state(self):
+        """After reset, previously-seen keys are emitted again."""
+        tracker = PrefixCacheTracker()
+        tracker.should_warn("low_act:0%")
+        tracker.should_warn("low_act:0%")
+        assert tracker.should_warn("low_act:0%") is False
+        tracker.reset()
+        assert tracker.should_warn("low_act:0%") is True
 
 
 class TestLongestCommonPrefix:

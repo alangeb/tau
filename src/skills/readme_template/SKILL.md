@@ -29,13 +29,11 @@ keywords: readme, documentation, template, project, structure, sections
 - Consistent formatting, clear examples, actionable content
 
 ## Helper
-
 ```bash
 python3 skills/readme_template/readme_gen.py  # readme_template helper
 ```
+
 ## Related Skills
+- `command_template` — document commands in README
 - `project-onboard` — gather project info for README
 - `skill_template` — document skills in README
-- `command_template` — document commands in README
-
-- `documentation` — Documentation patterns

@@ -1,6 +1,6 @@
 """Smoke tests for console modules — verifies all exports are importable and callable.
 
-After splitting agent_console into focused modules, this module ensures:
+After consolidating the console layer into agent_console/ package, this module ensures:
 1. Each module imports cleanly (no circular imports, no missing dependencies)
 2. Every public name in __all__ is callable (no broken references)
 """
@@ -9,11 +9,8 @@ import pytest
 
 
 MODULES = [
-    "agent_console_primitives",
-    "agent_console_messages",
-    "agent_console_display",
     "agent_console",
-    "agent_console_audit",
+    "agent_console.display",
 ]
 
 
@@ -37,103 +34,103 @@ def test_all_public_exports_are_callable(module_name):
 
 
 def test_primitives_has_core_functions():
-    """Verify agent_console_primitives exports the foundation functions."""
-    import agent_console_primitives as p
-    assert callable(p.echo)
-    assert callable(p.blank_line)
-    assert callable(p.status)
-    assert callable(p.reasoning)
-    assert callable(p.verbose)
+    """Verify agent_console exports the foundation functions."""
+    from agent_console import echo, blank_line, status, reasoning, verbose
+    assert callable(echo)
+    assert callable(blank_line)
+    assert callable(status)
+    assert callable(reasoning)
+    assert callable(verbose)
 
 
 def test_console_has_error_functions():
-    """Verify agent_console exports error/warning functions."""
-    import agent_console as c
-    assert callable(c.error)
-    assert callable(c.warning)
-    assert callable(c.error_display)
+    """Verify console modules export error/warning functions."""
+    from agent_console import error, warning, error_display
+    assert callable(error)
+    assert callable(warning)
+    assert callable(error_display)
 
 
 def test_console_has_message_functions():
-    """Verify agent_console exports message display functions."""
-    import agent_console as c
-    assert callable(c.assistant_message_display)
-    assert callable(c.user_echo)
-    assert callable(c.undo_message)
+    """Verify console modules export message display functions."""
+    from agent_console import assistant_message_display, user_echo, undo_message
+    assert callable(assistant_message_display)
+    assert callable(user_echo)
+    assert callable(undo_message)
 
 
 def test_console_has_flow_functions():
-    """Verify agent_console exports flow control functions."""
-    import agent_console as c
-    assert callable(c.restart_flow)
-    assert callable(c.interrupted_message)
-    assert callable(c.force_exit_message)
+    """Verify console modules export flow control functions."""
+    from agent_console import restart_flow, interrupted_message, force_exit_message
+    assert callable(restart_flow)
+    assert callable(interrupted_message)
+    assert callable(force_exit_message)
 
 
 def test_console_has_llm_functions():
-    """Verify agent_console exports LLM status functions."""
-    import agent_console as c
-    assert callable(c.llm_timeout_message)
-    assert callable(c.llm_validation_retry)
+    """Verify console modules export LLM status functions."""
+    from agent_console import llm_timeout_message, llm_validation_retry
+    assert callable(llm_timeout_message)
+    assert callable(llm_validation_retry)
 
 
 def test_console_has_loop_functions():
-    """Verify agent_console exports loop warning functions."""
-    import agent_console as c
-    assert callable(c.loop_warning_display)
-    assert callable(c.loop_warning)
+    """Verify console modules export loop warning functions."""
+    from agent_console import loop_warning_display, loop_warning
+    assert callable(loop_warning_display)
+    assert callable(loop_warning)
 
 
 def test_console_has_subagent_functions():
-    """Verify agent_console exports subagent/fork functions."""
-    import agent_console as c
-    assert callable(c.subagent_start_display)
-    assert callable(c.fork_display)
-    assert callable(c.subagent_output_header)
+    """Verify console modules export subagent/fork functions."""
+    from agent_console import subagent_start_display, fork_display, subagent_output_header
+    assert callable(subagent_start_display)
+    assert callable(fork_display)
+    assert callable(subagent_output_header)
 
 
 def test_console_has_agent_functions():
-    """Verify agent_console exports A2A/agent functions."""
-    import agent_console as c
-    assert callable(c.agents_table_header)
-    assert callable(c.agent_status_message)
-    assert callable(c.a2a_started_message)
+    """Verify console modules export A2A/agent functions."""
+    from agent_console import agents_table_header, agent_status_message, a2a_started_message
+    assert callable(agents_table_header)
+    assert callable(agent_status_message)
+    assert callable(a2a_started_message)
 
 
 def test_console_has_compression_functions():
-    """Verify agent_console exports compression functions."""
-    import agent_console as c
-    assert callable(c.compress_success)
-    assert callable(c.compress_fail)
-    assert callable(c.compression_step_summary)
+    """Verify console modules export compression functions."""
+    from agent_console import compress_success, compress_fail, compression_step_summary
+    assert callable(compress_success)
+    assert callable(compress_fail)
+    assert callable(compression_step_summary)
 
 
 def test_console_has_context_functions():
-    """Verify agent_console exports context display functions."""
-    import agent_console as c
-    assert callable(c.context_dump)
-    assert callable(c.context_restored)
-    assert callable(c.context_status_bar)
+    """Verify console modules export context display functions."""
+    from agent_console import context_dump, context_status_bar, context_restored
+    assert callable(context_dump)
+    assert callable(context_restored)
+    assert callable(context_status_bar)
 
 
 def test_console_has_status_functions():
-    """Verify agent_console exports status display functions."""
-    import agent_console as c
-    assert callable(c.agent_status)
-    assert callable(c.print_agent_exit_summary)
+    """Verify console modules export status display functions."""
+    from agent_console import agent_status, print_agent_exit_summary
+    assert callable(agent_status)
+    assert callable(print_agent_exit_summary)
 
 
 def test_console_has_help_functions():
-    """Verify agent_console exports help display functions."""
-    import agent_console as c
-    assert callable(c.show_help)
-    assert callable(c.show_commands)
-    assert callable(c.show_tools)
+    """Verify console modules export help display functions."""
+    from agent_console import show_help, show_commands, show_tools
+    assert callable(show_help)
+    assert callable(show_commands)
+    assert callable(show_tools)
 
 
 def test_console_has_tool_functions():
-    """Verify agent_console exports tool display functions."""
-    import agent_console as c
-    assert callable(c.tool_start)
-    assert callable(c.tool_result)
-    assert callable(c.tool_output)
+    """Verify console modules export tool display functions."""
+    from agent_console import tool_start, tool_output, tool_result
+    assert callable(tool_start)
+    assert callable(tool_result)
+    assert callable(tool_output)

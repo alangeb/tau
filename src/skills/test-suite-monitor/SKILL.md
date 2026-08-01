@@ -1,6 +1,6 @@
 ---
 name: test-suite-monitor
-description: Run test suite in background, monitor progress, detect completion, report results. Run tests, monitor tests, background tests, background testing (also load: background, tau_testsuite)
+description: "Run test suite in background, monitor progress, detect completion, report results (also load: background, tau_testsuite, tmux_monitoring)"
 category: testing
 keywords: test, suite, monitor, background, run tests, progress, completion, results, status
 ---
@@ -14,25 +14,22 @@ keywords: test, suite, monitor, background, run tests, progress, completion, res
 ```bash
 # Start
 background_new(command="cd $HOME/tau/test && ./run")
-# Poll (sleep 120 minimum)
-background_tail {"session_name": "...", "lines": 10}
-# Detect completion
-# - "can't find pane" = session ended
-# - "Test Suite Completed!" in output
+# Poll — wait 120s min between checks
+background_capture {"session_name": "...", "lines": 10}
+# Detect done: "can't find pane" = ended, or "Test Suite Completed!" in output
 # Report
 find $HOME/tau/test/output -name "status.json" | xargs grep '"status"' | sort | uniq -c
 ```
 
 ## Timing
-- `sleep 120` minimum between polls
-- Watch for session termination or completion messages
-- Check `status.json` files for results
+- `sleep 120` min between polls
+- Use `background_wait` with keywords: `error|warning|complete|done|FAILED|SUCCESS|PASSED|Traceback|Exception`
 
 ## Helper
-
 ```bash
-python3 skills/test-suite-monitor/test_monitor.py  # test suite monitor helper
+python3 skills/test-suite-monitor/test_monitor.py
 ```
+
 ## Related Skills
 - `background` — tmux session management
 - `tmux_monitoring` — polling best practices

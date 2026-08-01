@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 if TYPE_CHECKING:
     from agent_core import TauErgon
@@ -73,11 +73,11 @@ class Args:
 # ── Execution ─────────────────────────────────────────────────────────────
 
 def run(
-    path: str,
-    agent: "TauErgon",
-    tool_call_id: str | None = None,
-    description: str = "",
+    path: str, description: str = "",
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     """Load image and queue for post-batch injection.
 
     Does NOT inject into context during execution (that would break OpenAI

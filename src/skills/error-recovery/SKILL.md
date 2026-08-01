@@ -1,6 +1,6 @@
 ---
 name: error-recovery
-description: Handle tool errors, API failures, session recovery, context overflow. Error handling, crash recovery, failure, retry, recover from crash, session recovery (also load: bug_investigation, tau_audit, background)
+description: "Handle tool errors, API failures, session recovery, context overflow. Crash recovery, retry with backoff (also load: background, bug_investigation, context_management, info, performance, tau_audit)"
 category: resilience
 keywords: error, recovery, crash, failure, retry, API failure, context overflow, session, handle
 ---
@@ -10,37 +10,29 @@ keywords: error, recovery, crash, failure, retry, API failure, context overflow,
 ## When
 "tool error", "API failure", "session crashed", "context full", "recover session", "handle errors", "recover from crash", "retry failed"
 
-## Error Types
+## Error Types & Recovery
 | Type | Pattern | Recovery |
 |------|---------|----------|
 | Tool error | `TOOL_ERROR` | Retry with corrected params |
-| API failure | `Connection refused` | Wait, retry with backoff |
-| Context overflow | `TOOL_BLOCKED` | Compress, delegate, clear |
-| Session crash | Missing output | Restart from last checkpoint |
-
-## Recovery Patterns
-- **Tool error**: Check params, retry with correction
-- **API failure**: Exponential backoff (1s, 2s, 4s, 8s)
-- **Context overflow**: `context_management` — fork/subagent delegation
-- **Session crash**: Check audit log for last state, resume
+| API failure | `Connection refused` | Exponential backoff (1s, 2s, 4s, 8s) |
+| Context overflow | `TOOL_BLOCKED` | Delegate via fork/subagent |
+| Session crash | Missing output | Check audit log, resume from checkpoint |
 
 ## Checklist
 - [ ] Error type identified
 - [ ] Root cause determined
-- [ ] Recovery strategy selected
-- [ ] Retry with correction
-- [ ] Verify recovery success
+- [ ] Recovery applied
+- [ ] Success verified
 
 ## Helpers
-
 ```bash
 python3 skills/error-recovery/error_helper.py  # Automated error analysis
 source skills/error-recovery/error_helper.sh    # bg_status, bg_cleanup
 ```
+
 ## Related Skills
+- `background` — recover background sessions
 - `bug_investigation` — systematic error analysis
 - `tau_audit` — analyze error patterns in logs
 - `context_management` — handle context overflow
-- `background` — recover background sessions
-
-- `info` — Agent status and diagnostics
+- `performance` — performance optimization

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools import ToolMetadata
+from tools import ToolContext, ToolMetadata
 
 import subprocess
 from dataclasses import dataclass, field
@@ -65,16 +65,13 @@ class Args:
 # ── Execution ──
 
 def run(
-    path: str = ".",
-    agent: "TauErgon" = None,
-    tool_call_id: str | None = None,
-    long: bool = False,
-    all: bool = False,
-    recursive: bool = False,
-    reverse: bool = False,
-    sort: str = "name",
-    one_column: bool = False,
+    path: str = ".", long: bool = False, all: bool = False,
+    recursive: bool = False, reverse: bool = False,
+    sort: str = "name", one_column: bool = False,
+    _ctx: ToolContext | None = None,
 ) -> str:
+    agent = _ctx.agent if _ctx else None
+    tool_call_id = _ctx.tool_call_id if _ctx else None
     target_path, err = validate_path(path, allowed_paths=get_allowed_paths(agent))
     if err:
         return err

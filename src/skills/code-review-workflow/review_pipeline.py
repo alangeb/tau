@@ -2,8 +2,6 @@
 """Code review pipeline — pyscan, pyanalyze, ruff, black sequence."""
 import subprocess
 import sys
-import os
-import json
 
 def run_review(path=".", tools=None):
     """Run full review pipeline on path. Returns dict of results."""

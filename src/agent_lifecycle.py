@@ -11,6 +11,8 @@ NOT safe for use with alternative Python implementations that lack a GIL
 (e.g., Jython, PyPy with --no-gil).
 """
 
+from __future__ import annotations
+
 __all__ = ["AgentLifecycle"]
 
 

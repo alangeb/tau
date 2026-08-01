@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
-"""Tool template helper - generate tool templates."""
+"""Tool template helper - generate tool templates using dataclass."""
 
 def generate_tool_template(name: str, description: str, args: list[dict] = None) -> str:
-    """Generate a tool template."""
+    """Generate a tool template with standardized signature."""
     args_code = ""
+    arg_defaults = ""
     if args:
         for arg in args:
-            args_code += f"    {arg['name']}: {arg['type']} = Field(description=\"{arg['description']}\")\n"
+            default = arg.get('default', '""')
+            args_code += f"    {arg['name']}: {arg['type']} = field(default={default}, description=\"{arg['description']}\")\n"
+            arg_defaults += f"{arg['name']}: {arg['type']} = {default}, "
 
     template = 'from __future__ import annotations\n\n'
-    template += f'name = "{name}"\n'
-    template += f'description = """{description}"""\n'
-    template += 'timeout = 180\n\n'
-    template += 'from pydantic import BaseModel, Field\n\n'
-    template += 'class Args(BaseModel):\n'
+    template += 'from tools import ToolContext, ToolMetadata\n'
+    template += 'from dataclasses import dataclass, field\n\n'
+    template += 'metadata = ToolMetadata(\n'
+    template += f'    name="{name}",\n'
+    template += f'    description="""{description}""",\n'
+    template += ')\n\n'
+    template += '@dataclass\n'
+    template += 'class Args:\n'
     template += args_code or '    pass\n'
-    template += '\ndef run(agent: \'TauErgon\', tool_call_id: str | None) -> str:\n'
+    template += f'\ndef run({arg_defaults}_ctx: ToolContext | None = None) -> str:\n'
+    template += '    agent = _ctx.agent if _ctx else None\n'
+    template += '    tool_call_id = _ctx.tool_call_id if _ctx else None\n'
     template += '    return "result"\n'
     return template
 

@@ -19,9 +19,7 @@ from agent_context_compress import (
     compress_blind_truncate,
     compress_last_transaction,
     compress_tool_pruning,
-    compress_tool_pruning_full,
     compress_redact_blocks,
-    compress_redact_blocks_full,
     compress_full_reset,
     compress_oversized_tool_redaction,
     _calculate_context_bytes,
@@ -193,7 +191,7 @@ class TestCompressFullReset:
         assert result[1]["role"] == "user"
         assert "# COMPREHENSION SUMMARY" in result[1]["content"]
         assert "# NEXT STEPS" in result[1]["content"]
-        assert "# ORIGINAL USER REQUEST" in result[1]["content"]
+        assert "# CURRENT USER REQUEST" in result[1]["content"]
         assert "Original request" in result[1]["content"]
         # Verify metadata
         assert metadata["step_name"] == "FULL_RESET"
@@ -418,7 +416,7 @@ class TestOrchestrator:
         )
 
         result, summary, metadata = compress_context(
-            ctx, client, "test-model", target_percentage=0.3, tools=[]
+            ctx, client, "test-model", compression_factor=0.3, tools=[]
         )
 
         # Should succeed (tool pruning should achieve target)
@@ -532,8 +530,8 @@ class TestCompressOversizedToolRedaction:
 # [REMOVED] TestOverflowInfo — OverflowInfo eliminated, truncation replaced by in-place compression.
 
 
-class TestCompressToolPruningFull:
-    """Test compress_tool_pruning_full — scans entire context (no 50% boundary)."""
+class TestCompressToolPruningNoBoundary:
+    """Test compress_tool_pruning with use_boundary=False — scans entire context (no 50% boundary)."""
 
     def _make_context_with_tool_past_boundary(self):
         """Context with heavy first-half padding and a large tool past 50%."""
@@ -553,11 +551,11 @@ class TestCompressToolPruningFull:
         ]
 
     def test_full_prunes_past_boundary(self):
-        """tool_pruning_full prunes tool output beyond 50% boundary."""
+        """tool_pruning with use_boundary=False prunes tool output beyond 50% boundary."""
         ctx = self._make_context_with_tool_past_boundary()
-        big_tool_content = ctx[6]["content"]
+        ctx[6]["content"]
 
-        result, metadata = compress_tool_pruning_full(ctx, Mock(), "test-model", target_size_bytes=100)
+        result, metadata = compress_tool_pruning(ctx, Mock(), "test-model", target_size_bytes=100, use_boundary=False)
 
         # The large tool at index 6 should be pruned
         assert result[6]["content"] == "COMPRESSION: CALL RESULT NO LONGER AVAILABLE"
@@ -588,14 +586,14 @@ class TestCompressToolPruningFull:
         ]
 
         result_boundary, _ = compress_tool_pruning(ctx, Mock(), "test-model", target_size_bytes=100)
-        result_full, _ = compress_tool_pruning_full(list(ctx), Mock(), "test-model", target_size_bytes=100)
+        result_full, _ = compress_tool_pruning(list(ctx), Mock(), "test-model", target_size_bytes=100, use_boundary=False)
 
         assert result_boundary[3]["content"] == result_full[3]["content"]
         assert result_boundary[3]["content"] == "COMPRESSION: CALL RESULT NO LONGER AVAILABLE"
 
 
-class TestCompressRedactBlocksFull:
-    """Test compress_redact_blocks_full — scans entire context (no 50% boundary)."""
+class TestCompressRedactBlocksNoBoundary:
+    """Test compress_redact_blocks with use_boundary=False — scans entire context (no 50% boundary)."""
 
     def _make_context_with_block_past_boundary(self):
         """Context with heavy first-half padding and a completed block past 50%.
@@ -617,11 +615,11 @@ class TestCompressRedactBlocksFull:
         ]
 
     def test_full_redacts_past_boundary(self):
-        """redact_blocks_full redacts completed blocks beyond 50% boundary."""
+        """redact_blocks with use_boundary=False redacts completed blocks beyond 50% boundary."""
         ctx = self._make_context_with_block_past_boundary()
         original_size = _calculate_context_bytes(ctx)
 
-        result, metadata = compress_redact_blocks_full(ctx, Mock(), "test-model", target_size_bytes=100)
+        result, metadata = compress_redact_blocks(ctx, Mock(), "test-model", target_size_bytes=100, use_boundary=False)
 
         # Context should be smaller (block was redacted)
         assert _calculate_context_bytes(result) < original_size
@@ -652,7 +650,7 @@ class TestCompressRedactBlocksFull:
         ]
 
         result_boundary, _ = compress_redact_blocks(ctx, Mock(), "test-model", target_size_bytes=100)
-        result_full, _ = compress_redact_blocks_full(list(ctx), Mock(), "test-model", target_size_bytes=100)
+        result_full, _ = compress_redact_blocks(list(ctx), Mock(), "test-model", target_size_bytes=100, use_boundary=False)
 
         assert _calculate_context_bytes(result_boundary) == _calculate_context_bytes(result_full)
 
@@ -661,13 +659,22 @@ from agent_context_compress import compute_compression_target_bytes
 
 
 class TestComputeCompressionTargetBytes:
-    """Test compute_compression_target_bytes — token-aware target calculation."""
+    """Test compute_compression_target_bytes — token-aware target calculation.
+
+    New formula:
+        breathing_room = compression_factor * max_context_tokens
+        target_tokens = max_context_tokens - max_output_tokens - breathing_room
+        reduction_ratio = (last_known_tokens - target_tokens) / last_known_tokens
+        token_byte_target = current_bytes * (1 - reduction_ratio)
+        byte_target = current_bytes * (1 - compression_factor)
+        final_target = min(byte_target, token_byte_target)
+    """
 
     def test_byte_target_only(self):
         """No token info — falls back to pure byte target."""
         result = compute_compression_target_bytes(
             current_bytes=10000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=None,
             max_context_tokens=200000,
             max_output_tokens=12000,
@@ -678,17 +685,17 @@ class TestComputeCompressionTargetBytes:
         """Token target is lower than byte target — token wins."""
         result = compute_compression_target_bytes(
             current_bytes=100000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=188000,
             max_context_tokens=200000,
             max_output_tokens=12000,
         )
         # byte_target = 70000
-        # safety_margin = max(1000, int(200000 * 0.025)) = 5000
-        # target_tokens = 200000 - 12000 - 5000 = 183000
-        # token_reduction_ratio = (188000 - 183000) / 188000 = 0.0266
-        # token_byte_target = 100000 * (1 - 0.0266) * 0.3 = 29310
-        # min(70000, 29310) = 29310
+        # breathing_room = 0.3 * 200000 = 60000
+        # target_tokens = 200000 - 12000 - 60000 = 128000
+        # reduction_ratio = (188000 - 128000) / 188000 = 0.3191
+        # token_byte_target = 100000 * (1 - 0.3191) = 68090
+        # min(70000, 68090) = 68090
         assert result < 70000  # token target is more aggressive
         assert result > 0
 
@@ -696,7 +703,7 @@ class TestComputeCompressionTargetBytes:
         """Token target is higher than byte target — byte wins."""
         result = compute_compression_target_bytes(
             current_bytes=100000,
-            target_percentage=0.90,  # very aggressive byte target
+            compression_factor=0.90,  # very aggressive byte target
             last_known_tokens=188000,
             max_context_tokens=200000,
             max_output_tokens=12000,
@@ -706,21 +713,21 @@ class TestComputeCompressionTargetBytes:
         # min(byte_target, large_number) = byte_target
         assert result <= 10000
 
-    def test_ratio_collapse_simulation(self):
-        """Verify safety factor accounts for ratio collapse."""
+    def test_linear_scaling_assumption(self):
+        """Verify linear byte-to-token scaling (no safety factor)."""
         result = compute_compression_target_bytes(
             current_bytes=6500000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=188001,
             max_context_tokens=200000,
             max_output_tokens=12000,
         )
-        # safety_margin = 5000
-        # target_tokens = 200000 - 12000 - 5000 = 183000
-        # token_reduction_ratio = (188001 - 183000) / 188001 ≈ 0.0266
-        # token_byte_target = 6500000 * (1 - 0.0266) * 0.3 ≈ 1900230
+        # breathing_room = 0.3 * 200000 = 60000
+        # target_tokens = 200000 - 12000 - 60000 = 128000
+        # reduction_ratio = (188001 - 128000) / 188001 ≈ 0.3191
+        # token_byte_target = 6500000 * (1 - 0.3191) ≈ 4424850
         # byte_target = 4550000
-        # min(4550000, 1900230) = 1900230
+        # min(4550000, 4424850) ≈ 4424850
         assert result < 4550000  # token-aware target is more aggressive
         assert result > 0
 
@@ -728,12 +735,12 @@ class TestComputeCompressionTargetBytes:
         """Simulate the exact scenario from the bug report."""
         result = compute_compression_target_bytes(
             current_bytes=6500000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=188001,
             max_context_tokens=200000,
             max_output_tokens=12000,
         )
-        # Should produce a much more aggressive target than pure byte target
+        # Should produce a more aggressive target than pure byte target
         byte_target = int(6500000 * 0.70)
         assert result < byte_target
 
@@ -741,7 +748,7 @@ class TestComputeCompressionTargetBytes:
         """Zero tokens — falls back to byte target."""
         result = compute_compression_target_bytes(
             current_bytes=10000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=0,
             max_context_tokens=200000,
             max_output_tokens=12000,
@@ -752,7 +759,7 @@ class TestComputeCompressionTargetBytes:
         """None tokens — falls back to byte target."""
         result = compute_compression_target_bytes(
             current_bytes=10000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=None,
             max_context_tokens=200000,
             max_output_tokens=12000,
@@ -763,31 +770,31 @@ class TestComputeCompressionTargetBytes:
         """Tokens at target — no reduction needed, returns byte target."""
         result = compute_compression_target_bytes(
             current_bytes=10000,
-            target_percentage=0.30,
-            last_known_tokens=183000,  # exactly at target_tokens
+            compression_factor=0.30,
+            last_known_tokens=128000,  # exactly at target_tokens
             max_context_tokens=200000,
             max_output_tokens=12000,
         )
-        # target_tokens = 200000 - 12000 - 5000 = 183000
-        # last_known_tokens (183000) is NOT > target_tokens (183000)
+        # target_tokens = 200000 - 12000 - 60000 = 128000
+        # last_known_tokens (128000) is NOT > target_tokens (128000)
         # So token_target stays as byte_target
         assert result == 7000
 
-    def test_safety_margin(self):
-        """Verify output tokens and safety margin are accounted for."""
+    def test_breathing_room(self):
+        """Verify breathing room is compression_factor * MCW."""
         result = compute_compression_target_bytes(
             current_bytes=100000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=195000,
             max_context_tokens=200000,
             max_output_tokens=12000,
         )
-        # safety_margin = 5000
-        # target_tokens = 200000 - 12000 - 5000 = 183000
-        # token_reduction_ratio = (195000 - 183000) / 195000 = 0.0615
-        # token_byte_target = 100000 * (1 - 0.0615) * 0.3 = 28155
+        # breathing_room = 0.3 * 200000 = 60000
+        # target_tokens = 200000 - 12000 - 60000 = 128000
+        # reduction_ratio = (195000 - 128000) / 195000 = 0.3436
+        # token_byte_target = 100000 * (1 - 0.3436) = 65641
         # byte_target = 70000
-        # min(70000, 28155) = 28155
+        # min(70000, 65641) = 65641
         assert result < 70000
         assert result > 0
 
@@ -795,12 +802,12 @@ class TestComputeCompressionTargetBytes:
         """When tokens are below target, no token reduction needed."""
         result = compute_compression_target_bytes(
             current_bytes=10000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=100000,  # well below target
             max_context_tokens=200000,
             max_output_tokens=12000,
         )
-        # target_tokens = 183000, last_known_tokens (100000) < target_tokens
+        # target_tokens = 128000, last_known_tokens (100000) < target_tokens
         # No token reduction needed, falls back to byte target
         assert result == 7000
 
@@ -848,7 +855,7 @@ class TestCompressConversationSummary:
         """Synthetic messages are noted as [SYSTEM: category]."""
         ctx = [
             {"role": "system", "content": "System"},
-            {"role": "user", "content": "[SYNTHETIC:end_turn_reminder] Previous turn ended."},
+            {"role": "user", "content": "[SYSTEM-SYNTHETIC: end_turn_reminder] Previous turn ended."},
             {"role": "assistant", "content": "Acknowledged."},
         ]
         result, metadata = compress_conversation_summary(ctx, None, "test", 1000)
@@ -1010,7 +1017,7 @@ class TestTokenBudgetWiring:
         mcc._invoke_llm_with_retry = mock_invoke_llm_with_retry
 
         try:
-            resp = mcc._invoke_llm_with_retry_compression(
+            mcc._invoke_llm_with_retry_compression(
                 client=None,
                 model_name="test",
                 messages=[{"role": "user", "content": "hello"}],
@@ -1033,17 +1040,17 @@ class TestTokenBudgetWiring:
         # 128K model, 180K tokens (overflow scenario)
         result = compute_compression_target_bytes(
             current_bytes=5000000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=180000,
             max_context_tokens=131072,
             max_output_tokens=8192,
         )
-        # safety_margin = max(1000, int(131072 * 0.025)) = 3276
-        # target_tokens = 131072 - 8192 - 3276 = 119604
-        # token_reduction_ratio = (180000 - 119604) / 180000 = 0.3355
-        # token_byte_target = 5000000 * (1 - 0.3355) * 0.3 = 1000750
+        # breathing_room = 0.3 * 131072 = 39321
+        # target_tokens = 131072 - 8192 - 39321 = 83559
+        # reduction_ratio = (180000 - 83559) / 180000 = 0.5358
+        # token_byte_target = 5000000 * (1 - 0.5358) = 2321000
         # byte_target = 3500000
-        # min(3500000, 1000750) = 1000750
+        # min(3500000, 2321000) = 2321000
         assert result < 3500000  # token-aware is more aggressive
         assert result > 0
 
@@ -1054,17 +1061,17 @@ class TestTokenBudgetWiring:
         # 32K model, 30K tokens (near overflow)
         result = compute_compression_target_bytes(
             current_bytes=2000000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=30000,
             max_context_tokens=32768,
             max_output_tokens=4096,
         )
-        # safety_margin = max(1000, int(32768 * 0.025)) = 819
-        # target_tokens = 32768 - 4096 - 819 = 27853
-        # token_reduction_ratio = (30000 - 27853) / 30000 = 0.0716
-        # token_byte_target = 2000000 * (1 - 0.0716) * 0.3 = 555280
+        # breathing_room = 0.3 * 32768 = 9830
+        # target_tokens = 32768 - 4096 - 9830 = 18842
+        # reduction_ratio = (30000 - 18842) / 30000 = 0.3720
+        # token_byte_target = 2000000 * (1 - 0.3720) = 1256000
         # byte_target = 1400000
-        # min(1400000, 555280) = 555280
+        # min(1400000, 1256000) = 1256000
         assert result < 1400000  # token-aware is more aggressive
         assert result > 0
 
@@ -1075,17 +1082,17 @@ class TestTokenBudgetWiring:
         # 200K model, 190K tokens (near overflow)
         result = compute_compression_target_bytes(
             current_bytes=8000000,
-            target_percentage=0.30,
+            compression_factor=0.30,
             last_known_tokens=190000,
             max_context_tokens=200000,
             max_output_tokens=12000,
         )
-        # safety_margin = max(1000, int(200000 * 0.025)) = 5000
-        # target_tokens = 200000 - 12000 - 5000 = 183000
-        # token_reduction_ratio = (190000 - 183000) / 190000 = 0.0368
-        # token_byte_target = 8000000 * (1 - 0.0368) * 0.3 = 2313600
+        # breathing_room = 0.3 * 200000 = 60000
+        # target_tokens = 200000 - 12000 - 60000 = 128000
+        # reduction_ratio = (190000 - 128000) / 190000 = 0.3263
+        # token_byte_target = 8000000 * (1 - 0.3263) = 5388800
         # byte_target = 5600000
-        # min(5600000, 2313600) = 2313600
+        # min(5600000, 5388800) = 5388800
         assert result < 5600000  # token-aware is more aggressive
         assert result > 0
 
