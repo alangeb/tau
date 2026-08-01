@@ -229,6 +229,20 @@ class AgentSessionManager(TokenTracker):
             if parent_audit:
                 self._audit_file = Path(parent_audit)
 
+            # Register session in registry (advisory — graceful if fails).
+            try:
+                from agent_session_registry import get_registry
+                registry = get_registry()
+                plan_file = LOG_DIR / f"{prefix}.plan"
+                registry.register_session(
+                    prefix=prefix,
+                    context=self._context_file,
+                    audit=self._audit_file,
+                    plan=plan_file if plan_file.exists() else None,
+                )
+            except Exception:
+                pass  # Registry is advisory — never crash the agent
+
     # ── File paths ──────────────────────────────────────────────────────────
     @property
     def audit_file(self) -> Path:

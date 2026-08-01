@@ -125,6 +125,24 @@ class LogCleanupConfig:
 
 
 @dataclass(frozen=True)
+class LogRetentionConfig:
+    """Log rotation and archival configuration.
+
+    Controls how session files are archived:
+    - ``max_age_days``: Archive sessions older than this many days
+    - ``max_size_mb``: Archive when log directory exceeds this size
+    - ``archive_enabled``: Whether automatic archival is enabled
+    - ``archive_dir``: Directory to archive sessions to
+    """
+    max_age_days: int = 30
+    max_size_mb: int = 500
+    archive_enabled: bool = True
+    archive_dir: str = field(
+        default_factory=lambda: os.path.expanduser("~/.local/tau/log/archive")
+    )
+
+
+@dataclass(frozen=True)
 class LLMGroup:
     """Named LLM configuration with model, API, and generation parameters."""
     name: str
@@ -173,6 +191,7 @@ class Config:
     path_security: PathSecurityConfig = field(default_factory=PathSecurityConfig)
     wiki: WikiConfig = field(default_factory=WikiConfig)
     log_cleanup: LogCleanupConfig = field(default_factory=LogCleanupConfig)
+    log_retention: LogRetentionConfig = field(default_factory=LogRetentionConfig)
 
     # LLM inference parameters (forwarded directly to API, passthrough)
     inference_params: dict[str, Any] | None = None
@@ -217,6 +236,7 @@ class Config:
         "reflection": ReflectionConfig,
         "wiki": WikiConfig,
         "log_cleanup": LogCleanupConfig,
+        "log_retention": LogRetentionConfig,
     }
 
     @classmethod

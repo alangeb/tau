@@ -191,7 +191,9 @@ class ContextManager:
         parts = args.split(maxsplit=1)
         sub_cmd = parts[0].lower()
 
-        if sub_cmd == "list":
+        if sub_cmd == "rebuild":
+            self._handle_continue_rebuild()
+        elif sub_cmd == "list":
             self._handle_continue_list(parts[1] if len(parts) > 1 else "")
         elif sub_cmd == "preview":
             self._handle_continue_preview(parts[1] if len(parts) > 1 else "")
@@ -217,17 +219,54 @@ class ContextManager:
         else:
             no_context_file_found()
 
+    def _handle_continue_rebuild(self) -> None:
+        """Rebuild session registry from LOG_DIR and report results."""
+        try:
+            from agent_session_registry import get_registry, REGISTRY_FILE
+        except ImportError:
+            echo("[continue] Session registry module not available.")
+            return
+
+        echo("[continue] Rebuilding session registry...")
+        registry = get_registry()
+
+        # Invalidate cache to force reload, then rebuild
+        registry._invalidate()
+        found = registry.rebuild()
+
+        total = len(registry.list_sessions())
+        active = len(registry.list_sessions(status="active"))
+        archived = len(registry.list_sessions(status="archived"))
+
+        echo(f"[continue] Found {found} new session(s) in LOG_DIR")
+        echo(f"[continue] Total sessions: {total} (active: {active}, archived: {archived})")
+        echo(f"[continue] Registry: {REGISTRY_FILE}")
+
     def _get_previous_context_file(self) -> Path | None:
-        """Get the previous context file (skip current session's own file)."""
+        """Get the previous context file (skip current session's own file).
+
+        Uses the session registry if available, falling back to scanning
+        LOG_DIR directly.
+        """
         ppid = os.getppid()
         ctx_pattern = re.compile(rf"^{ppid}_\d+_\d+\.context$")
         current = self._agent._session.context_file
-        ctx_files = [
-            f for f in LOG_DIR.glob("*.context")
+
+        # Try registry first
+        try:
+            from agent_session_registry import get_registry
+            ctx_files = get_registry().get_context_files(include_archived=True)
+        except Exception:
+            ctx_files = []
+
+        # Filter by parent PID, excluding current session
+        matching = [
+            f for f in ctx_files
             if ctx_pattern.match(f.name) and f != current
         ]
-        if ctx_files:
-            return max(ctx_files, key=lambda f: f.stat().st_mtime)
+        if matching:
+            return max(matching, key=lambda f: f.stat().st_mtime)
+
         # Fallback: all context files except current
         all_ctx = _get_all_context_files()
         others = [f for f in all_ctx if f != current]

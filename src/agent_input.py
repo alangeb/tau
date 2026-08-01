@@ -116,18 +116,31 @@ class OutputCapture:
 
 def get_context_file_by_parent_ppid() -> Path | None:
     """Get the most recent context file matching the current parent PID.
-    
+
     Falls back to the most recent context file if no match is found,
     to handle cases where the parent PID changes between runs (e.g.,
     different shell sessions).
+
+    Uses the session registry if available, falling back to scanning
+    LOG_DIR directly.
     """
     ppid = os.getppid()
-    ctx_pattern = re.compile(rf"^{ppid}_\d+_\d+\.context$")
-    ctx_files = [f for f in LOG_DIR.glob("*.context") if ctx_pattern.match(f.name)]
 
-    if ctx_files:
-        return max(ctx_files, key=lambda f: f.stat().st_mtime)
-    
+    # Try registry first
+    try:
+        from agent_session_registry import get_registry
+        registry = get_registry()
+        ctx_files = registry.get_context_files(include_archived=True)
+    except Exception:
+        ctx_files = []
+
+    # Filter by parent PID
+    ctx_pattern = re.compile(rf"^{ppid}_\d+_\d+\.context$")
+    matching = [f for f in ctx_files if ctx_pattern.match(f.name)]
+
+    if matching:
+        return max(matching, key=lambda f: f.stat().st_mtime)
+
     # Fallback: return the most recent context file regardless of PID
     all_ctx = get_all_context_files()
     return all_ctx[0] if all_ctx else None

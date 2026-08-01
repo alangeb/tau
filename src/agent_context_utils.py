@@ -45,7 +45,19 @@ def format_age(seconds: float) -> str:
 
 
 def get_all_context_files() -> list[Path]:
-    """Get all context files in LOG_DIR, sorted newest first."""
+    """Get all context files in LOG_DIR, sorted newest first.
+
+    Uses the session registry if available, falling back to scanning
+    LOG_DIR directly. The registry enables archived sessions to be
+    included and provides a single source of truth for file locations.
+    """
+    try:
+        from agent_session_registry import get_registry
+        return get_registry().get_context_files(include_archived=True)
+    except Exception:
+        pass
+
+    # Fallback: scan LOG_DIR directly
     ctx_files = [f for f in LOG_DIR.glob("*.context") if _CONTEXT_FILE_RE.match(f.name)]
     return sorted(ctx_files, key=lambda f: f.stat().st_mtime, reverse=True)
 

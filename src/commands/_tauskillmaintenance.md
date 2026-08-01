@@ -6,28 +6,55 @@ description: Periodic skill maintenance — review audit logs, audit skills, upd
 
 ## Phase 1: Audit Log Analysis
 
+### 1.0 Get Audit Files from Registry
+
+```bash
+# Get audit files from registry (includes archived sessions)
+cd src && python3 -c "
+from agent_session_registry import get_registry
+registry = get_registry()
+files = registry.get_audit_files(include_archived=True)
+for f in files[:50]:  # Last 50 sessions
+    print(f)
+" > /tmp/skill_audit_files.txt
+
+# Fallback: scan LOG_DIR directly if registry fails
+if [ ! -s /tmp/skill_audit_files.txt ]; then
+  LOG_DIR="$HOME/.local/tau/log"
+  ls -t "$LOG_DIR"/*.audit 2>/dev/null | head -50 > /tmp/skill_audit_files.txt
+fi
+
+echo "Audit files to analyze: $(wc -l < /tmp/skill_audit_files.txt)"
+```
+
 ### 1.1 Gather Tool Usage Data
 ```bash
 # Count tool invocations across all recent logs (portable grep, no -P flag)
-LOG_DIR="$HOME/.local/tau/log"
-ls -t "$LOG_DIR"/*_1.audit 2>/dev/null | head -20 | while read f; do
-  grep -oE "final_name='[^']*" "$f" 2>/dev/null | sed "s/final_name='"//
-done | sort | uniq -c | sort -rn > /tmp/tool_usage.txt
+while IFS= read -r audit_file; do
+  [ -z "$audit_file" ] && continue
+  [ -f "$audit_file" ] || continue
+  grep -oE "final_name='[^']*" "$audit_file" 2>/dev/null | sed "s/final_name='"//
+done < /tmp/skill_audit_files.txt | sort | uniq -c | sort -rn > /tmp/tool_usage.txt
 cat /tmp/tool_usage.txt
 ```
 
 ### 1.2 Analyze Skill Loading
 ```bash
 # Which skills are loaded and how often (portable grep)
-LOG_DIR="$HOME/.local/tau/log"
-grep -rh "final_name='skill'" "$LOG_DIR"/*_1.audit 2>/dev/null | \
+while IFS= read -r audit_file; do
+  [ -z "$audit_file" ] && continue
+  [ -f "$audit_file" ] || continue
+  grep "final_name='skill'" "$audit_file" 2>/dev/null
+done < /tmp/skill_audit_files.txt | \
   grep -oE "skill_name[^,]*" | sort | uniq -c | sort -rn
 
 # Count skill calls per log (last 20 sessions)
-ls -t "$LOG_DIR"/*_1.audit 2>/dev/null | head -20 | while read f; do
-  count=$(grep -c "final_name='skill'" "$f" 2>/dev/null || echo 0)
+head -20 /tmp/skill_audit_files.txt | while IFS= read -r audit_file; do
+  [ -z "$audit_file" ] && continue
+  [ -f "$audit_file" ] || continue
+  count=$(grep -c "final_name='skill'" "$audit_file" 2>/dev/null || echo 0)
   if [ "$count" -gt 0 ]; then
-    echo "$(basename $f): $count skill calls"
+    echo "$(basename $audit_file): $count skill calls"
   fi
 done
 ```
@@ -36,18 +63,20 @@ done
 ```bash
 # Look at tool call sequences — what tools are used together?
 # Sample from recent logs (portable grep)
-LOG_DIR="$HOME/.local/tau/log"
-ls -t "$LOG_DIR"/*_1.audit 2>/dev/null | head -20 | while read f; do
-  grep -oE "final_name='[^']*" "$f" 2>/dev/null | sed "s/final_name='"// | uniq -c | sort -rn
+head -20 /tmp/skill_audit_files.txt | while IFS= read -r audit_file; do
+  [ -z "$audit_file" ] && continue
+  [ -f "$audit_file" ] || continue
+  grep -oE "final_name='[^']*" "$audit_file" 2>/dev/null | sed "s/final_name='"// | uniq -c | sort -rn
 done
 ```
 
 ### 1.4 Extract USER Prompts
 ```bash
 # What tasks are being done?
-LOG_DIR="$HOME/.local/tau/log"
-ls -t "$LOG_DIR"/*_1.audit 2>/dev/null | head -20 | while read f; do
-  grep -A1 "^\[.*\] USER" "$f" 2>/dev/null | grep "|" | \
+head -20 /tmp/skill_audit_files.txt | while IFS= read -r audit_file; do
+  [ -z "$audit_file" ] && continue
+  [ -f "$audit_file" ] || continue
+  grep -A1 "^\[.*\] USER" "$audit_file" 2>/dev/null | grep "|" | \
     grep -v "Think hard" | grep -v "EVERY TIME" | head -3
 done | sort -u
 ```

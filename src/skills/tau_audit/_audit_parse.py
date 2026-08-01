@@ -16,7 +16,7 @@ from typing import Optional
 
 # ── Regex patterns ────────────────────────────────────────────────────────
 
-# Main record: [2026-08-01T09:06:30+00:00] SESSION_START nesting=0 version=1.0 ...
+# Main record: [2026-08-01T10:28:41+00:00] SESSION_START nesting=0 version=1.0 ...
 _RECORD_RE = re.compile(
     r'^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\] '
     r'(\S+) nesting=(\d+) (.*)$'
