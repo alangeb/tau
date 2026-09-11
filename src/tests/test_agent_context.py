@@ -193,7 +193,7 @@ class TestLoadSaveContext:
         metadata = {
             "pid": 12345,
             "working_dir": "/tmp/test",
-            "start_time": "2024-01-01T00:00:00",
+            "start_time": "2026-09-11T17:20:23+00:00",
             "model": "test-model",
         }
         # Write new format

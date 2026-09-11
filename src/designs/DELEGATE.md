@@ -51,7 +51,7 @@ The tool filter is applied at execution time. All tools are still announced to t
 
 ## Bug Fix History
 
-### 2025-01-15: Fixed infinite loop bug
+### 2026-09-11: Fixed infinite loop bug
 
 **Problem:** The old code checked `while agent.force_end_turn is None`. This was WRONG because `force_end_turn` is only set by external intervention (`+stop` steering, loop escalation). It is NOT set by the normal EOT flow.
 

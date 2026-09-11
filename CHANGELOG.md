@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-07-04 — Audit Logging Rework (v2)
+## 2026-09-11 — Audit Logging Rework (v2)
 
 ### New Record Types
 - Added 19 new audit record types: USER variants (manual/synthetic/source), ASSISTANT variants (response/reasoning), COMPRESS_RESULT, COMPRESS_END, CONTEXT_ADD, CONTEXT_REMOVE, CONTEXT_MERGE, CONTEXT_SNAPSHOT, CONSOLE_INFO, CONSOLE_SUCCESS, CONFIG_CHANGE, ERROR_RATE_ALERT, LOOP_DETECTION, LOOP_WARNING, SESSION_END

@@ -224,7 +224,7 @@
     }
   },
   "wiki": {
-    "path": "/home/alangeb/.local/tau/wiki"
+    "path": "/home/example/.local/tau/wiki"
   },
   "log_retention": {
     "max_age_days": 30,

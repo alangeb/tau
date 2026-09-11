@@ -147,7 +147,7 @@ Create on first use:
 |-----------|--------|------|------|------|
 ```
 
-Complete: `| completed | 2025-01 | add-auth-endpoint | auth, api | [link](completed/2025-01-15-add-auth-endpoint.md) |`
+Complete: `| completed | 2025-01 | add-auth-endpoint | auth, api | [link](completed/2026-09-11-add-auth-endpoint.md) |`
 Abandon: remove line entirely. One line per spec.
 
 ---
