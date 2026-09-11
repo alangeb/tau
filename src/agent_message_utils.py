@@ -16,7 +16,19 @@ from __future__ import annotations
 # Format: [U:TYPE | N:stack] Content
 # Types: real, meta, confirm, inject, system, fork, subagent, redirect
 _USER_PREFIX_PATTERN = "[U:"
+_USER_PREFIX_FORMAT = "[U:{type} | N:{stack}] "
 _REAL_USER_PREFIX = "[U:real | N:"
+
+# Category-to-type mapping for synthetic user messages
+_SYNTHETIC_CATEGORY_TO_TYPE = {
+    "continuation": "meta",
+    "turn_started": "meta",
+    "turn_closed": "meta",
+    "eot_confirmation": "confirm",
+    "parent_inject": "inject",
+    "escalation": "system",
+    "recovery": "system",
+}
 
 # Legacy synthetic prefix (backward compatibility)
 _SYNTHETIC_PREFIX = "[SYSTEM-SYNTHETIC: "
@@ -45,7 +57,7 @@ def is_synthetic_message(msg: dict) -> bool:
     if isinstance(content, str):
         # Check for new prefix format
         if content.startswith(_USER_PREFIX_PATTERN):
-            user_type = _get_user_type_from_content(content)
+            user_type = _get_user_type_from_prefix(content)
             return user_type in _SYNTHETIC_TYPES
         # Legacy check (backward compatibility)
         return content.startswith("[SYSTEM-SYNTHETIC: ")
@@ -55,7 +67,7 @@ def is_synthetic_message(msg: dict) -> bool:
                 text = part.get("text", "")
                 # Check for new prefix format
                 if text.startswith(_USER_PREFIX_PATTERN):
-                    user_type = _get_user_type_from_content(text)
+                    user_type = _get_user_type_from_prefix(text)
                     return user_type in _SYNTHETIC_TYPES
                 # Legacy check (backward compatibility)
                 if text.startswith("[SYSTEM-SYNTHETIC: "):
@@ -63,7 +75,7 @@ def is_synthetic_message(msg: dict) -> bool:
     return False
 
 
-def _get_user_type_from_content(content: str) -> str | None:
+def _get_user_type_from_prefix(content: str) -> str | None:
     """Extract user type from prefixed content."""
     if not isinstance(content, str) or not content.startswith(_USER_PREFIX_PATTERN):
         return None
@@ -74,6 +86,11 @@ def _get_user_type_from_content(content: str) -> str | None:
         return type_part[2:]  # "TYPE"
     except (ValueError, IndexError):
         return None
+
+
+def _make_user_prefix(user_type: str, nesting_stack: str) -> str:
+    """Create a user message prefix."""
+    return _USER_PREFIX_FORMAT.format(type=user_type, stack=nesting_stack)
 
 
 def _extract_text_content(msg: dict) -> str:
@@ -136,10 +153,40 @@ def _sanitize_content(content: str | list) -> str | list:
     return content
 
 
+# ── Content Merging ───────────────────────────────────────────────────────────
+
+
+def _merge_content(a: object, b: object) -> str | list:
+    """Merge two content values.
+
+    For multimodal list content, concatenate the content-block lists so
+    image_url blocks are preserved. Falls back to string concatenation
+    when both sides are plain strings.
+
+    Used by ``TauContext.merge_consecutive_assistants()`` to merge
+    adjacent same-role messages after synthetic bridges are removed.
+    """
+    if isinstance(a, list) and isinstance(b, list):
+        return a + b
+    if isinstance(a, list):
+        return a + [{"type": "text", "text": str(b)}]
+    if isinstance(b, list):
+        return [{"type": "text", "text": str(a)}] + b
+    return str(a) + "\n" + str(b)
+
+
 __all__ = [
+    # Prefix protocol constants (internal — used by agent_context.py)
     "_SYNTHETIC_PREFIX",
+    "_SYNTHETIC_CATEGORY_TO_TYPE",
+    # Sanitization
     "_sanitize_content",
     "_sanitize_text",
+    # Content merging
+    "_merge_content",
+    # Synthetic message detection
     "get_last_real_user_prompt",
     "is_synthetic_message",
+    # Prefix helpers (internal — used by agent_context.py)
+    "_make_user_prefix",
 ]

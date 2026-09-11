@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Skill audit script — check quality, cross-references, findability, health, discovery, overlap."""
-import os, re, sys, argparse
+import argparse
+import os
+import re
+import sys
 from collections import Counter
+from pathlib import Path
 
 def _parse_skills(skills_dir="skills"):
     """Parse all SKILL.md files and return structured data."""
@@ -9,7 +13,7 @@ def _parse_skills(skills_dir="skills"):
     for d in sorted(os.listdir(skills_dir)):
         f = os.path.join(skills_dir, d, "SKILL.md")
         if os.path.exists(f):
-            content = open(f).read()
+            content = Path(f).read_text()
             lines = content.split("\n")
             # Extract frontmatter
             frontmatter = {}
@@ -93,25 +97,30 @@ def audit_skills(skills_dir="skills"):
     for name, info in skills.items():
         refs = set()
         refs |= info["also_load"] & existing
-        # Check backtick refs in content
-        for m in re.finditer(r'`([a-zA-Z][-_\w]*)`', info["content"]):
+        # Check backtick refs in content (include underscore-prefixed names)
+        for m in re.finditer(r'`([a-zA-Z_][-_\w]*)`', info["content"]):
             if m.group(1) in existing:
                 refs.add(m.group(1))
         ref_graph[name] = refs
 
-    # Check bidirectionality
+    # Check bidirectionality (exclude hub skills like tauskillmaintenance)
     one_way = []
+    hub_skills = {"tauskillmaintenance"}  # Hub skills reference many others — skip one-way check
     for a, refs in ref_graph.items():
+        if a in hub_skills:
+            continue
         for b in refs:
             if a not in ref_graph.get(b, set()):
                 one_way.append((a, b))
 
-    # Check helpers referenced in SKILL.md but missing on disk
+    # Check helpers referenced in ## Helper section but missing on disk
     for name, info in skills.items():
-        for m in re.finditer(r'`([-\w]+\.(?:py|sh))`', info["content"]):
-            fn = m.group(1)
-            if fn not in info["helpers"]:
-                issues.append(f"{name}: Helper `{fn}` referenced but not found")
+        helper_section = re.search(r'## Helper\s*\n(.*?)(?=##|$)', info["content"], re.DOTALL)
+        if helper_section:
+            for m in re.finditer(r'`([-\w]+\.(?:py|sh))`', helper_section.group(1)):
+                fn = m.group(1)
+                if fn not in info["helpers"]:
+                    issues.append(f"{name}: Helper `{fn}` referenced but not found")
 
     # Report
     print(f"Skills: {len(skills)}")
@@ -141,7 +150,7 @@ def health_dashboard(skills_dir="skills"):
     ref_counts = []
     for name, info in skills.items():
         refs = info["also_load"] & set(skills.keys())
-        for m in re.finditer(r'`([a-zA-Z][-_\w]*)`', info["content"]):
+        for m in re.finditer(r'`([a-zA-Z_][-_\w]*)`', info["content"]):
             if m.group(1) in skills:
                 refs.add(m.group(1))
         ref_counts.append(len(refs))
@@ -152,7 +161,7 @@ def health_dashboard(skills_dir="skills"):
     for name, info in skills.items():
         refs = set()
         refs |= info["also_load"] & set(skills.keys())
-        for m in re.finditer(r'`([a-zA-Z][-_\w]*)`', info["content"]):
+        for m in re.finditer(r'`([a-zA-Z_][-_\w]*)`', info["content"]):
             if m.group(1) in skills:
                 refs.add(m.group(1))
         ref_graph[name] = refs
@@ -195,26 +204,66 @@ def discovery_analysis(skills_dir="skills"):
         print("No skills found.")
         return
 
-    # Common user prompt patterns to test against
+    # Domain-specific prompt groups for discovery scoring
+    # Each skill is scored against ALL prompts, but prompts are grouped by domain
+    # to ensure fair coverage. A skill scores well if it matches its domain prompts.
     SAMPLE_PROMPTS = [
-        "write a script", "shell script", "bash command",
-        "review code", "code review", "python analysis",
-        "search the web", "fetch a page", "look up",
-        "background task", "run in background",
-        "delegate", "subagent", "fork",
-        "image", "screenshot", "see this",
-        "plan", "task list", "project plan",
-        "skill", "load skill", "what skills",
-        "edit file", "read file", "write file",
-        "grep", "search files", "find pattern",
-        "git", "version control", "commit",
-        "test", "testing", "run tests",
-        "debug", "traceback", "error",
-        "tmux", "terminal", "session",
-        "prompt", "prompt engineering", "craft prompt",
-        "maintenance", "audit", "health check",
-        "documentation", "doc", "readme",
-        "install", "setup", "configure",
+        # Shell/scripting
+        "write a script", "shell script", "bash command", "run a shell command",
+        "process text with awk", "pipe commands together", "write a one-liner",
+        # Code review/quality
+        "review code", "code review", "python analysis", "check code quality",
+        "lint this code", "format my code", "find bugs in code",
+        # Web research
+        "search the web", "fetch a page", "look up", "find information online",
+        "scrape a website", "search duckduckgo",
+        # Background/tmux
+        "background task", "run in background", "tmux session", "run async",
+        "monitor a process", "watch output",
+        # Delegation
+        "delegate", "subagent", "fork", "spawn a worker", "do this for me",
+        "handle in parallel",
+        # Image
+        "image", "screenshot", "see this", "analyze this image", "load photo",
+        # Planning/tasks
+        "manifest", "task list", "project plan", "create a checklist", "step by step",
+        # Skills
+        "skill", "load skill", "what skills", "list available skills",
+        # File operations
+        "edit file", "read file", "write file", "find files", "list directory",
+        # Search
+        "grep", "search files", "find pattern", "regex search", "search recursively",
+        # Git
+        "git", "version control", "commit", "push changes", "git status",
+        "checkout branch", "merge branch",
+        # Testing
+        "test", "testing", "run tests", "run test suite", "check tests pass",
+        # Debugging
+        "debug", "traceback", "error", "fix this bug", "why does it crash",
+        "set breakpoint", "trace execution",
+        # Terminal/tmux
+        "tmux", "terminal", "session", "attach to session", "kill session",
+        # Prompt engineering
+        "prompt", "prompt engineering", "craft prompt", "write instructions",
+        # Maintenance
+        "maintenance", "audit", "health check", "check status", "skill audit",
+        # Documentation
+        "documentation", "doc", "readme", "write docs", "update readme",
+        # Installation
+        "install", "setup", "configure", "install dependencies", "pip install",
+        # Python specific
+        "analyze python project", "run pyscan", "call graph", "unused imports",
+        "python workflow", "ast analysis",
+        # Performance
+        "improve performance", "profile code", "optimize speed", "find bottleneck",
+        "make it faster", "speed up training",
+        # Refactoring
+        "refactor", "simplify code", "reduce complexity", "clean up code",
+        "rename function", "extract method",
+        # Docker
+        "docker", "container", "compose", "build image", "run container",
+        # Security
+        "security check", "find secrets", "scan for api keys", "audit security",
     ]
 
     print("=" * 60)
@@ -253,6 +302,7 @@ def discovery_analysis(skills_dir="skills"):
     print(f"\n  --- Skills needing description rewrite (score < 50) ---")
     for name, score, matches, matched in results:
         if score < 50:
+            info = skills[name]  # Look up info for this skill
             print(f"\n  {name} ({score:.0f}%):")
             print(f"    Description: {info['description_clean'][:80]}...")
             print(f"    Keywords: {', '.join(sorted(info['keywords']))[:80]}")

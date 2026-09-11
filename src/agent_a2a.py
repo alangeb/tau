@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import socket
 import sys
 import threading
@@ -34,12 +33,11 @@ from agent_console import (
     agents_table_header,
     agents_table_row,
 )
-from agent_context_utils import read_context_metadata_for_a2a
+from agent_context_utils import _CONTEXT_FILE_CAPTURE_RE, read_context_metadata_for_a2a
 from agent_models import InputMessage
 
 __all__ = [
     "A2AServer",
-    "Supervisor",
     "connect_to_agent",
     "get_agent_card",
     "list_agents",
@@ -59,10 +57,7 @@ SOCKET_BUFFER = 4096
 # HEARTBEAT_IDLE_TIMEOUT seconds. No wall-clock timeout — slow agents are fine.
 HEARTBEAT_INTERVAL = 5.0          # Server sends heartbeat every N seconds
 HEARTBEAT_IDLE_TIMEOUT = 30.0     # Client gives up if no heartbeat for N seconds
-
-# Supervision protocol: supervisor maintains persistent connection to child.
-SUPERVISE_CONNECT_TIMEOUT = 10.0  # Timeout for supervisor connect
-SUPERVISE_ACK_TIMEOUT = 10.0      # Timeout for command acknowledgment
+DEFAULT_POLL_MAX_TIMEOUT = 300.0  # Server-side wall-clock max timeout for polling (5 min)
 
 
 # ── Client utilities ──────────────────────────────────────────────────────
@@ -304,9 +299,6 @@ def _probe_session_socket(pid: int) -> tuple[str, dict | None]:
         return "unreachable", None
 
 
-# Regex matching the context-file naming convention: {ppid}_{YYYYMMDDHHMMSS}_{N}
-_CONTEXT_FILE_RE = re.compile(r"^(\d+)_\d+_\d+\.context$")
-
 
 def _build_session_info(
     prefix: str,
@@ -375,7 +367,7 @@ def _scan_sessions(log_dir: Path) -> list[dict]:
         return sessions
 
     for ctx_file in sorted(log_dir.glob("*.context")):
-        match = _CONTEXT_FILE_RE.match(ctx_file.name)
+        match = _CONTEXT_FILE_CAPTURE_RE.match(ctx_file.name)
         if not match:
             continue
         pid = int(match.group(1))
@@ -445,7 +437,9 @@ class A2AServer:
             self.thread.join(timeout=2)
 
     def _accept_loop(self):
-        """Bind socket, listen, and spawn a daemon thread per connection."""
+        """Bind socket, listen, and handle connections via thread pool."""
+        from concurrent.futures import ThreadPoolExecutor
+
         try:
             Path(self.sock_path).unlink(missing_ok=True)
         except OSError:
@@ -458,29 +452,51 @@ class A2AServer:
         self._ready.set()
         self.sock.settimeout(1.0)
 
-        while self.running:
-            try:
-                client_sock, _ = self.sock.accept()
-                threading.Thread(
-                    target=self._handle_client, args=(client_sock,), daemon=True
-                ).start()
-            except TimeoutError:
-                continue
-            except OSError:
-                if self.running:
+        # Use thread pool to limit concurrent connections
+        executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="a2a-handler")
+        try:
+            while self.running:
+                try:
+                    client_sock, _ = self.sock.accept()
+                    executor.submit(self._handle_client, client_sock)
+                except TimeoutError:
                     continue
+                except OSError:
+                    if self.running:
+                        continue
+        finally:
+            # Non-blocking shutdown — don't wait for slow handlers
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _recv_request(self, client_sock: socket.socket) -> bytes:
-        """Receive the full request from a client socket."""
+        """Receive the full request from a client socket.
+
+        Reads chunks and attempts JSON parse only after a timeout or when
+        the accumulated buffer looks complete (ends with '}'). This avoids
+        O(n²) re-parsing on every chunk.
+        """
         data = b""
-        while True:
-            chunk = client_sock.recv(SOCKET_BUFFER)
-            if not chunk:
-                break
-            data += chunk
-            if len(chunk) < SOCKET_BUFFER:
-                break
+        original_timeout = client_sock.gettimeout()
+        try:
+            client_sock.settimeout(0.5)  # 500ms idle timeout
+            while True:
+                try:
+                    chunk = client_sock.recv(SOCKET_BUFFER)
+                    if not chunk:
+                        break  # Connection closed
+                    data += chunk
+                except socket.timeout:
+                    break  # No more data — sender is done
+        finally:
+            client_sock.settimeout(original_timeout)
         return data
+
+    def _try_parse_request(self, data: bytes) -> dict | None:
+        """Try to parse accumulated data as JSON. Returns dict or None."""
+        try:
+            return json.loads(data.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
 
     def _handle_client(self, client_sock: socket.socket):
         """Read a JSON request and dispatch to handler."""
@@ -490,20 +506,21 @@ class A2AServer:
             if not data:
                 return
 
-            request = json.loads(data.decode("utf-8"))
+            request = self._try_parse_request(data)
+            if request is None:
+                raise json.JSONDecodeError("Invalid JSON request", "", 0)
+
             request_type = request.get("type", "query")
 
             if request_type == "agent_card":
                 self._send_agent_card(client_sock)
             elif request_type == "status":
                 self._handle_status(client_sock)
-            elif request_type == "supervise":
-                self._handle_supervise(client_sock, request.get("id", ""))
             else:
                 request_id = request.get("id", str(uuid.uuid4()))
                 query_content = request.get("query", "")
                 self._handle_query(client_sock, request_id, query_content)
-        except (OSError, RuntimeError, json.JSONDecodeError) as e:
+        except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
             try:
                 client_sock.send(
                     json.dumps({"type": "error", "message": str(e)}).encode() + b"\n"
@@ -511,8 +528,7 @@ class A2AServer:
             except OSError:
                 pass
         finally:
-            if request_type not in ("supervise",):
-                client_sock.close()
+            client_sock.close()
 
     def _build_agent_card(self) -> dict:
         """Build the agent card dict.
@@ -587,17 +603,37 @@ class A2AServer:
         except OSError:
             pass
 
-    def _poll_for_response(self, client_sock: socket.socket, request_id: str) -> bool:
+    def _poll_for_response(
+        self,
+        client_sock: socket.socket,
+        request_id: str,
+        max_timeout: float = DEFAULT_POLL_MAX_TIMEOUT,
+    ) -> bool:
         """Poll for the response to *request_id* and send it to *client_sock*.
 
         Sends periodic heartbeats so the client knows the server is still alive.
-        Polls indefinitely until response is available or client disconnects.
+        Polls until response is available, client disconnects, or *max_timeout*
+        wall-clock seconds elapsed (whichever comes first).
         Also sends streaming chunks (tool_call, tool_result, assistant) as they arrive.
 
-        Returns True if response was sent, False if client disconnected.
+        Returns True if response was sent, False if client disconnected or timed out.
         """
         last_heartbeat = time.time()
+        start_time = time.time()
         while True:
+            # Wall-clock max timeout check
+            if time.time() - start_time > max_timeout:
+                error_resp = {
+                    "type": "error",
+                    "id": request_id,
+                    "message": f"Poll timeout after {max_timeout:.0f}s — agent may be stuck",
+                }
+                try:
+                    client_sock.send(json.dumps(error_resp).encode() + b"\n")
+                except OSError:
+                    pass
+                return False
+
             try:
                 # Atomically snapshot and clear pending chunks (thread-safe: pop + list()
                 # avoids race with main thread appending to the list).
@@ -648,218 +684,6 @@ class A2AServer:
         self.agent.input_queue.put(message)
         self._poll_for_response(client_sock, request_id)
 
-    def _handle_supervise(self, client_sock: socket.socket, session_id: str):
-        """Handle persistent supervision connection.
-
-        Reads commands from the supervisor and forwards them to the agent's
-        control queue. The connection stays open for the duration of supervision.
-        """
-        # Send supervising acknowledgment
-        ack = {"type": "supervising", "id": session_id}
-        try:
-            client_sock.send(json.dumps(ack).encode() + b"\n")
-        except OSError:
-            return
-
-        # Process commands from supervisor
-        while True:
-            try:
-                data = self._recv_request(client_sock)
-                if not data:
-                    break
-
-                cmd = json.loads(data.decode("utf-8"))
-                cmd_type = cmd.get("type", "")
-
-                if cmd_type in ("inject", "terminate", "redirect", "status"):
-                    # Forward command to agent's control queue
-                    self.agent._control_queue.put(data.decode("utf-8"))  # pylint: disable=W0212
-                    # Send acknowledgment
-                    cmd_id = cmd.get("id", "")
-                    client_sock.send(
-                        json.dumps({"type": "ack", "id": cmd_id}).encode() + b"\n"
-                    )
-                elif cmd_type == "close":
-                    break
-                else:
-                    # Unknown command type
-                    cmd_id = cmd.get("id", "")
-                    client_sock.send(
-                        json.dumps({"type": "error", "id": cmd_id, "message": f"Unknown command: {cmd_type}"}).encode() + b"\n"
-                    )
-            except (OSError, json.JSONDecodeError):
-                break
-
-        client_sock.close()
-
-
-# ── Supervisor class ──────────────────────────────────────────────────────
-
-
-class Supervisor:
-    """Spawn and supervise a child Tau process.
-
-    Connects to a child agent's A2A socket and sends control commands
-    (inject, terminate, redirect, status). Can tail the child's audit log
-    and detect repeated tool call patterns (loops).
-    """
-
-    def __init__(self, task: str, child_pid: int, sock_path: str, audit_file: Path):
-        """Initialize supervisor for a child process.
-
-        Args:
-            task: Description of the task being supervised.
-            child_pid: PID of the child process.
-            sock_path: Path to the child's A2A Unix socket.
-            audit_file: Path to the child's audit log file.
-        """
-        self.task = task
-        self.child_pid = child_pid
-        self.sock_path = sock_path
-        self.audit_file = audit_file
-        self._sock: socket.socket | None = None
-        self._cmd_id = 0
-        self._last_audit_pos = 0
-
-    def connect(self) -> None:
-        """Open persistent supervision connection to child."""
-        self._sock = _make_connection(self.sock_path, SUPERVISE_CONNECT_TIMEOUT)
-        request = {"type": "supervise", "id": f"sup-{self._cmd_id}"}
-        self._sock.send(json.dumps(request).encode() + b"\n")
-        data = self._recv_response()
-        if data.get("type") != "supervising":
-            raise RuntimeError(f"Supervision failed: {data}")
-
-    def inject(self, role: str, content: str) -> None:
-        """Inject a message into the child's context.
-
-        Args:
-            role: Message role (informational, always creates user message).
-            content: Message content to inject.
-        """
-        self._cmd_id += 1
-        cmd = {"type": "inject", "role": role, "content": content, "id": f"cmd-{self._cmd_id}"}
-        self._sock.send(json.dumps(cmd).encode() + b"\n")
-        self._wait_for_ack()
-
-    def terminate(self, graceful: bool = True, force_kill: bool = False) -> None:
-        """Request child termination.
-
-        Args:
-            graceful: If True, child finishes current turn. If False, exits immediately.
-            force_kill: If True, sends SIGKILL to child (immediate, no cleanup).
-        """
-        self._cmd_id += 1
-        cmd = {"type": "terminate", "graceful": graceful, "force_kill": force_kill, "id": f"cmd-{self._cmd_id}"}
-        self._sock.send(json.dumps(cmd).encode() + b"\n")
-        self._wait_for_ack()
-
-    def redirect(self, new_task: str) -> None:
-        """Redirect child to a new task, clearing context.
-
-        Args:
-            new_task: New task description.
-        """
-        self._cmd_id += 1
-        cmd = {"type": "redirect", "task": new_task, "id": f"cmd-{self._cmd_id}"}
-        self._sock.send(json.dumps(cmd).encode() + b"\n")
-        self._wait_for_ack()
-
-    def get_new_audit_lines(self) -> str:
-        """Return new lines from child's audit log since last check.
-
-        Returns:
-            New audit log content as string, empty if no changes or file missing.
-        """
-        try:
-            with open(self.audit_file, "r") as f:
-                f.seek(self._last_audit_pos)
-                new_lines = f.read()
-                self._last_audit_pos = f.tell()
-                return new_lines
-        except FileNotFoundError:
-            return ""
-
-    def detect_loop(self, window: int = 5) -> bool | None:
-        """Detect repeated tool call patterns in recent audit lines.
-
-        Parses recent audit lines for tool_call records and returns True if
-        the same tool+args pattern repeats N times within the window.
-
-        Args:
-            window: Number of consecutive identical calls to detect.
-
-        Returns:
-            True if loop detected, False if no loop, None if insufficient data.
-        """
-        new_lines = self.get_new_audit_lines()
-        if not new_lines:
-            return None
-
-        # Parse tool_call records from audit lines
-        tool_calls: list[tuple[str, str]] = []
-        for line in new_lines.split("\n"):
-            if '"tool_call"' in line or '"tool_calls"' in line:
-                try:
-                    record = json.loads(line)
-                    calls = record.get("tool_calls", [])
-                    if not calls and "tool_call" in record:
-                        calls = [record["tool_call"]]
-                    for call in calls:
-                        name = call.get("name", call.get("function", {}).get("name", ""))
-                        args = json.dumps(call.get("args", call.get("arguments", "")))
-                        tool_calls.append((name, args))
-                except (json.JSONDecodeError, TypeError):
-                    continue
-
-        if len(tool_calls) < window:
-            return None
-
-        # Check for repeated pattern
-        for i in range(len(tool_calls) - window + 1):
-            pattern = tool_calls[i]
-            if all(tool_calls[i + j] == pattern for j in range(1, window)):
-                return True
-
-        return False
-
-    def close(self) -> None:
-        """Close the supervision connection."""
-        if self._sock:
-            try:
-                self._sock.send(json.dumps({"type": "close"}).encode() + b"\n")
-            except OSError:
-                pass
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-            self._sock = None
-
-    def _recv_response(self) -> dict:
-        """Receive a JSON response from the child."""
-        buf = b""
-        self._sock.settimeout(SUPERVISE_ACK_TIMEOUT)
-        while True:
-            try:
-                chunk = self._sock.recv(SOCKET_BUFFER)
-                if not chunk:
-                    raise ConnectionError("Connection closed by child")
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    try:
-                        return json.loads(line.decode("utf-8"))
-                    except json.JSONDecodeError:
-                        continue
-            except socket.timeout:
-                raise TimeoutError("Timeout waiting for child response")
-
-    def _wait_for_ack(self) -> None:
-        """Wait for acknowledgment from child."""
-        data = self._recv_response()
-        if data.get("type") == "error":
-            raise RuntimeError(f"Child error: {data.get('message', 'unknown')}")
 
 
 # ── CLI helpers ────────────────────────────────────────────────────────────

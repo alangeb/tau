@@ -67,13 +67,15 @@ DESCRIPTION = "Enter orchestrator mode (plan & delegate via fork/subagent)"
 subcommands = ()
 help_text = "Usage: /delegate <task description>"
 
-# Tools allowed in delegate mode — read/analysis + delegation only
+# Tools allowed in delegate mode — read/analysis + delegation + manifest only
 _ALLOWED_DELEGATE_TOOLS = frozenset({
     # Delegation
     "fork", "subagent",
     # Read/analysis
-    "glob", "file_read", "pyscan", "grep", "info", "plan", "skill",
+    "glob", "file_read", "pyscan", "grep", "info", "skill",
     "wc", "head", "ls", "pygraph", "pyanalyze", "pycheck",
+    # Manifest (goal tracking)
+    "manifest_create", "manifest_update", "manifest_tree",
     # Turn control
     "end_turn",
 })

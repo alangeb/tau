@@ -1,14 +1,14 @@
 ---
+description: "git diff, review changes, confirm correctness before commit, verify modifications match intent, check formatting consistency (also load: code-review-workflow, git, git-advanced, gitcrit, security-audit)"
+keywords: git diff, review changes, pre-commit review, commit verification, change review, git verify, correctness check
 name: git-verify
-description: Verify code changes — git diff, review modifications, confirm correctness. Git diff, verify changes, review diff, check changes (also load: code-review-workflow, review, git, git-advanced)
-category: development
-keywords: git, diff, verify, changes, review, modifications, confirm, check
+category: git
 ---
 
 # Git Verify
 
 ## When
-"verify changes", "check diff", "review modifications", "confirm changes", "git diff review", "check changes", "review diff"
+"verify changes" "check diff" "review modifications" "confirm changes" "git diff review" "check changes" "review diff" "git" "commit" "code review" "review code"
 
 ## Sequence
 ```bash
@@ -33,3 +33,7 @@ python3 skills/git-verify/verify.py  # git verify helper
 - `review` — detailed code review
 - `git` — basic worktree operations
 - `git-advanced` — bisect, cherry-pick, history analysis
+- `search-replace` — confirm modifications
+- `gitcrit` — Git commit critique
+- `refactor` — verify refactoring changes
+- `security-audit` — security review of changes

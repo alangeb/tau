@@ -1,30 +1,35 @@
 ---
+description: "see this image, analyze screenshot, load photo for vision model, validate image format and size, queue for context injection (also load: agent-browser, web-research, shell_scripting, freecad)"
+keywords: see tool invocation, multimodal context injection, screenshot capture, JPEG PNG WebP format, vision model compatibility
 name: image
-description: "Load and analyze images — see tool, vision models, multimodal. Screenshot analysis, image inspection (also load: agent-browser, freecad, web-research, documentation, shell_scripting)"
-category: multimodal
-keywords: image, vision, screenshot, picture, photo, jpeg, png, webp, vision model
+category: multimedia
 ---
 
 # Image Handling
 
 ## When
-"see image", "analyze image", "look at picture", "vision model", "multimodal", "screenshot"
+"see image", "analyze image", "look at picture", "vision model", "screenshot", "image"
 
 ## Tool
 `see(path="image.jpg", description="optional")` — loads image, queues for context injection.
 
 ## Vision Model Support
-- **Gemma 4**, **Qwen 3.6**: Supports vision via multimodal input
-- **Non-vision models**: Error gracefully — do not retry `see`
+- **Gemma 4**, **Qwen 3.6**: vision via multimodal input
+- **Non-vision models**: error gracefully — do not retry `see`
 
 ## Error Handling
-If model lacks vision: pop image user message, remove synthetic assistant turn, mark `see` result as error ("no vision capability").
+Model lacks vision: pop image user message, remove synthetic assistant turn, mark `see` result as error ("no vision capability").
 
 ## Gotchas
 - Multiple `see` calls: all queued, injected together
 - Mixed with other tools: `see` returns ack, images injected after all tools processed
 - Max 10 MB per image
 - Formats: JPEG, PNG, WebP, GIF, BMP, TIFF
+
+## Helper
+```bash
+python3 skills/image/image_check.py <path>  # Validate format, size, dimensions
+```
 
 ## Related Skills
 - `agent-browser` — capture screenshots via browser automation

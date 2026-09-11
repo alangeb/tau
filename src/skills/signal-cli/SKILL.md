@@ -1,8 +1,8 @@
 ---
+description: "Send and receive Signal messenger messages via CLI — configure daemon, JSON-RPC API, messaging automation (also load: background, dependency_management, dream, shell_scripting)"
+keywords: signal-cli, Signal messaging, message automation, JSON-RPC API, signal daemon, message sending, signal configuration
 name: signal-cli
-description: Signal CLI and JSON-RPC API — send/receive messages, daemon setup, account management. Signal messenger, messaging, chat automation (also load: background)
-category: integrations
-keywords: signal, messenger, messaging, chat, send message, receive, JSON-RPC, daemon, automation
+category: communication
 ---
 
 # signal-cli
@@ -35,13 +35,6 @@ Returns array. Envelope types: `dataMessage`, `receiptMessage`, `expirationMessa
 - `version` — get version
 - `listAccounts` — list registered accounts
 
-## CLI Examples
-```bash
-signal-cli -a +1234567890 send -m "Hello" +1987654321
-signal-cli -a +1234567890 receive
-signal-cli listAccounts
-```
-
 ## Gotchas
 - **Config locked**: Daemon running → CLI fails with "Config file is in use"
 - **Receive**: JSON-RPC POST, NOT HTTP GET
@@ -65,8 +58,10 @@ Location: `~/.local/share/signal-cli/data/[ACCOUNT_ID]/account.db`
 
 ## Helper
 ```bash
-python3 skills/signal-cli/signal_rpc.py  # signal cli helper
+python3 skills/signal-cli/signal_rpc.py
 ```
 
 ## Related Skills
 - `background` — run signal daemon in background
+- `shell_scripting` — automate signal CLI commands
+- `web-research` — JSON-RPC API patterns

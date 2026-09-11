@@ -1,14 +1,14 @@
 ---
-name: prompt-crafting
-description: "Write effective prompts for subagent, fork, background delegation. Prompt engineering, task instructions, clear scope, context passing, delegation quality (also load: delegation, context_management, task_creation, caveman)"
 category: workflow
-keywords: prompt, prompt engineering, subagent prompt, fork prompt, delegation, task instructions, context passing
+description: "Write effective delegation prompts and instruction templates for subagent, fork, background tasks (also load: delegation, caveman, skill_template, task)"
+keywords: prompt crafting, delegation prompts, subagent prompts, fork prompts, task prompts, prompt engineering, context constraints, success criteria
+name: prompt-crafting
 ---
 
 # Prompt Crafting
 
 ## When
-"write prompt", "subagent prompt", "fork prompt", "delegation prompt", "task instructions", "prompt template"
+"write prompt" | "subagent prompt" | "fork prompt" | "delegation prompt" | "task instructions" | "prompt template" | "prompt" | "prompt engineering" | "craft prompt"
 
 ## Rules
 - **Specific**: say exactly what to do, where, how
@@ -17,17 +17,18 @@ keywords: prompt, prompt engineering, subagent prompt, fork prompt, delegation, 
 - **Constraints**: say what NOT to do
 - **One task per prompt**: don't mix unrelated work
 
-## Subagent Template (Blank Slate — Knows NOTHING)
+## Templates
+### Subagent (Blank Slate — Knows NOTHING)
 ```
 TASK: [what to do] | CONTEXT: [file paths, code, state] | CONSTRAINTS: [limits] | OUTPUT: [format] | VERIFY: [how to confirm]
 ```
 
-## Fork Template (Has Memory — Focus, Don't Repeat)
+### Fork (Has Memory — Focus, Don't Repeat)
 ```
 FOCUS ON: [what to do] | SKIP: [don't re-explain] | DELIVER: [output expected]
 ```
 
-## Background — Self-Contained Command
+### Background — Self-Contained Command
 ```
 Command: self-contained, idempotent, output status clearly
 Keywords for wait: "success|error|done|FAILED|Traceback"
@@ -54,4 +55,10 @@ python3 skills/prompt-crafting/prompt_template.py --check "fix the code"
 ```
 
 ## Related Skills
-- `delegation`, `context_management`, `task_creation`, `caveman`
+- `background` — Run commands in background
+- `caveman` — Concise writing style for prompts
+- `context_management` — Context capacity optimization
+- `delegation` — Delegation patterns and tool selection
+- `skill_template` — Skill creation format
+- `task` — Creating tasks for dream execution (redirect: see task)
+- `task` — Task framework, lifecycle, verification

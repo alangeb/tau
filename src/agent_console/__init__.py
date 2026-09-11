@@ -3,9 +3,13 @@
 Provides focused submodules for console display functions:
 - audit: Console-to-audit bridging (_log_audit)
 - audit_display: Audit log viewer (AuditRecord, parse_audit_file, show_audit)
-- primitives: Low-level I/O (echo, status, _cw, prompt, etc.)
-- messages: MessageRegistry, _ConsoleMessage class, and all message definitions
-- display: All display functions (tool, command, status, context, llm, simple, loop)
+- primitives: Low-level I/O (echo, status, _cw, prompt, etc.) + display helpers
+- templates: _ConsoleMessage class, _msg() factory, and all message definitions
+- display_tool: Tool display (tool_start, tool_output, tool_error_detail, ...)
+- display_command: Command display (show_help, show_commands, show_tools, ...)
+- display_status: Status display (agent_status, exit_summary, print_context_status, ...)
+- display_context: Context display (context_validation_warning, context_list_display, ...)
+- display_misc: Misc display (error_display, undo_message, llm_timeout_message, ...)
 
 Uses lazy loading via __getattr__ to avoid importing all submodules at package
 load time. This eliminates the maintenance burden of keeping explicit re-exports
@@ -19,15 +23,20 @@ from __future__ import annotations
 import importlib as _importlib
 
 # ── Lazy loading configuration ─────────────────────────────────────────────────
-# Maps submodule names to the symbols they export.
+# Ordered list of submodule paths to search when resolving symbols.
 # Submodules are the source of truth — add symbols to submodule __all__, not here.
-_SUBMODULES: dict[str, str] = {
-    "audit": "agent_console.audit",
-    "audit_display": "agent_console.audit_display",
-    "primitives": "agent_console.primitives",
-    "messages": "agent_console.messages",
-    "display": "agent_console.display",
-}
+# Order matters: earlier submodules take precedence for duplicate symbol names.
+_SUBMODULE_PATHS: tuple[str, ...] = (
+    "agent_console.audit",
+    "agent_console.audit_display",
+    "agent_console.primitives",
+    "agent_console.templates",
+    "agent_console.display_tool",
+    "agent_console.display_command",
+    "agent_console.display_status",
+    "agent_console.display_context",
+    "agent_console.display_misc",
+)
 
 # Cache for resolved symbols (avoids repeated imports)
 _attr_cache: dict[str, object] = {}
@@ -58,7 +67,7 @@ def __getattr__(name: str) -> object:
         return _attr_cache[name]
 
     # Try each submodule in order
-    for submodule_name, module_path in _SUBMODULES.items():
+    for module_path in _SUBMODULE_PATHS:
         try:
             module = _importlib.import_module(module_path)
             if hasattr(module, name):
@@ -75,34 +84,65 @@ def __dir__() -> list[str]:
     """Return all resolvable symbols for IDE autocomplete and dir() support.
 
     Aggregates __all__ from all submodules plus standard dunder attributes.
+    Uses the lazy __all__ to avoid repeated submodule imports.
     """
-    result = sorted(name for name in globals() if name.startswith("__"))
-    for _, module_path in _SUBMODULES.items():
-        try:
-            module = _importlib.import_module(module_path)
-            result.extend(getattr(module, "__all__", []))
-        except ImportError:
-            continue
-    return result
+    # __all__ is lazy — accessing it triggers the first-time computation
+    dunder = sorted(name for name in globals() if name.startswith("__"))
+    return sorted(__all__) + dunder  # type: ignore[arg-type]
 
 
-# Build __all__ dynamically from submodule __all__ lists.
-# This is evaluated at module load time and cached.
-def _build_all() -> list[str]:
-    """Build __all__ by aggregating __all__ from all submodules."""
-    all_symbols: list[str] = []
-    for _, module_path in _SUBMODULES.items():
-        try:
-            module = _importlib.import_module(module_path)
-            all_symbols.extend(getattr(module, "__all__", []))
-        except ImportError:
-            continue
-    return all_symbols
+# Lazy __all__ — defers submodule imports until first access.
+# This preserves the lazy loading promise: submodules are NOT imported
+# at package load time. They are imported only when __all__ is accessed
+# (e.g., `from agent_console import *`, IDE autocomplete, or explicit use).
+class _LazyAll:
+    """Lazy list that computes __all__ on first access and caches the result."""
+
+    __slots__ = ("_computed",)
+
+    def __init__(self) -> None:
+        self._computed: list[str] | None = None
+
+    def _compute(self) -> list[str]:
+        if self._computed is None:
+            self._computed = self._build()
+        return self._computed
+
+    @staticmethod
+    def _build() -> list[str]:
+        """Build __all__ by aggregating __all__ from all submodules.
+
+        Deduplicates using dict.fromkeys to preserve first-seen order while
+        eliminating duplicates from submodules that share symbols.
+        """
+        all_symbols: list[str] = []
+        for module_path in _SUBMODULE_PATHS:
+            try:
+                module = _importlib.import_module(module_path)
+                all_symbols.extend(getattr(module, "__all__", []))
+            except ImportError:
+                continue
+        return list(dict.fromkeys(all_symbols))
+
+    def __iter__(self) -> iter:
+        return iter(self._compute())
+
+    def __len__(self) -> int:
+        return len(self._compute())
+
+    def __getitem__(self, index: int) -> str:
+        return self._compute()[index]
+
+    def __contains__(self, item: object) -> bool:
+        return item in self._compute()
+
+    def __repr__(self) -> str:
+        return repr(self._compute())
 
 
-__all__ = _build_all()
+__all__: list[str] = _LazyAll()  # type: ignore[assignment]
 
 
 # Note: Internal symbols (_cw, _ConsoleMessage, _msg) are available via
-# lazy loading but are implementation details for use by messages.py and
-# display.py only. They are not part of the public API.
+# lazy loading but are implementation details for use by templates.py and
+# display_*.py modules only. They are not part of the public API.

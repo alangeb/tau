@@ -1,14 +1,14 @@
 ---
+description: "Capture ideas — brainstorm features, document in subconscious/ideas/ with status tracking, convert to tasks (also load: task, plan_template, dream, manifest)"
+keywords: idea capture, brainstorm, feature ideas, idea tracking, idea documentation, convert to tasks, idea management, feature planning
 name: idea
-description: Capture ideas for features, fixes, improvements. Brainstorm, ideation, idea-to-task pipeline (also load: plan_template, project-onboard, task, task_creation, bug_investigation, dream, wiki)
-category: development
-keywords: idea, ideas, brainstorm, ideation, feature idea, bug fix, improvement, capture idea, thought capture, new feature, novel concept, idea pipeline, idea to task, subconscious, ideas folder
+category: planning
 ---
 
 # Idea Capture
 
 ## When
-"new feature", "bug fix", "refactoring", "process improvement", "novel concept", "brainstorm", "capture idea"
+"new feature" | "bug fix" | "refactoring" | "process improvement" | "novel concept" | "brainstorm" | "capture idea" | "task list"
 
 ## Location
 `subconscious/ideas/` — pre-existing. DO NOT create.
@@ -48,15 +48,16 @@ python3 skills/idea/idea_gen.py  # idea helper
 Idea (subconscious/ideas/) → Task (tasks/1_todo/) → Implementation → Done
 ```
 1. `skill('idea')` — capture
-2. `skill('task_creation')` — formalize
+2. `skill('task')` — formalize
 3. `skill('dream')` — execute
 4. `skill('task')` — verify
 
 ## Related Skills
+- `manifest` — hierarchical plan tracking, goal management
+- `bug_investigation` — Find improvement ideas from bugs
+- `dream` — Dream orchestrator for task execution
 - `plan_template` — Turn ideas into structured plans
 - `project-onboard` — Understand project context before ideating
 - `task` — Task framework, lifecycle, verification
-- `task_creation` — Formalize ideas into executable tasks
-- `bug_investigation` — Find improvement ideas from bugs
-- `dream` — Dream orchestrator for task execution
+- `task` — Formalize ideas into executable tasks
 - `wiki` — Knowledge storage and retrieval

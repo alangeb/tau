@@ -16,13 +16,13 @@ TauErgon is a self-contained AI agent framework with tool calling, context compr
 
 ### Capabilities
 
-- **33 tools** — file ops, shell, web search, code analysis, background processes, and more
+- **41 tools** — file ops, shell, web search, code analysis, background processes, and more
 - **Agent delegation** — fork (inherits context), subagent (blank slate), delegate (orchestrator)
 - **Context compression** — automatic when approaching token limits
 - **Agent-to-Agent (A2A)** — inter-agent communication via Unix domain sockets. See [`A2A_PROTOCOL.md`](src/designs/A2A_PROTOCOL.md) for the full v1.0 contract.
 - **Loadable skills** — specialized task instructions
 - **Extensible commands** — built-in, Python, and Markdown commands
-- **Skills system** — 23 pre-built skills for common workflows
+- **Skills system** — 55 pre-built skills for common workflows
 
 ---
 
@@ -198,7 +198,7 @@ Detailed design documents live in `src/designs/`:
 cd src && pytest
 
 # End-to-end tests (requires LLM endpoint, ~100 seconds)
-bash sanity.sh
+cd src && bash sanity.sh
 ```
 
 ---

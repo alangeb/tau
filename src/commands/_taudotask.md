@@ -28,17 +28,17 @@ Run `pyscan`, `pygraph`, `pyanalyze`, `pycheck` on the codebase to understand st
 
 **ANALYSIS LIMIT: Maximum 4 analysis tool calls. After 4 calls, you MUST start implementing.**
 
-Look into folder structure `/home/alangeb/tau/tasks/` (absolute path), you'll see the folders `1_todo/`, `2_inprogress/`, `3_done/`, `3_failed/`.
+Look into folder structure `/home/user/tau/tasks/` (absolute path), you'll see the folders `1_todo/`, `2_inprogress/`, `3_done/`, `3_failed/`.
 The task file in `2_inprogress/` describes the task/goal/activity you should perform.
 Read it and implement.
 
-**Path Convention (CRITICAL):** Always use absolute paths (`/home/alangeb/tau/tasks/...`) for ALL task file operations — reading, writing, and verification. Never use relative paths like `tasks/` or `../tasks/` — these resolve differently depending on the agent's working directory (`src/`), causing task files to be created in the wrong location (`src/tasks/` instead of `/home/alangeb/tau/tasks/`).
+**Path Convention (CRITICAL):** Always use absolute paths (`/home/user/tau/tasks/...`) for ALL task file operations — reading, writing, and verification. Never use relative paths like `tasks/` or `../tasks/` — these resolve differently depending on the agent's working directory (`src/`), causing task files to be created in the wrong location (`src/tasks/` instead of `/home/user/tau/tasks/`).
 
 **MANDATORY: After reading the task file, immediately start implementing. Do NOT create elaborate plans. Do NOT analyze further. Implement directly.**
 
 Be careful not to miss edge cases. Goal is to perform the task/goal/activity from file you read.
 
-Use your plan tool to create tasks to improve/fix the one most important thing. Do not change functionality. Assume everything is done for a purpose. But do make it more clean.
+Use your manifest tool to create tasks to improve/fix the one most important thing. Do not change functionality. Assume everything is done for a purpose. But do make it more clean.
 
 Then execute on all the changes. Implement the changes.
 
@@ -81,4 +81,4 @@ Report on what was done.
 ## Related Skills
 - `skill('task')` — Complete task framework, verification, state management
 - `skill('dream')` — Dream orchestrator that invokes this command
-- `skill('task_creation')` — Creating tasks for execution
+- `skill('task')` — Task creation and management

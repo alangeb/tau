@@ -1,8 +1,8 @@
 ---
-name: info
-description: "Agent status and diagnostics — working directory, PID, model config, context usage, token stats. System info (also load: context_management, error-recovery, tau_audit, performance)"
 category: diagnostics
-keywords: agent info, status, context usage, token usage, execution context, system info
+description: "Check agent info and status, context usage, token count — monitor context window, model config, execution mode (also load: context_management, health, orchestrate, tau_audit)"
+keywords: agent status, context usage, token count, model config, execution context, agent diagnostics, info check, context window
+name: info
 ---
 
 # Info Tool
@@ -17,9 +17,7 @@ keywords: agent info, status, context usage, token usage, execution context, sys
 - Execution context (nesting level, fork/subagent mode)
 
 ## Context Capacity
-- 200K token limit
-- >80% — compress or delegate
-- >90% — critical, delegate immediately
+See AGENT.md — CONTEXT MANAGEMENT section for thresholds.
 
 ## Helper
 ```bash
@@ -31,3 +29,5 @@ python3 skills/info/info_status.py  # Quick status check (sessions + context)
 - `error-recovery` — handle context overflow
 - `tau_audit` — analyze session logs
 - `performance` — profile bottlenecks and optimize
+- `delegation` — check context usage before delegating
+- `project-onboard` — initial project diagnostics

@@ -18,7 +18,7 @@ import pytest
 
 from agent_loop_detect import LoopDetector, WARNING_LEVEL_1, WARNING_LEVEL_2, WARNING_LEVEL_3
 from agent_context import TauContext
-from agent_core import ToolFilter
+from agent_tool_filter import ToolFilter
 
 
 class TestCumulativeTracking:
@@ -326,3 +326,221 @@ class TestSyntheticLoopSimulation:
         # Start fresh
         detector.detect_tool_loop("tool", {})
         assert detector.total_warnings == 1
+
+
+class TestSustainedNonRepeat:
+    """Test that total_warnings requires sustained non-repeats before clearing."""
+
+    def _build_warnings(self, detector, count):
+        """Helper to build up exactly `count` warnings.
+        
+        After building, _consecutive_non_repeats will be 1 (from the final breaker call).
+        """
+        for _ in range(count):
+            detector.detect_tool_loop("bad_tool", {})
+            detector.detect_tool_loop("bad_tool", {})  # repeat triggers warning
+            detector.detect_tool_loop("breaker", {})   # break the repeat chain
+
+    def test_single_non_repeat_does_not_clear_warnings(self):
+        """A single non-repeat should NOT clear total_warnings."""
+        detector = LoopDetector(repeat_threshold=2)
+
+        # Trigger 5 warnings; after this, _consecutive_non_repeats == 1 (from breaker)
+        self._build_warnings(detector, 5)
+        assert detector.total_warnings == 5
+        assert detector._consecutive_non_repeats == 1
+
+        # Single non-repeat — should NOT clear warnings (counter goes to 2, threshold is 3)
+        detector.detect_tool_loop("good_tool", {})
+        assert detector.total_warnings == 5
+        assert detector._consecutive_non_repeats == 2
+
+    def test_two_non_repeats_does_not_clear_warnings(self):
+        """Two consecutive non-repeats should NOT clear warnings (threshold is 3)."""
+        detector = LoopDetector(repeat_threshold=2)
+
+        self._build_warnings(detector, 5)
+        assert detector.total_warnings == 5
+        # _consecutive_non_repeats is 1 from breaker, need 2 more to reach threshold
+
+        detector.detect_tool_loop("good_tool_1", {})  # counter -> 2
+        detector.detect_tool_loop("good_tool_2", {})  # counter -> 3, THRESHOLD REACHED!
+        # Warnings ARE cleared because we hit the threshold (1 + 2 = 3)
+        assert detector.total_warnings == 0
+        assert detector._consecutive_non_repeats == 3
+
+    def test_two_non_repeats_from_zero_does_not_clear(self):
+        """Two non-repeats starting from counter=0 should NOT clear warnings."""
+        detector = LoopDetector(repeat_threshold=2)
+
+        self._build_warnings(detector, 5)
+        assert detector.total_warnings == 5
+
+        # Reset counter by triggering a repeat (this adds 1 warning)
+        detector.detect_tool_loop("repeat_a", {})
+        detector.detect_tool_loop("repeat_a", {})  # repeat, resets counter to 0, +1 warning
+        assert detector.total_warnings == 6
+
+        # Now counter is 0, two non-repeats should NOT clear (need 3)
+        detector.detect_tool_loop("good_1", {})  # counter -> 1
+        detector.detect_tool_loop("good_2", {})  # counter -> 2
+        assert detector.total_warnings == 6  # unchanged
+        assert detector._consecutive_non_repeats == 2
+
+    def test_three_non_repeats_from_zero_clears_warnings(self):
+        """Three consecutive non-repeats from counter=0 SHOULD clear warnings."""
+        detector = LoopDetector(repeat_threshold=2)
+
+        self._build_warnings(detector, 5)
+        assert detector.total_warnings == 5
+
+        # Reset counter by triggering a repeat
+        detector.detect_tool_loop("repeat_a", {})
+        detector.detect_tool_loop("repeat_a", {})  # repeat, resets counter to 0
+
+        # Three non-repeats should clear warnings
+        detector.detect_tool_loop("good_1", {})  # counter -> 1
+        detector.detect_tool_loop("good_2", {})  # counter -> 2
+        detector.detect_tool_loop("good_3", {})  # counter -> 3, THRESHOLD!
+        assert detector.total_warnings == 0
+        assert detector._consecutive_non_repeats == 3
+
+    def test_repeat_resets_non_repeat_counter(self):
+        """A repeat call should reset the non-repeat counter."""
+        detector = LoopDetector(repeat_threshold=2)
+
+        # Build up some warnings
+        detector.detect_tool_loop("bad_tool", {})
+        detector.detect_tool_loop("bad_tool", {})  # repeat, warning
+        detector.detect_tool_loop("breaker", {})   # break chain
+        detector.detect_tool_loop("bad_tool", {})
+        detector.detect_tool_loop("bad_tool", {})  # repeat, warning
+        assert detector.total_warnings == 2
+
+        # Two non-repeats
+        detector.detect_tool_loop("good_1", {})
+        detector.detect_tool_loop("good_2", {})
+        assert detector._consecutive_non_repeats == 2
+
+        # Repeat of good_2 — resets counter
+        detector.detect_tool_loop("good_2", {})
+        assert detector._consecutive_non_repeats == 0
+        # total_warnings incremented because good_2 repeat triggers another warning
+        assert detector.total_warnings == 3
+
+    def test_alternating_pattern_does_not_clear_warnings(self):
+        """Alternating bad/good/bad/good should NOT clear warnings."""
+        detector = LoopDetector(repeat_threshold=2)
+
+        # Build up warnings with alternating pattern
+        for _ in range(5):
+            detector.detect_tool_loop("bad_a", {})
+            detector.detect_tool_loop("bad_a", {})  # repeat triggers warning
+            detector.detect_tool_loop("good", {})   # non-repeat, increments counter
+
+        # Warnings should still be accumulated because non-repeats never reached threshold
+        assert detector.total_warnings > 0
+
+    def test_reset_clears_non_repeat_counter(self):
+        """reset() should clear _consecutive_non_repeats."""
+        detector = LoopDetector(repeat_threshold=2)
+
+        detector.detect_tool_loop("tool_a", {})
+        detector.detect_tool_loop("tool_b", {})
+        assert detector._consecutive_non_repeats == 2
+
+        detector.reset()
+        assert detector._consecutive_non_repeats == 0
+
+
+class TestInjectThinkReflectionHelper:
+    """Test the _inject_think_reflection shared helper."""
+
+    def test_helper_exists(self):
+        """_inject_think_reflection method exists on LoopEscalationManager."""
+        from agent_loop_escalation import LoopEscalationManager
+
+        assert hasattr(LoopEscalationManager, "_inject_think_reflection")
+
+    def test_helper_signature(self):
+        """_inject_think_reflection has correct signature."""
+        import inspect
+        from agent_loop_escalation import LoopEscalationManager
+
+        sig = inspect.signature(LoopEscalationManager._inject_think_reflection)
+        params = list(sig.parameters.keys())
+        assert "self" in params
+        assert "question" in params
+        assert "id_prefix" in params
+        assert "concise_summary" in params
+        assert "console_label" in params
+        assert "console_desc" in params
+        assert "track_timing" in params
+
+    def test_inject_early_reflection_calls_helper(self):
+        """inject_early_reflection delegates to _inject_think_reflection."""
+        import ast
+        from pathlib import Path
+
+        source = Path(__file__).parent.parent / "agent_loop_escalation.py"
+        tree = ast.parse(source.read_text())
+
+        # Find inject_early_reflection method
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "inject_early_reflection":
+                # Check it calls _inject_think_reflection
+                source_text = ast.unparse(node)
+                assert "_inject_think_reflection" in source_text
+                break
+        else:
+            pytest.fail("inject_early_reflection method not found")
+
+    def test_inject_reflection_calls_helper(self):
+        """inject_reflection delegates to _inject_think_reflection."""
+        import ast
+        from pathlib import Path
+
+        source = Path(__file__).parent.parent / "agent_loop_escalation.py"
+        tree = ast.parse(source.read_text())
+
+        # Find inject_reflection method
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "inject_reflection":
+                # Check it calls _inject_think_reflection
+                source_text = ast.unparse(node)
+                assert "_inject_think_reflection" in source_text
+                break
+        else:
+            pytest.fail("inject_reflection method not found")
+
+    def test_early_reflection_no_timing(self):
+        """inject_early_reflection passes track_timing=False."""
+        import ast
+        from pathlib import Path
+
+        source = Path(__file__).parent.parent / "agent_loop_escalation.py"
+        tree = ast.parse(source.read_text())
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "inject_early_reflection":
+                source_text = ast.unparse(node)
+                assert "track_timing=False" in source_text
+                break
+        else:
+            pytest.fail("inject_early_reflection method not found")
+
+    def test_reflection_with_timing(self):
+        """inject_reflection passes track_timing=True."""
+        import ast
+        from pathlib import Path
+
+        source = Path(__file__).parent.parent / "agent_loop_escalation.py"
+        tree = ast.parse(source.read_text())
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "inject_reflection":
+                source_text = ast.unparse(node)
+                assert "track_timing=True" in source_text
+                break
+        else:
+            pytest.fail("inject_reflection method not found")

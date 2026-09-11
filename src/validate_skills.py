@@ -64,14 +64,14 @@ def main() -> int:
     warnings: list[str] = []
 
     # ── Discover runtime skills (delegated to shared utility) ──
-    from lib.skill_discovery import discover_skills
+    from lib.skill_discovery import discover_skills, skill_name_from_path
 
     skill_infos = discover_skills(SKILLS_DIR)
     runtime_skills: set[str] = set()
     skill_path_map: dict[str, Path] = {}
     for info in skill_infos:
         fpath = Path(info["file"])
-        stem = fpath.parent.name if fpath.name == "SKILL.md" else fpath.stem
+        stem = skill_name_from_path(fpath)
         if stem not in runtime_skills:
             runtime_skills.add(stem)
             skill_path_map[stem] = fpath

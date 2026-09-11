@@ -1,50 +1,81 @@
 ---
-name: bug_investigation
-description: Systematically investigate bugs — pyscan, pyanalyze, grep, hypothesis testing, root cause, fix proposal (also load: ast-grep, code-review-workflow, context_management, graphify, python_debugging, think, error-recovery, performance)
 category: development
-keywords: debug, root cause, investigate, bug, trace, why, broken, fails, diagnose, error, crash, not working, hypothesis, fix
+description: "Systematic bug investigation and root cause analysis — investigate with pyscan, pyanalyze, grep, traceback (also load: debug, tau_audit, file-ops, pyprep, think)"
+keywords: root cause identification, pyscan structural scan, pyanalyze usage check, hypothesis-driven investigation, systematic fault isolation, traceback parsing, pattern search, file inspection
+name: bug_investigation
 ---
 
-# Bug Investigation
+# bug_investigation
 
 ## When
-"investigate bug", "root cause", "debug issue", "find bug", "why does this fail", "something is broken", "why does it fail", "diagnose", "investigate issue"
+"investigate bug" "root cause" "debug" "why does this fail" "diagnose" "error" "traceback" "investigate error" "trace error" "find root cause" "traceback analysis" "error tracing" "fault isolation" "debug error"
 
 ## Tool Sequence (ALWAYS first)
-1. `pyscan(path=".")` — structural inventory, call relationships
-2. `pyanalyze(path=".")` — unused functions/imports, dead code
+1. `pyscan(path=".")` — structural inventory
+2. `pyanalyze(path=".")` — unused functions/imports
 3. `grep` — pattern search, call sites, execution paths
 
 ## Process
-1. **Hypothesis**: Formulate specific hypotheses from symptoms + tool output
-2. **Verify**: Design tests per hypothesis — grep call sites, trace paths, check state
-3. **Root Cause**: Single clear explanation of WHY
-4. **Fix**: Type (quick/architectural), Location, Change, Risk
-5. **Verify**: Test steps, edge cases, regression tests
+1. **Capture** — reproduce error, save traceback
+2. **Search** — `grep -rn "error_keyword" . --include="*.py"`
+3. **Inspect** — `file_read` relevant files around error line
+4. **Trace** — follow call chain: `grep -rn "function_name(" . | grep -v "def "`
+5. **Hypothesize** — form theory from evidence
+6. **Verify** — test hypothesis with minimal change
+7. **Fix** — apply fix, verify tests pass
 
 ## Common Root Causes
 - Return value ignored in call chain
 - Thread target not detected by AST tools
-- State not properly passed between layers
+- State not passed between layers
 - Assumption violation (expected vs actual)
+
+## Quick Patterns
+```bash
+# Find error source
+grep -rn "ERROR\|Exception\|Traceback" . --include="*.py"
+
+# Find callers
+grep -rn "function_name(" . --include="*.py" | grep -v "def function_name"
+
+# Find recent changes
+git log --oneline -10 -- <file>
+
+# Check for similar errors
+grep -rn "similar_pattern" ~/.local/tau/log/*.audit
+```
 
 ## Checklist
 - [ ] pyscan + pyanalyze + grep run
+- [ ] Error reproduced and captured
+- [ ] Pattern searched across codebase
+- [ ] Call chain traced
 - [ ] ≥2 hypotheses tested
 - [ ] Root cause identified
-- [ ] Fix proposal with specific code changes
+- [ ] Fix proposal with specific changes
 - [ ] Verification plan defined
 
 ## Helper
 ```bash
-python3 skills/bug_investigation/investigate.py <path>  # Automated investigation report
+python3 skills/bug_investigation/investigate.py <func_name>  # Automated investigation report
+python3 skills/bug_investigation/parse_traceback.py <traceback.txt>  # Parse traceback
 ```
 
 ## Related Skills
-- `ast-grep` — complex pattern search
-- `code-review-workflow` — automated code analysis
+- `ast-grep` — structural pattern search
+- `debug` — systematic debugging workflow
 - `error-recovery` — handle tool errors
-- `graphify` — knowledge graph analysis
 - `performance` — profile bottlenecks
-- `python_debugging` — interactive debugging
-- `think` — deep reasoning tool
+- `grep_tool` — trace call sites and execution paths
+- `git-advanced` — bisect for bug hunting
+- `tau_audit` — analyze error patterns in logs
+- `security-audit` — security review
+- `swe_bench` — SWE-bench workflow
+- `graphify` — graph-based bug analysis
+- `pyprep` — Python project prep for debugging
+- `think` — deep thinking on bugs
+- `docker` — debug container issues
+- `health` — diagnose server issues
+- `tauskillmaintenance` — skill quality audit
+- `idea` — capture improvement ideas
+- `plan_template` — plan investigation steps

@@ -1,20 +1,14 @@
 ---
-name: wiki
-description: Local LLM-searchable wiki — store, retrieve, organize, maintain knowledge (also load: dream, idea, task, task_creation, web-research, documentation, graphify, tau_audit)
 category: knowledge
-keywords: wiki, knowledge base, store information, retrieve knowledge, maintain wiki, local wiki, wiki add, wiki search, wiki maintain, wiki structure, wiki organize, session ingest, audit ingest, query, lint, ingest, maintain, cleanup
+description: "Store and search knowledge in wiki, reference topics, ingest sessions, maintain INDEX and log files (also load: documentation, grep_tool, web-research, task)"
+keywords: wiki, knowledge storage, topic search, session ingest, wiki lint, INDEX maintenance, wiki structure, knowledge base
+name: wiki
 ---
-
-# Wiki Skill
-
 ## When
-"store information", "add to wiki", "search wiki", "wiki structure", "retrieve knowledge", "wiki add", "wiki search", "knowledge base", "wiki maintenance", "wiki ingest", "wiki lint"
-
+"store information", "add to wiki", "search wiki", "wiki structure", "retrieve knowledge", "wiki add", "wiki search", "knowledge base"
 ## Configuration
 **Path:** `tau.json` → `"wiki": {"path": "/path/to/wiki"}` | Env: `TAU_WIKI_DIR` | Default: `$HOME/.local/tau/wiki`
 - `wiki get` — current path | `wiki set path=/new` — change | `wiki status` — check
-- Tau AUTHORIZED to read/write wiki. No user permission required.
-
 ## Structure
 ```
 <wiki-root>/
@@ -23,94 +17,54 @@ keywords: wiki, knowledge base, store information, retrieve knowledge, maintain 
 ├── <topic>/                  # Topic folders (dynamic)
 │   ├── INDEX.md
 │   └── <topic>-YYYY-MM-wNN.md  # Weekly merged content
-├── queries/                  # Query results
-├── references/               # Valuable raw source material
-└── _dump/                    # Trivial/low-value sessions
+├── queries/ | references/ | _dump/   # Queries, raw sources, trivial sessions
 ```
-
 ## Content File Format
 ```yaml
 ---
 type: session|query|decision|reference|playbook   # REQUIRED
-title: One-line summary
-tags: [tag1, tag2]
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
+title: One-line summary | tags: [tag1, tag2] | created: YYYY-MM-DD | updated: YYYY-MM-DD
 contradicts: /path/to/contradicting.md            # Optional
 ---
 ```
-
 **Body:** `# Title` → `## Session PID` → `### User Prompts` → `### Conclusions` → `### Tools Used` → `### Errors`
-**Append:** `## Updates` → `### YYYY-MM-DD: Description`
-
 ## Activities
-
 ### ADD
-1. `git pull origin master`
-2. Search existing wiki (INDEX + grep) for overlapping topics
-3. Topic exists → append | New topic → create file + folder
-4. Update INDEX.md + log.md
-5. `git add -A && git commit && git push origin master`
-6. Verify: `git status --short` empty
-
+1. `git pull origin master`; search INDEX + grep; append or create; update INDEX.md + log.md + git
 ### RETRIEVE
-1. INDEX.md keyword search first
-2. Content file grep fallback
-3. If findability improved → update INDEX + git
-
+1. INDEX.md keyword search first; content file grep fallback
 ### QUERY
-1. Search wiki, synthesize answer
-2. Valuable answer → file to `queries/` with `type: query`
-3. Update INDEX.md + log.md + git
-
+1. Search wiki, synthesize; valuable → `queries/` with `type: query`; update INDEX.md + log.md + git
 ### INGEST
-1. `git pull origin master`
-2. List `$HOME/.local/tau/log/` → group by `PID_TIMESTAMP`
-3. Valuable → `references/` + wiki content | Trivial → `_dump/`
-4. Safe move: Copy → Verify → Delete originals
-5. Update INDEX.md + log.md + git
-- Extract from context files (JSON). Score topics by keyword frequency. Merge same-topic sessions into weekly file.
-- Trivial: 1-turn, no errors, no decisions, no insights → `_dump/`
-
+1. `git pull origin master`; list `$HOME/.local/tau/log/` → group by `PID_TIMESTAMP`
+2. Valuable → `references/` | Trivial → `_dump/`; safe move: Copy → Verify → Delete originals
+3. Extract from context files (JSON). Score by keyword freq. Merge same-topic into weekly file
 ### LINT
-1. All `.md` have frontmatter with `type`
-2. All cross-refs point to existing files
-3. Flag contradictions, stale claims, orphans
-4. Update log.md + git
-
+1. All `.md` have frontmatter + `type`; cross-refs valid; flag contradictions, stale claims, orphans
 ### MAINTAIN
-1. `git pull origin master`
-2. Walk tree — fix broken links, check file sizes
-3. Split files > 5kb | Rebalance INDEX > 20 entries
-4. Handle orphans | Update dates | Verify sources
-5. Update log.md + git
-
+1. `git pull origin master`; walk tree — fix broken links, check sizes
+2. Split files > 5kb | Rebalance INDEX > 20 entries; handle orphans, update dates, verify sources
 ## Git Integration
 **Remote:** `ssh://git@git:/git/wiki` | **Branch:** master
-- Every session: `git pull` → work → `git add -A && git commit && git push` → verify clean
-- Merge conflicts: prefer MORE data. Keep both. Never delete data.
-- Never `git rm` content. Never force-push. References + `_dump/` immutable.
-
+- Merge conflicts: prefer MORE data. Keep both. Never `git rm` content. Never force-push. References + `_dump/` immutable.
 ## Helper Scripts
 ```bash
-python3 skills/wiki/wiki_tree.py          # Walk tree, report stats
-python3 skills/wiki/wiki_validate.py      # Validate INDEX, find broken links
-python3 skills/wiki/wiki_orphans.py       # Find orphaned references
-python3 skills/wiki/wiki_ingest.py        # Find unprocessed sessions
-python3 skills/wiki/wiki_extract.py       # Extract from context files
-python3 skills/wiki/wiki_migrate.py       # Migrate to new spec
-python3 skills/wiki/wiki_reprocess.py     # Re-process sessions
-python3 skills/wiki/wiki_split.py         # Find oversized files
+python3 skills/wiki/wiki_tree.py              # Show wiki structure
+python3 skills/wiki/wiki_validate.py           # Validate wiki entries
+python3 skills/wiki/wiki_orphans.py            # Find orphaned entries
+python3 skills/wiki/wiki_ingest.py <file>      # Ingest content
+python3 skills/wiki/wiki_extract.py <topic>    # Extract topic
+python3 skills/wiki/wiki_migrate.py            # Migrate wiki format
+python3 skills/wiki/wiki_reprocess.py          # Reprocess entries
+python3 skills/wiki/wiki_split.py <file>       # Split large entries
 ```
-
-## Dream Integration
-Wiki maintenance = step 8 in dream.py cycle.
-
 ## Related Skills
-- `dream` — orchestrator (wiki = step 8)
-- `task` — task lifecycle
-- `task_creation` — queue wiki tasks
-- `web-research` — source material
 - `documentation` — docs vs wiki
+- `dream` — orchestrator (wiki = step 8)
 - `graphify` — knowledge graphs
+- `idea` — idea capture
+- `sum` — State summarization
+- `task` — task lifecycle
+- `task` — queue wiki tasks
 - `tau_audit` — audit log analysis
+- `web-research` — source material

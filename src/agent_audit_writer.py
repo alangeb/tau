@@ -58,10 +58,22 @@ from pathlib import Path
 
 from agent_audit_bridge import emit_console_warning
 
+# ── EOT confirmation audit record types ────────────────────────────────────
+# These were previously emitted as raw string literals to _emit().
+# Defined as constants for type safety, discoverability, and consistency.
+EOT_CONFIRM_SENTINEL = "EOT_CONFIRM_SENTINEL"
+EOT_SELF_CONFIRMED = "EOT_SELF_CONFIRMED"
+EOT_CONFIRM_REQUEST = "EOT_CONFIRM_REQUEST"
+EOT_CONFIRM_ACCEPTED = "EOT_CONFIRM_ACCEPTED"
+
 __all__ = [
     "_classify_error",
     "ErrorRateTracker",
     "AuditWriter",
+    "EOT_CONFIRM_SENTINEL",
+    "EOT_SELF_CONFIRMED",
+    "EOT_CONFIRM_REQUEST",
+    "EOT_CONFIRM_ACCEPTED",
 ]
 
 
@@ -432,26 +444,30 @@ class AuditWriter:
     # --- Subagent / fork logging ---------------------------------------------------
 
     def fork_start(self, task: str) -> None:
-        self._emit("FORK_START", f"task={task!r}")
-        self._nesting_level += 1
-        self._flush()  # Ensure FORK_START is on disk before fork writes
+        with self._lock:
+            self._nesting_level += 1
+            self._emit("FORK_START", f"task={task!r}")
+            self._flush()  # Ensure FORK_START is on disk before fork writes
 
     def fork_end(self, duration_s: float) -> None:
-        if self._nesting_level <= 0:
-            emit_console_warning("Audit nesting underflow: fork_end() without matching fork_start()")
-        self._nesting_level = max(0, self._nesting_level - 1)
-        self._emit("FORK_END", f"duration_s={duration_s:.1f}")
+        with self._lock:
+            if self._nesting_level <= 0:
+                emit_console_warning("Audit nesting underflow: fork_end() without matching fork_start()")
+            self._nesting_level = max(0, self._nesting_level - 1)
+            self._emit("FORK_END", f"duration_s={duration_s:.1f}")
 
     def subagent_start(self, task: str) -> None:
-        self._emit("SUBAGENT_START", f"task={task!r}")
-        self._nesting_level += 1
-        self._flush()  # Ensure SUBAGENT_START is on disk before subagent writes
+        with self._lock:
+            self._nesting_level += 1
+            self._emit("SUBAGENT_START", f"task={task!r}")
+            self._flush()  # Ensure SUBAGENT_START is on disk before subagent writes
 
     def subagent_end(self, duration_s: float) -> None:
-        if self._nesting_level <= 0:
-            emit_console_warning("Audit nesting underflow: subagent_end() without matching subagent_start()")
-        self._nesting_level = max(0, self._nesting_level - 1)
-        self._emit("SUBAGENT_END", f"duration_s={duration_s:.1f}")
+        with self._lock:
+            if self._nesting_level <= 0:
+                emit_console_warning("Audit nesting underflow: subagent_end() without matching subagent_start()")
+            self._nesting_level = max(0, self._nesting_level - 1)
+            self._emit("SUBAGENT_END", f"duration_s={duration_s:.1f}")
 
     # --- Misc logging ------------------------------------------------------------
 
@@ -520,23 +536,57 @@ class AuditWriter:
         fields = f"total={total} bytes_total={bytes_total} max_tokens={max_tokens}"
         self._emit("CONTEXT_SNAPSHOT", fields)
 
-    # --- Console-to-audit bridging (backward compatible) ---------------------------
+    # --- Console-to-audit bridging (INTERNAL — use agent_audit_bridge only) --------
+    # These methods are NOT part of the public API. They are called exclusively
+    # through agent_audit_bridge explicit functions (console_error, console_warning,
+    # console_info, console_success), which provide exception handling and
+    # guard against writer being None. Direct calls bypass this safety mechanism.
 
-    def console_error(self, message: str) -> None:
-        """Log a console error message to audit."""
+    def _console_error(self, message: str) -> None:
+        """Log a console error message to audit. INTERNAL — use agent_audit_bridge."""
         self._emit("CONSOLE_ERROR", "", [message])
 
-    def console_warning(self, message: str) -> None:
-        """Log a console warning message to audit."""
+    def _console_warning(self, message: str) -> None:
+        """Log a console warning message to audit. INTERNAL — use agent_audit_bridge."""
         self._emit("CONSOLE_WARNING", "", [message])
 
-    def console_info(self, message: str) -> None:
-        """Log a console info message to audit."""
+    def _console_info(self, message: str) -> None:
+        """Log a console info message to audit. INTERNAL — use agent_audit_bridge."""
         self._emit("CONSOLE_INFO", "", [message])
 
-    def console_success(self, message: str) -> None:
-        """Log a console success message to audit."""
+    def _console_success(self, message: str) -> None:
+        """Log a console success message to audit. INTERNAL — use agent_audit_bridge."""
         self._emit("CONSOLE_SUCCESS", "", [message])
+
+    # --- EOT confirmation audit events ---
+
+    def eot_confirm_sentinel(self, response_preview: str, stripped: bool) -> None:
+        """Log that the LLM confirmed EOT with the sentinel during a confirmation round."""
+        self._emit(
+            EOT_CONFIRM_SENTINEL,
+            f"response={response_preview!r} stripped={stripped}"
+        )
+
+    def eot_self_confirmed(self, response_preview: str, stripped: bool) -> None:
+        """Log that the LLM self-confirmed EOT (sentinel in a non-confirmation round)."""
+        self._emit(
+            EOT_SELF_CONFIRMED,
+            f"response={response_preview!r} stripped={stripped}"
+        )
+
+    def eot_confirm_request(self, stack_depth: int, held_preview: str) -> None:
+        """Log that an EOT confirmation request was injected into the context."""
+        self._emit(
+            EOT_CONFIRM_REQUEST,
+            f"stack_depth={stack_depth} held_preview={held_preview!r}"
+        )
+
+    def eot_confirm_accepted(self, source: str, stack_depth: int, final_len: int) -> None:
+        """Log that an EOT confirmation was accepted and the turn was closed."""
+        self._emit(
+            EOT_CONFIRM_ACCEPTED,
+            f"source={source} stack_depth={stack_depth} final_len={final_len}"
+        )
 
     # --- Flush / close ------------------------------------------------------------
 

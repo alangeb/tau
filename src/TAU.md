@@ -19,6 +19,9 @@
 | Skill implementation | `designs/SKILLS.md` |
 | Testing | `designs/TESTING.md` |
 | Context management | `designs/CONTEXT.md` |
+| A2A protocol | `designs/A2A_PROTOCOL.md` |
+| Delegate mode | `designs/DELEGATE.md` |
+| Input protocol | `designs/INPUT_PROTOCOL.md` |
 
 ## Making Changes
 
@@ -41,7 +44,10 @@
 cd src && pytest
 
 # End-to-end tests (requires LLM endpoint, ~100 seconds)
+# Run from src/ directory:
 bash sanity.sh
+# Or from anywhere using absolute path:
+bash /home/user/tau/src/sanity.sh
 ```
 
 ## Debugging
@@ -107,7 +113,7 @@ All session artifacts live in `LOG_DIR` (default: `~/.local/tau/`):
 | `tc_*.sh` | Test files | `tc_1.0.1_basic.sh` |
 | `TASK_##.md` | Task files | `TASK_01.md` |
 | `skills/*/SKILL.md` | Skill files | `skills/tau_testsuite/SKILL.md` |
-| `*.md`/`*.py` in `commands/` | Command files | `delegate.py`, `health.py`, `plan.py`, `ralph.py`, `pyprep.md` |
+| `*.md`/`*.py` in `commands/` | Command files | `delegate.py`, `health.py`, `pyprep.md` |
 
 ### Path Convention
 
@@ -115,11 +121,11 @@ All session artifacts live in `LOG_DIR` (default: `~/.local/tau/`):
 
 | Context | Correct Path | Wrong Path | Why |
 |---------|-------------|------------|-----|
-| Task files (read/write) | `/home/alangeb/tau/tasks/1_todo/` | `tasks/1_todo/` | Relative `tasks/` resolves to `src/tasks/` (wrong) |
+| Task files (read/write) | `/home/user/tau/tasks/1_todo/` | `tasks/1_todo/` | Relative `tasks/` resolves to `src/tasks/` (wrong) |
 | Task creation | `$HOME/tau/tasks/queue.sh` | `file_write(path="tasks/1_todo/...")` | `queue.sh` is self-aware; `file_write` with relative paths is not |
-| Task verification | `ls /home/alangeb/tau/tasks/1_todo/` | `ls tasks/1_todo/` | Must verify in the correct location |
+| Task verification | `ls /home/user/tau/tasks/1_todo/` | `ls tasks/1_todo/` | Must verify in the correct location |
 
-**Rule:** Always use absolute paths (`/home/alangeb/tau/tasks/...`) for ALL task file operations. Never use relative paths like `tasks/` or `../tasks/`.
+**Rule:** Always use absolute paths (`/home/user/tau/tasks/...`) for ALL task file operations. Never use relative paths like `tasks/` or `../tasks/`.
 
 ### Agent Behavior (from AGENT.md)
 
@@ -132,7 +138,7 @@ All session artifacts live in `LOG_DIR` (default: `~/.local/tau/`):
 | Analysis | Use `pyscan` + `pyanalyze` before modifying Python code |
 | Testing | Always test after changes |
 | Process | **NEVER kill `tau.py` process** |
-| Verification | Run `sanity.sh` to verify changes (~100 sec) |
+| Verification | Run `bash sanity.sh` (from src/) or `bash /home/user/tau/src/sanity.sh` (~100 sec) |
 
 ## Links
 

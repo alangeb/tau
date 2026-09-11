@@ -1,27 +1,21 @@
 ---
-name: dream
-description: Dream orchestrator — self-improvement loop. Dream.py, task lifecycle, cycle steps, automation (also load: _taudoc, task, task_creation, tau_audit, tauskillmaintenance, idea, skill_template)
 category: orchestration
-keywords: dream, dream.py, dream cycle, dream task, dream orchestrator, self-improvement, automation, automate, task lifecycle, task queue, task execution, task framework, task status, task verification, idea, idea capture, task done, task failed
+description: "Run dream cycle, automate tasks, self-improve — process todo tasks, sanity tests, skill maintenance, doc sync (also load: task, orchestrate, idea, manifest, signal-cli, skill-discovery, tauskillmaintenance, background)"
+keywords: dream cycle, self-improve, automation loop, periodic task, dream orchestrator, dream task, automate, task queue, status check, cycle runner
+name: dream
 ---
 
 # Dream
 
 ## When
-"dream", "dream.py", "self-improvement loop", "dream cycle", "task orchestrator", "dream tasks", "automation", "automate", "task framework", "task lifecycle"
-
-## What
-`dream.py` — orchestrator for Tau self-improvement. Handles deterministic ops (file ops, git, testing, timeout, logging). Invokes `tau.py` only for LLM-driven work.
+"dream" | "dream.py" | "self-improvement loop" | "dream cycle" | "task orchestrator" | "dream tasks" | "automation" | "automate" | "task framework" | "task lifecycle" | "task list" | "maintenance"
 
 ## CRITICAL RULE
 **Tau must NEVER perform dream tasks directly.** Dream is ONLY invoked through `dream.py`.
 **Never invoke `/_taudotask`, `/_taurearch`, `/_tautestcommands`, `/_tautestsanity`, `/_tauskillmaintenance`, `/_taudoc`, or `/_taulogreview` directly.**
 
 ## Task Lifecycle
-- `tasks/1_todo/` — waiting
-- `tasks/2_inprogress/` — active
-- `tasks/3_done/` — completed
-- `tasks/3_failed/` — failed
+- `tasks/1_todo/` — waiting | `tasks/2_inprogress/` — active | `tasks/3_done/` — completed | `tasks/3_failed/` — failed
 
 ### Flow
 1. dream.py scans `1_todo/*.md` → **sorted by filename** (lexicographic)
@@ -69,10 +63,18 @@ python3 skills/dream/task_status.py  # Show pending/active tasks
 ```
 
 ## Related Skills
+- `skill-discovery` — auto-discover relevant skills
+- `manifest` — hierarchical plan tracking, goal management
 - `_taudoc` — Documentation structure
 - `task` — Complete task framework, verification, state management
-- `task_creation` — Creating tasks for dream execution
+- `task` — Creating tasks for dream execution
 - `tau_audit` — Analyze agent behavior
 - `tauskillmaintenance` — Skill audit process
 - `idea` — Idea capture before formalizing as tasks
 - `skill_template` — Skill creation format
+- `orchestrate` — Goal-driven delegation with manifests
+- `manifest` — Goal-driven delegation manifests
+- `wiki` — wiki skill
+- `sum` — State summarization
+- `plan_template` — task planning
+- `signal-cli` — Signal CLI integration

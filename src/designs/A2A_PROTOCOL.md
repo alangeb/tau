@@ -1,22 +1,22 @@
 # A2A Protocol v1.0 — Agent-to-Agent Communication
 
 > **External Interface Contract**: This document defines the stable v1.0 contract for
-> inter-agent communication. External projects (e.g., TauWeb, custom supervisors)
+> inter-agent communication. External projects (e.g., TauWeb, custom tooling)
 > should implement against this protocol to interact with TauErgon agents.
 > All extension fields are optional; old clients and agents remain compatible.
 
 **Version**: 1.0
 **Status**: Active
 **Source**: `src/agent_a2a.py`, `src/agent_core.py`, `src/agent_tool_executor.py`
-**See also**: `src/designs/ARCHITECTURE.md`, `src/designs/INDEX.md`
+**See also**: [ARCHITECTURE.md](ARCHITECTURE.md) (module inventory), [INDEX.md](INDEX.md) (design index)
 
 ---
 
 ## 1. Overview
 
 A2A (Agent-to-Agent) enables inter-agent communication via Unix domain sockets.
-A parent agent (supervisor) can connect to a child agent's socket to query it,
-inspect its status, supervise its execution, and terminate it.
+A parent agent can connect to a child agent's socket to query it and
+inspect its status.
 
 **Transport**: Unix domain socket (`AF_UNIX`, `SOCK_STREAM`)
 **Socket path**: `/tmp/taua2a-{PID}.sock`
@@ -25,11 +25,14 @@ inspect its status, supervise its execution, and terminate it.
 
 ### Design principles
 
-- **No wall-clock timeout** — client times out only if no data (response or heartbeat)
-  arrives for `HEARTBEAT_IDLE_TIMEOUT` seconds. Slow agents are fine.
+- **Wall-clock timeout** — `_poll_for_response()` has a 300s default `max_timeout` to prevent
+  infinite hangs. Configurable per-call. Slow agents within the timeout are fine.
 - **Heartbeat-based liveness** — server sends heartbeat every `HEARTBEAT_INTERVAL` seconds
   during query processing. Client resets idle timer on any data.
-- **Thread-per-connection** — server spawns a daemon thread per client connection.
+- **Thread pool (max 10 workers)** — server handles connections via `ThreadPoolExecutor`
+  to limit concurrent connections and prevent unbounded thread creation.
+- **Binary data safety** — `_handle_client()` catches `UnicodeDecodeError` to prevent
+  crashes from non-UTF-8 data on the socket.
 - **Backward compatible** — all extension fields use `getattr` defaults; old clients
   and minimal duck-typed agents keep working.
 
@@ -42,11 +45,10 @@ inspect its status, supervise its execution, and terminate it.
 | `DEFAULT_CONNECT_TIMEOUT` | `5` | Default timeout for `connect_to_agent()` |
 | `DEFAULT_ACK_TIMEOUT` | `5` | Timeout for acknowledgment responses |
 | `DEFAULT_POLL_INTERVAL` | `0.1` | Server polling interval for pending responses |
+| `DEFAULT_POLL_MAX_TIMEOUT` | `300.0` | Server wall-clock timeout for `_poll_for_response()` |
 | `SOCKET_BUFFER` | `4096` | recv() buffer size |
 | `HEARTBEAT_INTERVAL` | `5.0` | Server sends heartbeat every N seconds |
 | `HEARTBEAT_IDLE_TIMEOUT` | `30.0` | Client gives up if no heartbeat for N seconds |
-| `SUPERVISE_CONNECT_TIMEOUT` | `10.0` | Supervisor connect timeout |
-| `SUPERVISE_ACK_TIMEOUT` | `10.0` | Supervisor command acknowledgment timeout |
 
 ### Socket naming
 
@@ -350,7 +352,7 @@ type-specific fields.
 **Chunk emission**:
 - `tool_call`: emitted before tool execution
 - `tool_result`: emitted after successful tool execution (output truncated to 1000 chars)
-- `tool_error`: emitted when tool result matches error patterns (`"Error invoking tool"`, `"Tool '...' not found"`, `"is not available"`)
+- `tool_error`: emitted when tool result matches error patterns (`"Error invoking tool"`, `"Tool '...' not found"`, `"Tool '...' Did you mean"`)
 - `assistant`: emitted for assistant message content
 - `fork_start`/`fork_end`: **planned** — not yet emitted by the current implementation
 
@@ -365,86 +367,13 @@ type-specific fields.
 
 ---
 
-### 3.5 supervise (persistent)
-
-**Request** (client → server):
-```json
-{
-  "type": "supervise",
-  "id": "sup-1"
-}
-```
-
-**Acknowledgment** (server → client):
-```json
-{
-  "type": "supervising",
-  "id": "sup-1"
-}
-```
-
-**Commands** (client → server, persistent connection):
-```json
-{"type": "inject", "role": "user", "content": "New message", "id": "cmd-1"}
-{"type": "terminate", "graceful": true, "force_kill": false, "id": "cmd-2"}
-{"type": "redirect", "task": "New task", "id": "cmd-3"}
-{"type": "status", "id": "cmd-4"}
-{"type": "close"}
-```
-
-**Command acknowledgments** (server → client):
-```json
-{"type": "ack", "id": "cmd-1"}
-{"type": "error", "id": "cmd-2", "message": "Unknown command: ..."}
-```
-
-**Command types**:
-
-| Command | Fields | Description |
-|---------|--------|-------------|
-| `inject` | `role`, `content` | Inject a synthetic user message into context |
-| `terminate` | `graceful`, `force_kill` | Graceful (finish turn), forceful (exit), or SIGKILL |
-| `redirect` | `task` | Clear context and start new task |
-| `status` | — | Log current status to audit |
-| `close` | — | Close supervision connection |
-
-**Terminate command**:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `graceful` | bool | `true` | If true, finish current turn before exiting |
-| `force_kill` | bool | `false` | If true, send SIGKILL immediately (no cleanup) |
-
-**force_kill behavior**:
-- Flushes audit log with `FORCE_KILL: received from {source}, pid={_pid}`
-- Flushes stdout/stderr
-- Calls `os.kill(os.getpid(), signal.SIGKILL)`
-- No cleanup hooks fire (SIGKILL is unrecoverable)
-
-**Connection lifecycle**:
-- `supervise` connection stays open for the duration of supervision
-- Each command gets an `ack` response
-- `close` command closes the connection
-- Server does NOT close the socket after `supervise` (unlike query)
-
----
-
-### 3.6 error
+### 3.5 error
 
 **Server → client** (any request):
 ```json
 {
   "type": "error",
   "message": "Human-readable error description"
-}
-```
-
-Or with command ID:
-```json
-{
-  "type": "error",
-  "id": "cmd-1",
-  "message": "Unknown command: ..."
 }
 ```
 
@@ -648,19 +577,21 @@ server.stop()
 
 ```python
 # In _accept_loop:
-client_sock, _ = self.sock.accept()
-threading.Thread(target=self._handle_client, args=(client_sock,), daemon=True).start()
+with ThreadPoolExecutor(max_workers=10, thread_name_prefix="a2a-handler") as executor:
+    while self.running:
+        client_sock, _ = self.sock.accept()
+        executor.submit(self._handle_client, client_sock)
 ```
 
-1. `_recv_request`: Read until `len(chunk) < SOCKET_BUFFER` or EOF
+1. `_recv_request`: Read with 500ms timeout per recv; attempt JSON parse after each chunk;
+   break on valid JSON, timeout, or connection close
 2. Parse JSON
 3. Dispatch based on `type`:
    - `agent_card` → `_send_agent_card` (sync, close)
    - `status` → `_handle_status` (sync, close)
-   - `supervise` → `_handle_supervise` (persistent, no close)
    - else → `_handle_query` (async, close)
 4. On error: send `{"type": "error", "message": "..."}`
-5. In `finally`: close socket (unless `supervise`)
+5. In `finally`: close socket
 
 ---
 

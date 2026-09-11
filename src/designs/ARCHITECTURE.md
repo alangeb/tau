@@ -1,5 +1,7 @@
 # Architecture — TauErgon
 
+**See also**: [A2A_PROTOCOL.md](A2A_PROTOCOL.md) (agent-to-agent), [EOT.md](EOT.md) (end-of-turn), [INDEX.md](INDEX.md) (design index)
+
 ## Request Flow
 
 A request flows through the system in this order:
@@ -41,7 +43,7 @@ agent_core.py (TauErgon)
 ├── agent_message_utils.py (message utilities: sanitization, synthetic protocol, text extraction — zero agent-module deps)
 ├── agent_context.py (TauContext)
 │   ├── agent_context_utils.py (shared context-file utilities: format_age, get_all_context_files [uses registry], read_context_metadata, read_context_metadata_for_a2a)
-│   ├── agent_context_compress.py (11 compression algorithms)
+│   ├── agent_context_compress/ (compression package: __init__.py orchestrator + pipeline.py registry + steps/ subpackage with 11 modular algorithms)
 │   └── agent_context_validation.py (validate_context, validate_on_mutation, get_pending_tool_ids, validate_tool_resolution — extracted validation, zero recovery)
 ├── agent_llm_models.py (data structures: ToolCall, Message, LLMResponse, etc.)
 ├── agent_llm_cache.py (PrefixCacheTracker, prefix cache hit tracking)
@@ -57,11 +59,11 @@ agent_core.py (TauErgon)
 │   └── agent_a2a.py (A2A protocol)
 ├── agent_subsystems.py (SubsystemBundle, init_subsystems, read_system_prompt — subsystem init encapsulation)
 ├── agent_input.py (InputHandler)
-├── agent_console/ (Console: audit, primitives, messages, display, audit_display)
+├── agent_console/ (Console: audit, primitives, templates, display_tool, display_command, display_status, display_context, display_misc, audit_display)
 ├── agent_command_handlers.py (@_command decorator, registry, and CommandHandlersMixin)
 ├── agent_commands.py (CommandManager, three-tier dispatch)
 │   └── agent_command_registry.py (unified .py/.md command discovery, caching)
-├── agent_command_dispatcher.py (ContextManager — /ctx, /undo, /continue, /load commands; RestartManager — restart flow with CLI arg preservation)
+├── agent_context_manager.py (ContextManager — /ctx, /undo, /continue, /load commands; RestartManager — restart flow with CLI arg preservation)
 ├── agent_loop.py (run_loop — extracted core LLM tool-calling loop; reduces coupling in agent_core.py)
 ├── agent_loop_detect.py (LoopDetector)
 ├── agent_loop_escalation.py (LoopEscalationManager)
@@ -73,17 +75,24 @@ agent_core.py (TauErgon)
 ├── agent_config.py (Config loading)
 ├── agent_models.py (InputMessage, SubAgentResult, Colors)
 ├── agent_init.py (AgentInitConfig, resolve_agent_init)
-└── lib/skill_discovery.py (SkillInfo, discover_skills, skill_name_from_path)
+└── lib/skill_discovery.py (SkillInfo, SkillInfoExtended, discover_skills, discover_skills_extended, score_skill, suggest_skills, skill_name_from_path)
 ├── tau.py (entry point: CLI parsing, config resolution, A2A CLI mode)
 ├── validate_skills.py (skill validation: frontmatter, structure, cross-references)
+├── skill_finder.py (CLI wrapper around lib.skill_discovery.suggest_skills)
 ├── validate_tools.py (tool validation: module structure)
 ├── wiki_batch_ingest.py (wiki batch ingestion: parse context/audit files, detect topics, create wiki content)
 ├── agent_project.py (project management: find_project_root, init_project, contexts.json tracking)
 ├── tools/__init__.py (tool discovery, ToolEntry, ToolMetadata, ToolModule protocol, CMD_ALIASES/ARG_ALIASES)
 ├── tools/validation.py (normalize_tool_call, validate_tool_name, _dataclass_to_json_schema)
 ├── tools/lib/sandbox.py (check_path, validate_path, get_allowed_paths — path security)
+├── tools/lib/manifest.py (parse_frontmatter, manifests_dir, generate_manifest_id, ManifestEntry, read_manifest_frontmatter, load_manifests — shared manifest utilities)
+├── tools/manifest_create.py (manifest file creation with YAML frontmatter)
+├── tools/manifest_tree.py (manifest hierarchy display)
+├── tools/manifest_update.py (manifest section updates with auto-verification)
+├── tools/orchestrate.py (goal-driven delegation with manifest tracking)
 ├── commands/delegate.py (delegate mode: LLM-instructed orchestration, DELEGATE_INSTRUCTIONS)
-└── commands/ralph.py (iterative task execution with <complete> tag confirmation, state in JSON files)
+├── commands/manifests.py (CLI interface to manifest tools)
+├── commands/orchestrate.py (CLI interface to orchestrate tool)
 ```
 
 ## Module Reference
@@ -94,7 +103,7 @@ agent_core.py (TauErgon)
 | `agent_message_utils.py` | Pure utilities: user message prefix protocol (`[U:TYPE | N:stack]`), `is_synthetic_message()` (type-aware: synthetic types `meta/confirm/inject/system` vs non-synthetic `real/fork/subagent/redirect`), `make_synthetic_user()` (deprecated), `get_last_real_user_prompt()`, `_sanitize_text()`, `_sanitize_content()` — zero agent-module dependencies |
 | `agent_context.py` | `TauContext` — conversation context management, validation, compression coordination; `nesting_stack` attribute tracks nesting level; `append_user(content, user_type)` auto-prefixes with `[U:TYPE | N:stack]`; `append_synthetic_user(category, content)` maps category to type |
 | `agent_context_utils.py` | Shared context-file utilities: `format_age()`, `get_all_context_files()`, `read_context_metadata()`, `read_context_metadata_for_a2a()` — eliminates duplication across `agent_input`, `agent_project`, `agent_a2a` |
-| `agent_context_compress.py` | 11 sequential compression algorithms with fixed 50% boundary |
+| `agent_context_compress/` | Compression package: `__init__.py` (orchestrator + public API), `pipeline.py` (pipeline registry — `_COMPRESSION_PIPELINE` tuple of 11 `CompressionStep` entries), `steps/framework.py` (CompressionStep, CompressionContext, _compress_wrapper), `steps/utils.py` (byte calc, boundary detection, tool validation, constants), `steps/llm.py` (LLM invocation helper), `steps/*.py` (11 modular algorithm implementations); `compress_full_reset()` has size guard to prevent recursive overflow; `_try_context_compress()` logs failures with `exc_info=True` |
 | `agent_context_validation.py` | `validate_context()`, `validate_on_mutation()`, `get_pending_tool_ids()`, `validate_tool_resolution()` — pure validation on message lists; no recovery (fix root cause only per decision 18.16) |
 | `agent_llm_models.py` | Data structures: ToolCall, Message, LLMResponse, API errors |
 | `agent_llm_cache.py` | PrefixCacheTracker, prefix cache hit tracking |
@@ -104,14 +113,15 @@ agent_core.py (TauErgon)
 | `agent_llm_tool_parse.py` | Tool-call parsing engine: constants, 13 regex patterns, kind-specific handlers, `llm_postparse()` |
 | `agent_model_health.py` | `ModelHealthMonitor` — circuit breaker pattern for LLM server health; tracks consecutive failures/successes, exponential backoff, connection checks |
 | `agent_phantom_detect.py` | `PhantomRules`, `detect_phantoms()`, `strip_phantoms()` — fuzzy detection of tool-call-like XML tags that were not extracted by postparse; configurable via `phantom_rules.json` |
-| `agent_a2a.py` | Agent-to-Agent protocol via Unix domain sockets; `A2AServer` handles query/supervise/status connections; `Supervisor` class manages parent-side control (inject, terminate, redirect, loop detection); control queue integration in `agent_core._process_control_queue`. See [A2A_PROTOCOL.md](A2A_PROTOCOL.md) for the full v1.0 contract. |
-| `agent_subagent.py` | Fork/subagent spawning with nesting depth enforcement |
+| `agent_a2a.py` | Agent-to-Agent protocol via Unix domain sockets; `A2AServer` handles query/status connections; `list_agents()`, `query_agent()`, `get_agent_card()` for CLI inspection; control queue integration in `agent_core._process_control_queue`; `_poll_for_response()` has 300s max timeout; `_handle_client()` catches `UnicodeDecodeError` for binary data safety. See [A2A_PROTOCOL.md](A2A_PROTOCOL.md) for the full v1.0 contract. |
+| `agent_subagent.py` | Fork/subagent spawning with nesting depth enforcement; `invoke_fork_sync()` and `invoke_subagent_sync()` wrap `invoke_with_tools()` in try/except to prevent crash propagation to parent |
 | `agent_subsystems.py` | `SubsystemBundle`, `init_subsystems()`, `read_system_prompt()` — encapsulates subsystem creation and wiring; reduces import burden on `agent_core.py`; makes subsystem init testable in isolation |
 | `agent_tool_executor.py` | Tool execution with signal-based timeout (primary) or thread-based timeout (fallback); validation, error handling, oversized output to disk |
 | `agent_input.py` | `InputHandler` — stdin thread, signal handling, input dispatch |
-| `agent_console/` | Console — unified package: audit (console-to-audit bridging), primitives (low-level I/O: echo, status, _cw, prompt), messages (display helpers, _ConsoleMessage class, MessageRegistry + message definitions), display (consolidated display functions), audit_display (audit log viewer with `AuditRecord`, `parse_audit_file`, `show_audit`) |
+| `agent_console/` | Console — unified package: audit (console-to-audit bridging), primitives (low-level I/O: echo, status, _cw, prompt + display helpers: display_error, display_warning, display_success, display_info, display_synthetic), templates (_ConsoleMessage class + message definitions + register_console_messages), display_tool (tool display), display_command (command display), display_status (status display), display_context (context display), display_misc (misc display), audit_display (audit log viewer with `AuditRecord`, `parse_audit_file`, `show_audit`) |
 | `agent_config.py` | Config loading: `tau.json` → env overrides → dataclass defaults |
-| `agent_session.py` | Session management, token tracking |
+| `agent_session.py` | Session management, token tracking, oversized output to disk (`write_oversized_output()`), failed API request logging (`log_failed_api_request()`) |
+| `agent_session_registry.py` | `SessionRegistry` — JSON-based index of session files for archiving, tagging, smart filtering; `get_registry()` singleton; supports `register_session()`, `list_sessions()`, `search_by_tags()`, `archive_session()`, `cleanup_orphans()` |
 | `agent_log_cleanup.py` | Log file management — `cleanup_failed_requests()` (retention policy for `failed_request.json`), `archive_file()` (move to `dump/`), `compress_file()` (gzip), `merge_small_failed_requests()` (combine small files), `run_full_cleanup()` (orchestrates all operations) |
 | `agent_audit_writer.py` | Audit logging, error rate tracking |
 | `agent_loop_detect.py` | Shannon entropy + repeat count loop detection |
@@ -120,10 +130,10 @@ agent_core.py (TauErgon)
 | `agent_command_handlers.py` | `@_command` decorator, `_COMMAND_REGISTRY`, query functions (`get_command_info`, `get_builtin_cmd_names`, `get_primary_command_info`), and `CommandHandlersMixin` with all handler methods — self-contained builtin command module |
 | `agent_command_registry.py` | Unified `.py`/`.md` command discovery, caching, resolution |
 | `agent_commands.py` | `CommandManager`, three-tier dispatch (`.py` → builtin → `.md`) |
-| `agent_command_dispatcher.py` | `ContextManager` (/ctx, /undo, /continue, /load commands); `RestartManager` (restart flow with CLI arg preservation) |
+| `agent_context_manager.py` | `ContextManager` (/ctx, /undo, /continue, /load commands); `RestartManager` (restart flow with CLI arg preservation) |
 | `agent_loop.py` | `run_loop` — extracted core LLM tool-calling loop from `agent_core.py`; reduces coupling; maintains OpenAI alternation invariant |
 | `agent_heartbeat.py` | Idle detection, configurable interval |
-| `agent_eot_protection.py` | `EOTProtection` — end-of-turn confirmation stack, budget management, accidental EOT detection |
+| `agent_eot_protection.py` | `EOTProtection` — end-of-turn confirmation stack, budget management, accidental EOT detection. See [EOT.md](EOT.md) for full contract |
 | `agent_init.py` | `AgentInitConfig`, `resolve_agent_init()` — init config resolution |
 | `agent_lifecycle.py` | System-wide shutdown flags |
 | `agent_loop_escalation.py` | Escalation handling, reflection injection, recovery |
@@ -132,19 +142,25 @@ agent_core.py (TauErgon)
 | `agent_token_tracker.py` | Token counting, cache tracker integration |
 | `agent_tool_filter.py` | Allowlist/blocklist filtering with fnmatch wildcards |
 | `agent_version.py` | Version detection: reads VERSION file, git branch/hash |
-| `lib/skill_discovery.py` | `SkillInfo`, `discover_skills()`, `skill_name_from_path()` — shared skill discovery for tools/skill.py and validate_skills.py |
+| `lib/skill_discovery.py` | `SkillInfo`, `SkillInfoExtended`, `discover_skills()`, `discover_skills_extended()`, `score_skill()`, `suggest_skills()`, `skill_name_from_path()` — shared skill discovery for tools/skill.py, validate_skills.py, skill_finder.py, skills/tauskillmaintenance/skill_discover.py |
 | `tau.py` | Entry point: CLI parsing, config resolution, A2A CLI mode, `main()` |
 | `validate_skills.py` | Skill validation script — checks frontmatter, structure, and cross-references |
+| `skill_finder.py` | CLI wrapper — delegates to `lib.skill_discovery.suggest_skills()` for keyword scoring and relevance ranking |
 | `validate_tools.py` | Tool validation script — checks tool module structure |
 | `wiki_batch_ingest.py` | Wiki batch ingestion — parses context/audit files, detects topics, creates wiki content files, updates topic indexes |
 | `agent_project.py` | Project management — `find_project_root()`, `init_project()`, `contexts.json` tracking for project-scoped context files |
 | `tools/__init__.py` | Tool discovery, `ToolEntry`, `ToolMetadata`, `ToolModule` protocol, `CMD_ALIASES`/`ARG_ALIASES`, `get_all_tools()` |
 | `tools/validation.py` | `normalize_tool_call()`, `validate_tool_name()`, `_dataclass_to_json_schema()`, `_validate_tool_args()`, `_generate_validation_error()` |
 | `tools/lib/sandbox.py` | `check_path()`, `validate_path()`, `get_allowed_paths()` — path security and working directory boundary enforcement |
+| `tools/manifest_create.py` | `manifest_create` tool — create manifest files with YAML frontmatter (goal, success_criteria, subtasks); stores in `.tau/manifests/` |
+| `tools/manifest_tree.py` | `manifest_tree` tool — display manifest hierarchy as tree with status icons; parses YAML frontmatter from `.tau/manifests/` |
+| `tools/manifest_update.py` | `manifest_update` tool — update manifest sections (goal, subtasks, progress, status) with auto-verification of completed items via `Verify:` commands |
+| `tools/orchestrate.py` | `orchestrate` tool — goal-driven delegation with accountability; spawns fork to prepare manifest, then executor loop delegates subtasks via subagent/fork; enforces tool restrictions, supports resume mode |
+| `commands/manifests.py` | `/manifests` command — CLI interface to manifest tools (list, tree, status) |
+| `commands/orchestrate.py` | `/orchestrate` command — CLI interface to orchestrate tool; delegates to `tools/orchestrate.py` |
 | `commands/health.py` | `/health` command — model server health monitoring dashboard (status, reset, check) |
-| `commands/plan.py` | `/plan` command — direct interface to the plan tool (status, create, add, complete, block, unblock, next) |
+| `commands/manifests.py` | `/manifests` command — list manifests, show hierarchy |
 | `commands/delegate.py` | `/delegate` command — ToolFilter enforces read-only behavior at execution time; `_ALLOWED_DELEGATE_TOOLS` allowlist; `DELEGATE_INSTRUCTIONS` injected into context; all tools still announced (prefix cache preserved) |
-| `commands/ralph.py` | `/ralph` command — iterative task execution with `<complete>` tag confirmation; maintains task state in JSON files under `~/.local/tau/ralph/` |
 | `commands/heartbeat.md` | `/heartbeat` command — automated idle check-in; fork determines if open task needs action (`<PROMPT>`) or nothing (`<NO_ACTION>`) |
 | `commands/gitcrit.md` | `/gitcrit` command — multi-stage code review: subagent (pyscan/pyanalyze/review skills) → fork (critique) → fork (cross-reference audit) |
 | `commands/pyprep.md` | `/pyprep` command — Python project preparation: runs `info`, `pyscan`, `pyanalyze` on target directory |
@@ -156,6 +172,7 @@ agent_core.py (TauErgon)
 | `commands/_tauskillmaintenance.md` | `/_tauskillmaintenance` command — periodic skill maintenance (Dream cycle step 5) |
 | `commands/_taudoc.md` | `/_taudoc` command — documentation maintenance (Dream cycle step 6) |
 | `commands/_taulogreview.md` | `/_taulogreview` command — audit log analysis for errors and improvement opportunities (Dream cycle step 7) |
+| `commands/_taulogstatus.md` | `/_taulogstatus` command — log status: inspect session registry, archive stats, disk usage |
 | `commands/_tauwiki.md` | `/_tauwiki` command — wiki maintenance: ingest sessions, maintain structure (Dream cycle step 8) |
 | `commands/_tautest.md` | `/_tautest` command — general testing orchestrator: runs `./tau.py` with parameters, creates test plans, fixes issues found |
 | `commands/sum.md` | `/sum` command — context summarization command |
@@ -163,11 +180,12 @@ agent_core.py (TauErgon)
 | `tools/lib/cache.py` | `FileCache` — local file-based caching with TTL |
 | `tools/lib/html_to_md.py` | `html_to_markdown()`, `extract_main_content()`, `strip_noise()` — HTML-to-markdown conversion pipeline |
 | `tools/lib/session_utils.py` | `session_exists()`, `validate_session()`, `capture_pane()`, `capture_delta()`, `strip_ansi()` — tmux session utilities with delta tracking |
+| `tools/lib/manifest.py` | `parse_frontmatter()`, `manifests_dir()`, `generate_manifest_id()`, `ManifestEntry`, `read_manifest_frontmatter()`, `load_manifests()` — shared manifest utilities for manifest_create/tree/update/orchestrate tools |
 | `tools/pygraph.py` | `pygraph` tool — cross-file call graph queries (callers, callees, path, impact, god, summary) |
 | `tools/pyscan.py` | `pyscan` tool — AST-based Python project structure analysis |
 | `tools/pyanalyze.py` | `pyanalyze` tool — unused function and import detection |
 | `tools/pycheck.py` | `pycheck` tool — missing/unused import checking |
-| `tools/plan.py` | `plan` tool — hierarchical task plan management (create, add, complete, block, unblock, status, next, progress, update, delete, clear) |
+| `tools/manifest_*.py` | `manifest_create`, `manifest_update`, `manifest_tree` — goal-driven planning with success criteria, auto-verify, block/unblock/next/delete/clear actions |
 | `tools/background_capture.py` | `background_capture` tool — capture tmux pane output with scrollback history |
 | `tools/background_exec.py` | `background_exec` tool — execute commands in tmux session with optional wait |
 | `tools/background_kill.py` | `background_kill` tool — kill tmux sessions |
@@ -198,7 +216,7 @@ agent_core.py (TauErgon)
 | `tools/subagent.py` | `subagent` tool — spawn isolated subagent with blank slate context |
 | `tools/think.py` | `think` tool — read-only fork for deep analysis (allowlisted tools only) |
 | `tools/wc.py` | `wc` tool — count lines, words, and characters in files |
-| `tools/wiki.py` | `wiki` tool — manage wiki configuration: get/set wiki path, check wiki status (exists, git status, file count, size) |
+| `tools/wiki.py` | `wiki` tool — manage wiki: get/set wiki path, check wiki status (exists, git status, file count, size), search wiki content, add entries (topic, type, query), retrieve entries |
 
 ## LLM Reply Processing Pipeline
 
@@ -281,6 +299,41 @@ Compression runs at two points in the agent loop:
 ### Signal-Based Timeout (Primary)
 
 Tools execute with `signal.setitimer()` + `SIGALRM` handler raising `ToolTimeout`; no daemon threads, no orphaned processes. Thread-based timeout available as fallback when signals unavailable.
+
+### 5xx Gateway Errors (502, 503, 504)
+
+Transient infrastructure errors (load balancer, upstream timeout) are retried
+with a 30-second base backoff. After `max_retries` attempts, the error is
+raised and the turn ends with an error message.
+
+- `APIGatewayError` class: `agent_llm_models.py`
+- HTTP mapping: `agent_llm_client.py:_HTTP_ERROR_MAP` (502→504)
+- Retry handler: `agent_llm_invoke.py:_invoke_llm_with_retry` (30s base backoff)
+
+### 429 Rate Limit Errors
+
+API rate limit responses (HTTP 429) are retried with a 15-second base backoff.
+After `max_retries` attempts, the error is raised and the turn ends.
+
+- `RateLimitError` class: `agent_llm_models.py`
+- HTTP mapping: `agent_llm_client.py:_HTTP_ERROR_MAP` (429)
+- Retry handler: `agent_llm_invoke.py:_invoke_llm_with_retry` (15s base backoff)
+
+### Timeout Errors
+
+API timeout errors (`APITimeoutError`, `TimeoutError`) are retried with a
+5-second base backoff. `EmptyModelResponse` (empty LLM replies) shares this
+handler. After `max_retries`, the error is raised.
+
+- Retry handler: `agent_llm_invoke.py:_invoke_llm_with_retry` (5s base backoff)
+
+### Backoff Configuration
+
+All retry backoff values are centralized in `_BACKOFF_CONFIGS` dict:
+- `timeout`: (5s base, 60s max, 0.3 jitter)
+- `gateway`: (30s base, 120s max, 0.3 jitter)
+- `rate_limit`: (15s base, 120s max, 0.3 jitter)
+- `connection`: (5s base, 120s max, 0.3 jitter)
 
 ### Three-Tier Command Dispatch
 

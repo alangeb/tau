@@ -129,6 +129,7 @@ class TestEndTurnConfirmationIntegration:
         agent._session.audit_writer = MagicMock()
         agent._eot_protection = EOTProtection(agent)
         agent.last_substantive_response = None
+        agent.max_context_tokens = 200000
 
         # Simulate a confirmation round
         agent._eot_protection.handle_potential_eot("Held response text", None)
@@ -149,6 +150,7 @@ class TestEndTurnConfirmationIntegration:
         agent._session.audit_writer = MagicMock()
         agent._eot_protection = EOTProtection(agent)
         agent.last_substantive_response = None
+        agent.max_context_tokens = 200000
 
         # Simulate a confirmation round
         agent._eot_protection.handle_potential_eot("Held response text", None)
@@ -226,3 +228,118 @@ class TestEndTurnInToolsRegistry:
         entry = TOOLS["end_turn"]
         assert entry.name == "end_turn"
         assert "end_turn" in entry.description.lower() or "end of turn" in entry.description.lower()
+
+
+class TestResolveEndTurnMessage:
+    """Test _resolve_end_turn_message sentinel rejection."""
+
+    def _make_agent(self, substantive=None):
+        from unittest.mock import MagicMock
+        from agent_context import TauContext
+        from agent_eot_protection import EOTProtection
+
+        agent = MagicMock()
+        agent.context = TauContext([{"role": "system", "content": "test"}])
+        agent._session = MagicMock()
+        agent._session.audit_writer = MagicMock()
+        agent._eot_protection = EOTProtection(agent)
+        agent.last_substantive_response = substantive
+        agent.max_context_tokens = 200000
+        return agent
+
+    def test_rejects_exact_sentinel(self):
+        """end_turn(message='ENDOFTURN') falls through to held text."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent()
+        agent._eot_protection.handle_potential_eot("Held comprehensive answer", None)
+        held = agent._eot_protection._eot_confirmation_stack[-1]
+
+        result = _resolve_end_turn_message({"message": "ENDOFTURN"}, agent, held)
+        assert result == "Held comprehensive answer"
+
+    def test_rejects_sentinel_with_whitespace(self):
+        """end_turn(message=' ENDOFTURN ') falls through to held text."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent()
+        agent._eot_protection.handle_potential_eot("Held answer", None)
+        held = agent._eot_protection._eot_confirmation_stack[-1]
+
+        result = _resolve_end_turn_message({"message": " ENDOFTURN "}, agent, held)
+        assert result == "Held answer"
+
+    def test_rejects_sentinel_case_insensitive(self):
+        """end_turn(message='endofturn') falls through to held text."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent()
+        agent._eot_protection.handle_potential_eot("Held answer", None)
+        held = agent._eot_protection._eot_confirmation_stack[-1]
+
+        result = _resolve_end_turn_message({"message": "endofturn"}, agent, held)
+        assert result == "Held answer"
+
+    def test_rejects_short_sentinel_variant(self):
+        """end_turn(message='!!ENDOFTURN!!') falls through — 13 chars, contains sentinel."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent()
+        agent._eot_protection.handle_potential_eot("Held answer", None)
+        held = agent._eot_protection._eot_confirmation_stack[-1]
+
+        # "!!ENDOFTURN!!" = 13 chars = len("ENDOFTURN") + 4
+        result = _resolve_end_turn_message({"message": "!!ENDOFTURN!!"}, agent, held)
+        assert result == "Held answer"
+
+    def test_accepts_substantive_message(self):
+        """end_turn(message='Here is my answer.') uses the message."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent()
+        agent._eot_protection.handle_potential_eot("Held answer", None)
+        held = agent._eot_protection._eot_confirmation_stack[-1]
+
+        result = _resolve_end_turn_message({"message": "Here is my answer."}, agent, held)
+        assert result == "Here is my answer."
+
+    def test_accepts_long_message_containing_sentinel(self):
+        """end_turn(message='Done. ENDOFTURN') uses the message — too long to be sentinel-only."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent()
+        agent._eot_protection.handle_potential_eot("Held answer", None)
+        held = agent._eot_protection._eot_confirmation_stack[-1]
+
+        # "Done. ENDOFTURN" = 15 chars > 13, so it passes
+        result = _resolve_end_turn_message({"message": "Done. ENDOFTURN"}, agent, held)
+        assert result == "Done. ENDOFTURN"
+
+    def test_rejects_single_char(self):
+        """end_turn(message='X') falls through — too short."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent()
+        agent._eot_protection.handle_potential_eot("Held answer", None)
+        held = agent._eot_protection._eot_confirmation_stack[-1]
+
+        result = _resolve_end_turn_message({"message": "X"}, agent, held)
+        assert result == "Held answer"
+
+    def test_falls_to_substantive_when_no_held(self):
+        """No held text — falls to last_substantive_response."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent(substantive="Previous substantive answer")
+
+        result = _resolve_end_turn_message({"message": "ENDOFTURN"}, agent, None)
+        assert result == "Previous substantive answer"
+
+    def test_default_when_everything_empty(self):
+        """No message, no held, no substantive — returns default."""
+        from agent_loop import _resolve_end_turn_message
+
+        agent = self._make_agent()
+
+        result = _resolve_end_turn_message({}, agent, None)
+        assert result == "[end_turn — no message]"

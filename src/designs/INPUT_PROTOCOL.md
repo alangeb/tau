@@ -1,5 +1,7 @@
 # Input Protocol — TauErgon
 
+**See also**: [ARCHITECTURE.md](ARCHITECTURE.md) (module inventory), [COMMANDS.md](COMMANDS.md) (command dispatch), [INDEX.md](INDEX.md) (design index)
+
 ## Overview
 
 TauErgon supports multiple input modes through prefix characters that control how user input is processed. This document describes the complete input protocol and its implementation.
@@ -195,5 +197,5 @@ To avoid regressions in the input protocol:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture
 - [COMMANDS.md](COMMANDS.md) - Command reference
-- [DESIGNS/DECISIONS.md](DECISIONS.md) - Design decision history
+- [DECISIONS.md](DECISIONS.md) - Design decision history
 - [TESTING.md](TESTING.md) - Testing guidelines

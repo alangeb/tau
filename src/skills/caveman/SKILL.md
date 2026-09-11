@@ -1,21 +1,21 @@
 ---
-name: caveman
-description: "Concise output style — drop articles, remove filler, fragments OK, maximize info density (also load: command_template, skill_template, tauskillmaintenance, code-simplifier, documentation)"
 category: communication
-keywords: concise, brief, short, compress, terse, drop articles, remove filler
+description: "Caveman writing style — drop articles, use fragments, compress text, maximize info density per token, concise (also load: _taudoc, code-simplifier, documentation, readme_template, skill_template, prompt-crafting, skill_tool, tauskillmaintenance, tool_template)"
+keywords: terse writing, text compression, drop articles, info density, compressed text, writing style, fragment writing, concise communication, token efficiency
+name: caveman
 ---
 
-# Concise Communication
+# caveman
 
 ## When
-"write concisely", "shorter output", "be brief", "caveman style", "drop articles"
+"write concisely" | "shorter output" | "be brief" | "caveman style" | "drop articles" | "write a script" | "write file"
 
 ## Rules
-- Omit articles, pronouns, filler words
-- Use fragments, imperatives
+- Drop articles, pronouns, filler
+- Fragments, imperatives OK
 - No "I think", "It seems", "Note that"
 - Preserve technical accuracy, code, numbers
-- Maximize information density per token
+- Maximize info density per token
 
 ## Examples
 - Bad: "I think the issue is that the function is not returning the correct value."
@@ -25,13 +25,18 @@ keywords: concise, brief, short, compress, terse, drop articles, remove filler
 
 ## Helpers
 ```bash
-python3 skills/caveman/style_check.py <file.txt>  # Check caveman style violations
-python3 skills/caveman/compress.py <input> [output]  # Compress text
+python3 skills/caveman/compress.py <input> [output]        # Compress single file
+python3 skills/caveman/style_check.py <file.txt>           # Check violations
+python3 skills/caveman/batch_compress.py <f1> [f2 ...]     # Batch compress multiple
+python3 skills/caveman/batch_compress.py *.md --dry-run    # Preview changes
 ```
 
 ## Related Skills
+- `skill_tool` — list and load skills
 - `command_template` — writing concise commands
 - `skill_template` — writing concise skills
-- `tauskillmaintenance` — audit skill content for conciseness
-- `code-simplifier` — simplifying code style
 - `documentation` — write concise docs
+- `code-simplifier` — simplifying code style
+- `prompt-crafting` — concise writing style for prompts
+- `tauskillmaintenance` — skill quality audit
+- `tool_template` — concise writing for tools

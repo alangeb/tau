@@ -12,7 +12,6 @@ Responsibilities:
 - Utility functions for oversized output and failed API requests
 
 Audit logging has been extracted to agent_audit_writer.py for modularity.
-This module re-exports AuditWriter for backward compatibility.
 """
 
 from __future__ import annotations
@@ -22,11 +21,7 @@ import os
 import sys
 from datetime import datetime as dt
 from pathlib import Path
-
-# Re-export AuditWriter for backward compatibility.
-# Direct imports should prefer agent_audit_writer.
 from agent_audit_writer import AuditWriter
-
 from agent_console import log_dir_error
 from agent_audit_bridge import emit_console_warning, set_audit_writer
 from agent_token_tracker import TokenTracker
@@ -34,9 +29,6 @@ from agent_token_tracker import TokenTracker
 __all__ = [
     "LOG_DIR",
     "SESSION_PREFIX",
-    # Re-exported from agent_audit_writer (backward compatibility)
-    "AuditWriter",
-    # Defined here
     "AgentSessionManager",
     "write_oversized_output",
     "log_failed_api_request",
@@ -57,17 +49,26 @@ SESSION_PREFIX: str | None = None
 
 
 def _get_log_filename_prefix() -> str:
-    """Generate unique filename prefix: {ppid}_{YYYYMMDDHHMMSS}_{counter}."""
+    """Generate unique filename prefix: {ppid}_{YYYYMMDDHHMMSS}_{counter}.
+
+    Counter is bounded to prevent infinite loops in high-concurrency scenarios.
+    If max is reached, falls back to using a UUID.
+    """
     ppid = os.getppid()
     dt_str = dt.now().strftime("%Y%m%d%H%M%S")
     counter = 1
+    max_counter = 1000
 
-    while True:
+    while counter <= max_counter:
         prefix = f"{ppid}_{dt_str}_{counter}"
         ctx_file = LOG_DIR / f"{prefix}.context"
         if not ctx_file.exists():
             return prefix
         counter += 1
+
+    # Fallback: use UUID to guarantee uniqueness
+    import uuid
+    return f"{ppid}_{dt_str}_{uuid.uuid4().hex[:8]}"
 
 
 # ── Utility functions ────────────────────────────────────────────

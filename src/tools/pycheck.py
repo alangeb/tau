@@ -38,36 +38,187 @@ class Args:
 
 # ── AST helpers ──────────────────────────────────────────────────
 
+def _is_type_checking_test(node: ast.expr) -> bool:
+    """Check if an AST node represents a TYPE_CHECKING condition."""
+    if isinstance(node, ast.Name) and node.id == "TYPE_CHECKING":
+        return True
+    if isinstance(node, ast.Attribute) and node.attr == "TYPE_CHECKING":
+        return True
+    return False
+
+
 def _get_imports(tree: ast.AST) -> set[str]:
-    imports = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+    """Collect imported names, skipping TYPE_CHECKING blocks.
+
+    For ``import X as Y``, only ``Y`` is added (the alias), not ``X``.
+    For ``from X import Y as Z``, only ``Z`` is added (the alias), or ``Y`` if no alias.
+    """
+    imports: set[str] = set()
+
+    class _ImportVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._in_type_checking = False
+
+        def visit_If(self, node: ast.If) -> None:
+            if _is_type_checking_test(node.test):
+                old = self._in_type_checking
+                self._in_type_checking = True
+                for child in node.body:
+                    self.visit(child)
+                self._in_type_checking = old
+                # else branch is runtime code, not TYPE_CHECKING
+                for child in node.orelse:
+                    self.visit(child)
+            else:
+                self.generic_visit(node)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            if self._in_type_checking:
+                return
             for alias in node.names:
-                # Add the module name (e.g., "os" from "import os")
-                imports.add(alias.name.split(".")[0])
-                # Add the alias name if it's different (e.g., "pd" from "import pandas as pd")
                 if alias.asname:
                     imports.add(alias.asname)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            # Skip __future__ imports — they're special and never "used" as names
-            if node.module == "__future__":
-                continue
-            # Add each imported name (e.g., "echo" from "from agent_console import echo")
-            # Do NOT add the module name — it's the source of the import, not a used name.
-            # Adding only the module name caused false "missing import" and "unused import"
-            # reports for every `from X import Y` statement.
+                else:
+                    imports.add(alias.name.split(".")[0])
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            if self._in_type_checking:
+                return
+            if not node.module or node.module == "__future__":
+                return
             for alias in node.names:
                 if alias.name == "*":
-                    continue  # Skip wildcard imports
+                    continue
                 if alias.asname:
                     imports.add(alias.asname)
                 else:
                     imports.add(alias.name)
+
+    _ImportVisitor().visit(tree)
     return imports
 
 
 def _get_names(tree: ast.AST) -> set[str]:
-    return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    """Collect all Name nodes EXCEPT those inside type hint contexts.
+
+    Skips names in:
+    - Function return annotations
+    - Function argument annotations (including defaults)
+    - Variable annotations (AnnAssign)
+    - Class base classes and keyword bases
+
+    Used for missing imports check — type hint names shouldn't cause false positives.
+    """
+    return _collect_names(tree, skip_annotations=True)
+
+
+def _get_names_all(tree: ast.AST) -> set[str]:
+    """Collect ALL Name nodes, including those inside type hint contexts.
+
+    Used for unused imports check — imports used only in type hints should not
+    be flagged as unused.
+    """
+    return _collect_names(tree, skip_annotations=False)
+
+
+def _collect_names(tree: ast.AST, skip_annotations: bool) -> set[str]:
+    """Collect Name nodes, optionally skipping those inside type hint contexts."""
+    names: set[str] = set()
+
+    class _NameVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._in_annotation = 0  # Depth counter for annotation contexts
+
+        def _visit_annotation(self, node: ast.AST) -> None:
+            """Visit a node that is a type annotation."""
+            if skip_annotations:
+                self._in_annotation += 1
+            self.visit(node)  # Use visit() to dispatch to visit_Name(), etc.
+            if skip_annotations:
+                self._in_annotation -= 1
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            # Visit the function body normally
+            for child in node.body:
+                self.visit(child)
+            # Visit decorators normally
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            # Visit return annotation as annotation context
+            if node.returns:
+                self._visit_annotation(node.returns)
+            # Visit argument annotations as annotation context
+            for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
+                if arg.annotation:
+                    self._visit_annotation(arg.annotation)
+            if node.args.vararg and node.args.vararg.annotation:
+                self._visit_annotation(node.args.vararg.annotation)
+            if node.args.kwarg and node.args.kwarg.annotation:
+                self._visit_annotation(node.args.kwarg.annotation)
+            # Visit default values normally (they're runtime expressions)
+            for default in node.args.defaults + node.args.kw_defaults:
+                if default is not None:
+                    self.visit(default)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            # Lambda body is visited normally
+            self.visit(node.body)
+            # Argument annotations are annotation contexts
+            for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
+                if arg.annotation:
+                    self._visit_annotation(arg.annotation)
+            if node.args.vararg and node.args.vararg.annotation:
+                self._visit_annotation(node.args.vararg.annotation)
+            if node.args.kwarg and node.args.kwarg.annotation:
+                self._visit_annotation(node.args.kwarg.annotation)
+            # Default values are runtime expressions
+            for default in node.args.defaults + node.args.kw_defaults:
+                if default is not None:
+                    self.visit(default)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            # Annotation is an annotation context
+            if node.annotation:
+                self._visit_annotation(node.annotation)
+            # Value is a runtime expression
+            if node.value:
+                self.visit(node.value)
+            # Target is a name definition, not a usage
+            # (handled by _get_defined_names)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            # Visit the class body normally
+            for child in node.body:
+                self.visit(child)
+            # Visit decorators normally
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            # Base classes are runtime expressions (not annotation contexts)
+            for base in node.bases:
+                self.visit(base)
+            # Keyword bases (metaclass=...) are also runtime expressions
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if self._in_annotation == 0:
+                names.add(node.id)
+
+    _NameVisitor().visit(tree)
+    return names
+
+
+def _collect_target_names(node: ast.AST, defined: set[str]) -> None:
+    """Recursively collect names from assignment targets (handles nested tuples/lists)."""
+    if isinstance(node, ast.Name):
+        defined.add(node.id)
+    elif isinstance(node, (ast.Tuple, ast.List)):
+        for elt in node.elts:
+            _collect_target_names(elt, defined)
+    elif isinstance(node, ast.Starred):
+        _collect_target_names(node.value, defined)
 
 
 def _get_defined_names(tree: ast.AST) -> set[str]:
@@ -90,9 +241,12 @@ def _get_defined_names(tree: ast.AST) -> set[str]:
             defined.add(node.name)
         elif isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    defined.add(target.id)
+                _collect_target_names(target, defined)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
             defined.add(node.target.id)
         elif isinstance(node, ast.Lambda):
             for arg in node.args.args:
@@ -103,30 +257,57 @@ def _get_defined_names(tree: ast.AST) -> set[str]:
                 defined.add(arg.arg)
         elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
             for gen in node.generators:
-                if isinstance(gen.target, ast.Name):
-                    defined.add(gen.target.id)
-                elif isinstance(gen.target, (ast.Tuple, ast.List)):
-                    for elt in gen.target.elts:
-                        if isinstance(elt, ast.Name):
-                            defined.add(elt.id)
+                _collect_target_names(gen.target, defined)
         elif isinstance(node, ast.For):
-            if isinstance(node.target, ast.Name):
-                defined.add(node.target.id)
-            elif isinstance(node.target, (ast.Tuple, ast.List)):
-                for elt in node.target.elts:
-                    if isinstance(elt, ast.Name):
-                        defined.add(elt.id)
+            _collect_target_names(node.target, defined)
         elif isinstance(node, ast.With):
             for item in node.items:
-                if isinstance(item.optional_vars, ast.Name):
-                    defined.add(item.optional_vars.id)
-                elif isinstance(item.optional_vars, ast.Tuple):
-                    for elt in item.optional_vars.elts:
-                        if isinstance(elt, ast.Name):
-                            defined.add(elt.id)
+                if item.optional_vars:
+                    _collect_target_names(item.optional_vars, defined)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             defined.add(node.name)
+        # Python 3.10+ match/case patterns
+        elif hasattr(ast, "Match") and isinstance(node, ast.Match):
+            _collect_match_patterns(node.subject, defined)
+            for case in node.cases:
+                _collect_match_patterns(case.pattern, defined)
     return defined
+
+
+def _collect_match_patterns(node: ast.AST, defined: set[str]) -> None:
+    """Collect names from match/case pattern nodes (Python 3.10+)."""
+    if isinstance(node, ast.Name):
+        defined.add(node.id)
+    elif isinstance(node, (ast.MatchValue, ast.MatchSingleton)):
+        pass  # No new names defined
+    elif isinstance(node, ast.MatchSequence):
+        for pattern in node.patterns:
+            _collect_match_patterns(pattern, defined)
+    elif isinstance(node, ast.MatchMapping):
+        # MatchMapping keys must be constants (string literals, numbers).
+        # Variable keys are a syntax error, so we skip key processing.
+        for pattern in node.patterns:
+            _collect_match_patterns(pattern, defined)
+    elif isinstance(node, ast.MatchClass):
+        if node.cls:
+            pass  # Class reference, not a definition
+        for pattern in node.patterns:
+            _collect_match_patterns(pattern, defined)
+        # kwd_attrs are strings (e.g., 'x', 'y'), kwd_patterns hold the actual
+        # captured variable patterns (e.g., MatchAs(name='px'))
+        for pattern in node.kwd_patterns:
+            _collect_match_patterns(pattern, defined)
+    elif isinstance(node, ast.MatchStar):
+        if node.name:
+            defined.add(node.name)
+    elif isinstance(node, ast.MatchAs):
+        if node.name:
+            defined.add(node.name)
+        if node.pattern:
+            _collect_match_patterns(node.pattern, defined)
+    elif isinstance(node, ast.MatchOr):
+        for pattern in node.patterns:
+            _collect_match_patterns(pattern, defined)
 
 
 # ── File checking ────────────────────────────────────────────────
@@ -150,16 +331,21 @@ def check_file(filepath: Path) -> dict:
         return result
 
     imports = _get_imports(tree)
-    names = _get_names(tree)
+    # For missing imports: skip names in type hints (they don't cause NameError)
+    names_runtime = _get_names(tree)
+    # For unused imports: include names in type hints (imports used only in hints are not unused)
+    names_all = _get_names_all(tree)
     defined = _get_defined_names(tree)
 
-    missing = names - imports - _BUILTIN_NAMES - defined
+    # Missing imports: names used at runtime but not imported or defined
+    missing = names_runtime - imports - _BUILTIN_NAMES - defined
     if missing:
         result["missing_imports"] = sorted(missing)
 
+    # Unused imports: imports not used anywhere (including type hints)
     if imports:
-        used_names = names - defined
-        unused = (imports - _IGNORE_UNUSED) - (imports & used_names)
+        used_names_all = names_all - defined
+        unused = (imports - _IGNORE_UNUSED) - (imports & used_names_all)
         if unused:
             result["unused_imports"] = sorted(unused)
 
@@ -231,7 +417,16 @@ def run(
 
     files = [target_path] if target_path.is_file() else list(target_path.glob("*.py"))
     files = [f for f in files if f.name not in ("__init__.py", "pycheck.py")]
-    files = [f for f in files if not ("@dataclass" in f.read_text() and "class Args" in f.read_text())]
+    # Filter out tool files (have @dataclass and class Args) — read once per file
+    filtered: list[Path] = []
+    for f in files:
+        try:
+            content = f.read_text()
+        except Exception:
+            continue
+        if not ("@dataclass" in content and "class Args" in content):
+            filtered.append(f)
+    files = filtered
 
     results: dict = {
         "path": str(target_path),

@@ -56,7 +56,6 @@ from agent_console import (
     user_echo,
     warning,
 )
-from agent_session import LOG_DIR
 from agent_context_utils import (
     format_age,
     get_all_context_files,
@@ -183,7 +182,8 @@ def preview_context(context_file: Path, n_messages: int = 3) -> list[dict]:
         return []
 
     preview = []
-    for msg in data[-n_messages:]:
+    messages = data if isinstance(data, list) else data.get("messages", [])
+    for msg in messages[-n_messages:]:
         content = msg.get("content", "")
         if isinstance(content, list):
             image_count = sum(1 for p in content if p.get("type") == "image_url")

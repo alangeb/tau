@@ -78,7 +78,11 @@ class TestMonotonicAccumulation:
         assert detector.escalation_level >= 4
 
     def test_warnings_reset_on_non_repeat_call(self):
-        """Warnings should reset when a non-repeat call breaks the loop pattern."""
+        """Warnings should reset when sustained non-repeat calls break the loop pattern.
+
+        Anti-gaming: requires 3 consecutive non-repeats before clearing total_warnings
+        (prevents alternation gaming: loop,loop,loop,good,loop,loop,loop,good,...).
+        """
         detector = LoopDetector(repeat_threshold=2)
         # Build up warnings with identical calls (need 3+ to reach level 1)
         detector.detect_tool_loop("grep", {"pattern": "test"})
@@ -88,8 +92,16 @@ class TestMonotonicAccumulation:
         assert detector.total_warnings >= 3
         assert detector.escalation_level >= 1
 
-        # Non-repeat call should reset warnings
+        # Single non-repeat does NOT reset (anti-gaming: need 3 consecutive)
         detector.detect_tool_loop("ls", {"path": "."})
+        assert detector.total_warnings >= 3  # still has warnings
+
+        # Second non-repeat still not enough
+        detector.detect_tool_loop("cat", {"file_path": "foo"})
+        assert detector.total_warnings >= 3  # still has warnings
+
+        # Third consecutive non-repeat — sustained break, reset warnings
+        detector.detect_tool_loop("wc", {"path": "bar"})
         assert detector.total_warnings == 0
         assert detector.escalation_level == 0
 

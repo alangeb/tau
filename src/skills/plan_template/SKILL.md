@@ -1,14 +1,14 @@
 ---
-name: plan_template
-description: "Task planning — plan files, checklists, phased execution, task tracking, state tracking (also load: code-review-workflow, idea, think, bug_investigation, context_management, dream, task)"
 category: planning
-keywords: plan, checklist, todo, phased, task tracking, step-by-step, state, execution
+description: "Create structured task plan template — phases, checklists, progress tracking, organize work (also load: manifest, orchestrate, sum, task, idea, spec, think)"
+keywords: task plan, checklist, phased execution, plan tool, progress tracking, task planning, execution plan, plan structure
+name: plan_template
 ---
 
 # Plan File Structure
 
 ## When
-"create plan", "plan file", "task checklist", "project plan", "step-by-step plan"
+"plan file" | "task checklist" | "step-by-step plan" | "task list" | "step by step"
 
 ## 8 Sections (in order)
 1. **TASK DOCUMENTATION** — Original request + recent updates
@@ -21,32 +21,12 @@ keywords: plan, checklist, todo, phased, task tracking, step-by-step, state, exe
 8. **RISKS** — Risk, Probability, Impact, Mitigation
 
 ## State Markers
-- `[ ]` Not started
-- `[>]` In progress (max 1 at a time)
-- `[x]` Completed
-- `[?]` Blocked/Needs clarification
-
-## Workflow
-### Create
-1. Copy structure, fill TASK DOCUMENTATION
-2. Define phases with `[ ]` items
-3. Add upfront decisions/questions
-
-### Update
-1. Read current content
-2. Add new phases at top
-3. Mark completed `[x]`
-4. Add "Recent Updates"
-5. Preserve all history
-
-### Execute
-Review → Select `[ ]` → Mark `[>]` → Execute → Verify → Mark `[x]` → Next `[>]` → Document
+- `[ ]` Not started | `[>]` In progress (max 1) | `[x]` Done | `[?]` Blocked
 
 ## Rules
-- Max one `[>]` at a time across entire file
-- Update each session (start or end)
-- Every `[x]` needs "Recent Updates"
-- Preserve all history, never delete old content
+- Max one `[>]` at a time
+- Update each session; Every `[x]` → Recent Updates
+- Preserve history, never delete
 
 ## Quick Queries
 ```bash
@@ -58,6 +38,7 @@ grep -n "\[x\]" PLAN.md   # Completed
 ## Helper
 ```bash
 python3 skills/plan_template/plan_gen.py  # plan_template helper
+source skills/plan_template/plan_helpers.sh  # plan_progress, plan_pending, plan_done, plan_stats, plan_new
 ```
 
 ## Related Skills
@@ -68,3 +49,7 @@ python3 skills/plan_template/plan_gen.py  # plan_template helper
 - `context_management` — delegate planned tasks
 - `dream` — self-improvement loop
 - `task` — Complete task framework
+- `spec` — task planning for spec implementation
+- `orchestrate` — goal-driven delegation with manifests
+- `manifest` — Goal-driven delegation manifests
+- `sum` — session state summarization

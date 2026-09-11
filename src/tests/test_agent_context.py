@@ -193,7 +193,7 @@ class TestLoadSaveContext:
         metadata = {
             "pid": 12345,
             "working_dir": "/tmp/test",
-            "start_time": "2026-09-11T17:20:23+00:00",
+            "start_time": "2026-09-11T18:16:39+00:00",
             "model": "test-model",
         }
         # Write new format
@@ -834,3 +834,205 @@ class TestMergeConsecutiveAssistants:
         msgs = context.get_messages()
         assert len(msgs) == 2
         assert msgs[1]["content"] == "\n"
+
+
+class TestBytesSizeCache:
+    """Test TauContext.bytes_size() caching behavior."""
+
+    def test_bytes_size_returns_correct_value(self):
+        """Test that bytes_size() returns the correct serialized size."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hello"},
+        ])
+        size = context.bytes_size()
+        expected = len(json.dumps(context._messages).encode("utf-8"))
+        assert size == expected
+
+    def test_bytes_size_cached_on_repeated_calls(self):
+        """Test that bytes_size() returns cached value on repeated calls."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+        ])
+        # First call computes and caches
+        size1 = context.bytes_size()
+        # Second call should return cached value
+        size2 = context.bytes_size()
+        assert size1 == size2
+        # Verify cache is valid
+        assert context._bytes_cache_valid is True
+
+    def test_bytes_size_changes_after_append(self):
+        """Test that bytes_size() reflects changes after append."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+        ])
+        size_before = context.bytes_size()
+        # Append a message
+        context.append_user("Hello")
+        # New size should be larger (cache was invalidated and recomputed)
+        size_after = context.bytes_size()
+        assert size_after > size_before
+        # Cache should be valid after recomputation
+        assert context._bytes_cache_valid is True
+
+    def test_bytes_size_changes_after_clear(self):
+        """Test that bytes_size() reflects changes after clear."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ])
+        size_before = context.bytes_size()
+        context.clear()
+        size_after = context.bytes_size()
+        assert size_after < size_before
+
+    def test_bytes_size_changes_after_extend(self):
+        """Test that bytes_size() reflects changes after extend."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+        ])
+        size_before = context.bytes_size()
+        context.extend([
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ])
+        size_after = context.bytes_size()
+        assert size_after > size_before
+
+    def test_bytes_size_changes_after_undo(self):
+        """Test that bytes_size() reflects changes after undo."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ])
+        size_before = context.bytes_size()
+        context.undo()
+        size_after = context.bytes_size()
+        assert size_after < size_before
+
+    def test_bytes_size_invalidated_on_set_messages(self):
+        """Test that bytes_size() cache is invalidated on set_messages."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hello"},
+        ])
+        size_before = context.bytes_size()
+        context.set_messages([
+            {"role": "system", "content": "You are helpful"},
+        ])
+        assert context._bytes_cache_valid is False
+        size_after = context.bytes_size()
+        assert size_after < size_before
+
+    def test_bytes_size_invalidated_on_merge(self):
+        """Test that bytes_size() cache is invalidated on merge."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "assistant", "content": "First"},
+            {"role": "assistant", "content": "Second"},
+        ])
+        size_before = context.bytes_size()
+        context.merge_consecutive_assistants()
+        assert context._bytes_cache_valid is False
+        size_after = context.bytes_size()
+        # Merged message should be smaller (less overhead)
+        assert size_after < size_before
+
+    def test_bytes_size_invalidated_on_cleanup_synthetic(self):
+        """Test that bytes_size() cache is invalidated on cleanup_synthetic."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "[U:system | N:0] synthetic"},
+            {"role": "assistant", "content": "Response"},
+        ])
+        size_before = context.bytes_size()
+        context.cleanup_synthetic()
+        # Cache is invalidated and recomputed by the log_context_remove call
+        # Verify the size changed (synthetic message removed)
+        size_after = context.bytes_size()
+        assert size_after < size_before
+
+    def test_bytes_size_initial_cache_invalid(self):
+        """Test that new context has invalid cache."""
+        context = TauContext()
+        assert context._bytes_cache_valid is False
+        assert context._bytes_cache == 0
+
+    def test_invalidate_bytes_sets_valid_false(self):
+        """Test that _invalidate_bytes() sets _bytes_cache_valid to False."""
+        context = TauContext([
+            {"role": "system", "content": "You are helpful"},
+        ])
+        # Warm the cache
+        context.bytes_size()
+        assert context._bytes_cache_valid is True
+        # Invalidate
+        context._invalidate_bytes()
+        assert context._bytes_cache_valid is False
+
+
+class TestCopyDeepCopy:
+    """Test TauContext.copy() uses deep copy to prevent shared message dicts."""
+
+    def test_copy_returns_new_context(self):
+        """Test that copy() returns a new TauContext instance."""
+        context = TauContext([
+            {"role": "user", "content": "Hello"},
+        ])
+        copied = context.copy()
+        assert copied is not context
+        assert isinstance(copied, TauContext)
+
+    def test_copy_messages_are_independent(self):
+        """Test that modifying a message in the copy does not affect the original."""
+        context = TauContext([
+            {"role": "user", "content": "Original"},
+        ])
+        copied = context.copy()
+        # Modify a message in the copy
+        copied._messages[0]["content"] = "Modified"
+        # Original should be unchanged
+        assert context[0]["content"] == "Original"
+        assert copied[0]["content"] == "Modified"
+
+    def test_copy_nested_structures_are_independent(self):
+        """Test that nested structures (e.g., tool_calls) are also deep copied."""
+        context = TauContext([
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "test", "arguments": "{}"}, "type": "function"},
+                ],
+            },
+        ])
+        copied = context.copy()
+        # Modify a nested structure in the copy
+        copied._messages[0]["tool_calls"][0]["function"]["name"] = "modified"
+        # Original should be unchanged
+        assert context[0]["tool_calls"][0]["function"]["name"] == "test"
+        assert copied[0]["tool_calls"][0]["function"]["name"] == "modified"
+
+    def test_copy_preserves_all_messages(self):
+        """Test that copy() preserves all messages."""
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "User message 1"},
+            {"role": "assistant", "content": "Assistant response 1"},
+            {"role": "user", "content": "User message 2"},
+        ]
+        context = TauContext(messages)
+        copied = context.copy()
+        assert len(copied) == len(context)
+        for i in range(len(context)):
+            assert copied[i] == context[i]
+
+    def test_copy_empty_context(self):
+        """Test that copy() works on an empty context."""
+        context = TauContext()
+        copied = context.copy()
+        assert len(copied) == 0
+        assert isinstance(copied, TauContext)

@@ -1,39 +1,30 @@
 ---
 name: code-review-workflow
-description: Complete code review pipeline — pyscan, pyanalyze, pygraph, pycheck, ruff, black, summary (also load: ast-grep, code-simplifier, context_management, documentation, file-ops, git-advanced, graphify, python_best_practices, review, bug_investigation, git-verify, performance)
-category: code-quality
-keywords: review pipeline, automated review, code quality, lint, format, type check, full review
+description: "Review code quality, audit codebase — pyscan, pyanalyze, pygraph, ruff, black, pycheck pipeline for automated code review (also load: ast-grep, python_best_practices, review, code-simplifier, git-verify, gitcrit, refactor, pyprep)"
+category: development
+keywords: pyscan structural inventory, pyanalyze usage check, pygraph call graph traversal, ruff linting, black formatting, static quality check
 ---
 
-# Code Review Workflow
+# code-review-workflow
 
 ## When
-"review code", "check quality", "audit codebase", "code health check"
+"review code" "check quality" "audit codebase" "code health check" "code review" "python analysis"
 
-## Sequence
+## Pipeline
 ```bash
 python3 skills/code-review-workflow/review_pipeline.py <path>  # Full pipeline
-# Or manual:
-pyscan(path=".")                          # Structural inventory
-pyanalyze(path=".")                        # Usage analysis, unused code
-pygraph(path=".")                          # Cross-file call graphs
-pycheck(path=".")                          # Missing imports check
-ruff check --fix <file>                   # Auto-fix linting
-ruff check <file>                          # Verify remaining issues
-black <file>                                # Format
-# Optional: mypy <file>                   # Type check (expensive)
 ```
 
-## Output
-```
-=== CODE REVIEW: <file> ===
-## Structural Issues: [pyscan findings]
-## Usage Issues: [pyanalyze findings]
-## Call Graph: [pygraph findings]
-## Import Issues: [pycheck findings]
-## Linting: [ruff findings]
-## Formatting: [black applied]
-## Summary: [issues found, severity, recommendations]
+## Manual Sequence
+```bash
+pyscan(path=".")           # Structural inventory
+pyanalyze(path=".")        # Usage analysis, unused code
+pygraph(path=".")          # Cross-file call graphs
+pycheck(path=".")          # Missing imports
+ruff check --fix <file>    # Auto-fix linting
+ruff check <file>          # Verify
+black <file>               # Format
+# mypy <file>              # Type check (expensive, optional)
 ```
 
 ## Helper
@@ -42,10 +33,25 @@ python3 skills/code-review-workflow/review_pipeline.py <path>  # Full pipeline
 ```
 
 ## Related Skills
-- `ast-grep` — complex search/rewrite
+- `ast-grep` — structural search/rewrite
 - `code-simplifier` — code clarity improvements
 - `python_best_practices` — linting/formatting sequence
-- `review` — detailed manual review process
-- `bug_investigation` — systematic bug analysis
+- `review` — detailed manual review
 - `git-verify` — verify code changes
-- `performance` — profile bottlenecks
+- `security-audit` — security review
+- `gitcrit` — git commit critique
+- `debug` — debug issues found during review
+- `documentation` — docstring and changelog patterns
+- `git-advanced` — bisect, cherry-pick, history analysis
+- `testing` — Write pytest tests
+- `graphify` — visualize code structure
+- `pyprep` — Python project preparation
+- `file-ops` — file operations during review
+- `git` — git operations during review
+- `performance` — performance review
+- `plan_template` — planning review
+- `project-onboard` — onboarding review
+- `search-replace` — search/replace during review
+- `pyprep` — Python project analysis
+- `refactor` — code restructuring
+- `tauskillmaintenance` — skill quality maintenance

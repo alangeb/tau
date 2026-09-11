@@ -335,7 +335,6 @@ This file is committed to git for consistency across all deployments.
 
 - `/delegate <task>` — Enter orchestration mode; agent plans and delegates via fork/subagent. Use this to drive the task lifecycle from within the agent.
 - `/plan <action>` — Manage hierarchical task plans (create, add, complete, block, status, next, progress, update, delete, clear). Use during PLAN phase to structure work.
-- `/ralph <task>` — Iterative task execution with explicit confirmation. Use for complex tasks requiring multiple fork cycles.
 
 ### Related Skills
 

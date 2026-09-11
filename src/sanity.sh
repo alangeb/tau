@@ -34,7 +34,9 @@
 # they should NOT be modified by LLM.
 # ============================================================================
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+# Resolve script directory — all paths are relative to this
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # Colors
 RED='\033[0;31m'
@@ -45,10 +47,10 @@ NC='\033[0m'
 PASSED=0
 FAILED=0
 
-# Prepare the environment
-DUTFILE="./tau-sanity.py"
-cp ./tau.py $DUTFILE
-pkill -f $DUTFILE
+# Prepare the environment — use absolute path so DUT works from any cwd
+DUTFILE="$SCRIPT_DIR/tau-sanity.py"
+cp ./tau.py "$DUTFILE"
+pkill -f "tau-sanity.py"
 DUT="$DUTFILE --llm cuda"
 
 # Optional: pass a positional parameter to override the LLM group
@@ -122,7 +124,7 @@ show_failure_output() {
 # NOTE: Only match on actual ERROR conditions, not informational warnings like
 # fork_tool_call_id not found (which is benign).
 has_exceptions() {
-    grep -qiE "Traceback|AttributeError|cannot append assistant after role|consecutive assistant messages|append assistant message after system message" "$TEMP_FILE"
+    grep -qiE "Traceback|AttributeError|cannot append (user|tool) after role|consecutive messages with same role|Assistant message must be preceded by user message after system prompt" "$TEMP_FILE"
 }
 
 expect() {

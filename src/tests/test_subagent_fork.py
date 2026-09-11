@@ -683,3 +683,67 @@ class TestSubagentFork:
 
             # Fork should have its own metadata
             assert new_fork_metadata["fork_task"] == "fork task"
+
+
+class TestSubagentForkCrashHandling:
+    """Test that subagent/fork crashes are caught and return error strings."""
+
+    def test_subagent_crash_returns_error_string(self, test_config):
+        """Test that invoke_subagent_sync catches exceptions from invoke_with_tools."""
+        with patch.object(TauErgon, "invoke_with_tools", side_effect=RuntimeError("test crash")):
+            result = invoke_subagent_sync(
+                prompt="Test prompt",
+                system_prompt="Test system prompt",
+                parent_agent=_make_mock_agent(current_group_name="test"),
+                config=test_config,
+            )
+        assert isinstance(result, str)
+        assert "Subagent crash" in result
+        assert "RuntimeError" in result
+        assert "test crash" in result
+
+    def test_fork_crash_returns_error_string(self, test_config):
+        """Test that invoke_fork_sync catches exceptions from invoke_with_tools."""
+        from agent_subagent import invoke_fork_sync
+
+        parent_ctx = TauContext([{"role": "system", "content": "System"}])
+        with patch.object(TauErgon, "invoke_with_tools", side_effect=ValueError("fork test crash")):
+            result = invoke_fork_sync(
+                prompt="Test prompt",
+                parent_context=parent_ctx,
+                parent_agent=_make_mock_agent(current_group_name="test"),
+                config=test_config,
+            )
+        assert isinstance(result, str)
+        assert "Fork crash" in result
+        assert "ValueError" in result
+        assert "fork test crash" in result
+
+    def test_subagent_crash_does_not_propagate(self, test_config):
+        """Test that subagent crashes don't raise exceptions to the caller."""
+        with patch.object(TauErgon, "invoke_with_tools", side_effect=Exception("boom")):
+            # Should NOT raise — should return error string
+            result = invoke_subagent_sync(
+                prompt="Test prompt",
+                system_prompt="Test system prompt",
+                parent_agent=_make_mock_agent(current_group_name="test"),
+                config=test_config,
+            )
+        assert isinstance(result, str)
+        assert "Subagent crash" in result
+
+    def test_fork_crash_does_not_propagate(self, test_config):
+        """Test that fork crashes don't raise exceptions to the caller."""
+        from agent_subagent import invoke_fork_sync
+
+        parent_ctx = TauContext([{"role": "system", "content": "System"}])
+        with patch.object(TauErgon, "invoke_with_tools", side_effect=Exception("fork boom")):
+            # Should NOT raise — should return error string
+            result = invoke_fork_sync(
+                prompt="Test prompt",
+                parent_context=parent_ctx,
+                parent_agent=_make_mock_agent(current_group_name="test"),
+                config=test_config,
+            )
+        assert isinstance(result, str)
+        assert "Fork crash" in result

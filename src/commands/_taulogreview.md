@@ -148,18 +148,18 @@ For each error category:
 
 ### 3.2 Generate Tasks
 Create tasks for recurring issues:
-1. Use `queue.sh` to create task files — it is self-aware and always uses the correct absolute path (`/home/alangeb/tau/tasks/1_todo/`). Never use `file_write` with relative paths like `tasks/1_todo/` — that creates files in `src/tasks/1_todo/` (wrong location).
+1. Use `queue.sh` to create task files — it is self-aware and always uses the correct absolute path (`/home/user/tau/tasks/1_todo/`). Never use `file_write` with relative paths like `tasks/1_todo/` — that creates files in `src/tasks/1_todo/` (wrong location).
 2. Include error pattern, frequency, and proposed fix
 3. Prioritize by impact (frequency × severity)
 
-**Path Convention (CRITICAL):** Always use absolute paths (`/home/alangeb/tau/tasks/...`) for ALL task file operations. Never use relative paths like `tasks/` or `../tasks/` — these resolve differently depending on the agent's working directory (`src/`), causing task files to be created in the wrong location.
+**Path Convention (CRITICAL):** Always use absolute paths (`/home/user/tau/tasks/...`) for ALL task file operations. Never use relative paths like `tasks/` or `../tasks/` — these resolve differently depending on the agent's working directory (`src/`), causing task files to be created in the wrong location.
 
 ```bash
 # Correct: use queue.sh (self-aware, uses absolute paths)
 $HOME/tau/tasks/queue.sh "Fix: API Connection Resilience"
 
 # Verify task file was created in the correct location
-ls -la /home/alangeb/tau/tasks/1_todo/
+ls -la /home/user/tau/tasks/1_todo/
 ```
 
 ## Phase 4: Verification

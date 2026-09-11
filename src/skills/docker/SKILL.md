@@ -1,35 +1,14 @@
 ---
-name: docker
-description: "Docker container management — build, run, compose, exec, logs, SWE-bench testbeds (also load: background, bug_investigation, context_management, dependency_management, shell_scripting, swe_bench)"
 category: development
-keywords: docker, container, docker-compose, build image, run container, testbed, SWE-bench, environment, up, down, logs
+description: "Run container, docker compose, build image, exec into container, view logs, manage docker networks and volumes (also load: background, shell_scripting, dependency_management)"
+keywords: docker, container, docker compose, build image, docker exec, docker logs, container management, docker run, deploy container
+name: docker
 ---
 
 # Docker Management
 
 ## When
-"docker container", "docker-compose", "build image", "run container", "testbed", "SWE-bench environment", "docker build"
-
-## Common Patterns
-
-### Run Container
-```bash
-docker compose -f docker-compose.yaml up -d
-docker compose -f docker-compose.yaml logs -f
-docker compose -f docker-compose.yaml down
-```
-
-### Build Image
-```bash
-docker build -t image_name .
-docker build --no-cache -t image_name .  # Force rebuild
-```
-
-### Interactive Access
-```bash
-docker exec -it <container> bash
-docker logs <container>
-```
+"docker container", "docker-compose", "build image", "run container", "testbed", "SWE-bench environment"
 
 ## SWE-bench Patterns
 - Container = isolated testbed with project code

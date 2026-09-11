@@ -1,5 +1,7 @@
 # Skills — Implementation Guide
 
+**See also**: [ARCHITECTURE.md](ARCHITECTURE.md) (module inventory), [INDEX.md](INDEX.md) (design index)
+
 ## Skill Contract
 
 Create `skills/my_skill/SKILL.md`:

@@ -297,6 +297,12 @@ def main():
         default=llm_group_name,
         help="LLM group name to use (default: from config or first group)",
     )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="Full prompt to use instead of slash command",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     parser.add_argument(
         "-c",
@@ -477,6 +483,10 @@ def main():
         append_context(proj_dir, ctx_path)
 
     # Put command-line inputs in queue
+
+    # If --prompt is provided, use it as the full prompt
+    if args.prompt:
+        args.inputs = [args.prompt]
     if args.inputs:
         for inp in args.inputs:
             message = InputMessage.from_command_line(inp)

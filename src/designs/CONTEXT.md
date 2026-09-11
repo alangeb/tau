@@ -1,5 +1,7 @@
 # Context Management
 
+**See also**: [ARCHITECTURE.md](ARCHITECTURE.md) (module inventory), [EOT.md](EOT.md) (end-of-turn contract), [INDEX.md](INDEX.md) (design index)
+
 ## Common Patterns
 
 ```python
@@ -21,7 +23,27 @@ ctx.append_synthetic_user("category", "content")
 # Check context size
 tokens = agent.context.estimate_tokens(pending_tokens=0)
 agent.context.compress(0.30, agent, tools)  # Target 30% reduction
+
+# Get byte size (cached, invalidated on mutation)
+bytes = agent.context.bytes_size()
+
+# Deep copy context (for forks)
+ctx_copy = agent.context.copy()  # Full deep copy, independent messages
 ```
+
+## Performance Notes
+
+### `bytes_size()` Caching
+
+`bytes_size()` returns the JSON-serialized byte size of the context. The result is cached and invalidated on every mutation (append, clear, extend, undo, set_messages, merge, cleanup_synthetic, close_turn). This avoids O(n) JSON serialization on repeated calls.
+
+### `copy()` Deep Copy Semantics
+
+`copy()` performs a full `copy.deepcopy()` of the messages list. This ensures fork contexts are completely independent — no shared message dicts or nested structures (tool_calls, function dicts, etc.).
+
+### `_prepare_messages()` Tool Calls Isolation
+
+In `agent_llm_invoke.py`, `_prepare_messages()` deep copies `tool_calls` before stripping non-API fields. This prevents mutation of the original context's tool_calls dicts.
 
 ## User Message Prefix Protocol
 
@@ -32,7 +54,7 @@ All user messages are prefixed with `[U:TYPE | N:stack]` to indicate source and 
 | `real` | Actual user input (CLI/stdin) | No |
 | `meta` | System metadata (bridges, turn markers) | Yes |
 | `confirm` | End-of-turn confirmation requests | Yes |
-| `inject` | Parent supervisor injection (A2A) — see [A2A_PROTOCOL.md](A2A_PROTOCOL.md) §3.5 | Yes |
+| `inject` | Parent injection via control queue extension point | Yes |
 | `system` | System-injected (escalation, recovery) | Yes |
 | `fork` | Fork task (from /fork command) | No |
 | `subagent` | Subagent task (from /subagent command) | No |
@@ -147,25 +169,35 @@ result = invoke_subagent_sync(
 
 **Nesting stack:** Tracks delegation depth via string concatenation (e.g., `"SF"` = subagent → fork). Depth is `len(nesting_stack)`. Nesting restrictions apply when depth ≥ `nesting_threshold - 1`.
 
-## End-Turn Recovery
+## End-Turn
 
-The agent uses a recovery mechanism to handle cases where the model returns
-plain text without calling `end_turn`. See **DECISIONS.md §18.8** for full rationale.
+The EOT (End-of-Turn) protocol is documented in **EOT.md**. This section
+summarizes the key flows; see EOT.md for the full contract.
 
 **Normal flow:**
 - Model returns text with tool calls → tools execute, loop continues
 - Model returns text with `end_turn` → turn ends immediately
-- Model returns plain text (no tools, no `end_turn`) → recovery is triggered
+- Model returns plain text ending with `ENDOFTURN` → self-confirming, turn ends immediately (sentinel stripped)
+- Model returns plain text (no tools, no `end_turn`, no sentinel) → confirmation round
 
-**Recovery flow (EOT confirmation):**
+**Self-confirming end-of-turn:**
+- Model returns plain text ending with `ENDOFTURN` sentinel
+- Sentinel is stripped; preceding content is used as final response
+- Turn ends immediately — no confirmation round needed
+- Audit event `EOT_SELF_CONFIRMED` is emitted
+
+**Confirmation round (when self-confirmation is not used):**
 - System injects synthetic user message asking for confirmation
 - Model must reply with `ENDOFTURN` sentinel as plain text (no tool call)
 - Or model continues with tool calls → rewind and process them
 - If budget exhausted (20 attempts), best-effort response is returned
 
 **Key invariants:**
-- EOT state resets at start of each `invoke_with_tools_loop()`
+- EOT state resets at start of each `run_loop()`
 - Confirmation stack holds messages across multiple rounds
 - `last_substantive_response` only updates when NOT in recovery mode
 - Restricted nesting (T/K types) bypasses confirmation
 - Sentinel string assembled from parts at runtime (prevents LLM pattern learning)
+
+See **EOT.md** for full state diagram, response selection priority, entry points,
+pre-flight size check, error handling, and audit events.

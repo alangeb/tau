@@ -132,11 +132,13 @@ __anthropic_tool_pattern__ = re.compile(
 # ── Direct XML-style tool call pattern ─────────────────────────────────────
 # Matches: <tool_name attr="value" ...>...</tool_name> or <tool_name attr="value" .../>
 # Also handles nested tags: <tool_name><inner attr="value"></inner></tool_name>
+# NOTE: Body is limited to 10000 chars to prevent pathological nested XML matching.
+_DIRECT_XML_MAX_BODY = 10000
 __direct_xml_pattern__ = re.compile(
     rf"<(\w+)"  # Opening tag with tool name (group 1)
     rf"(?:\s+[^>]*?)?"  # Optional attributes on the opening tag
     rf"(?:/>"  # Self-closing: <tool_name .../>
-    rf"|(?:>(.*?)</\1>)"  # Or: <tool_name>...</tool_name> (group 2 = content)
+    rf"|(?:>(.{{0,{_DIRECT_XML_MAX_BODY}}})</\1>)"  # Or: <tool_name>...</tool_name> (group 2 = content, limited)
     rf")",
     re.DOTALL,
 )

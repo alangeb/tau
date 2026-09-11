@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """SWE-bench artifact checker — shows test results summary."""
-import os, sys, glob, json
+import glob
+import json
+import os
+import sys
 
 def main():
     base = os.environ.get("ARTIFACT_BASE", "artifacts")

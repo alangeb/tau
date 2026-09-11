@@ -1,8 +1,8 @@
 ---
-name: test-suite-monitor
-description: "Run test suite in background, monitor progress, detect completion, report results (also load: background, tau_testsuite, tmux_monitoring)"
 category: testing
-keywords: test, suite, monitor, background, run tests, progress, completion, results, status
+description: "Run tests in background tmux and monitor test suite, detect failures — background_wait with keywords (also load: background, shell_scripting, swe_bench, tau_testsuite, tmux_monitoring)"
+keywords: async tmux test execution, status.json polling, completion keyword detection, idle timeout configuration, test result aggregation
+name: test-suite-monitor
 ---
 
 # Test Suite Monitor
@@ -34,3 +34,4 @@ python3 skills/test-suite-monitor/test_monitor.py
 - `background` — tmux session management
 - `tmux_monitoring` — polling best practices
 - `tau_testsuite` — test structure and helpers
+- `swe_bench` — benchmark evaluation pipeline

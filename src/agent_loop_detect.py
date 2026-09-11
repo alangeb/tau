@@ -146,6 +146,12 @@ class LoopDetector:
         self.sustained_threshold = sustained_threshold
         self._entropy_history: deque[float] = deque(maxlen=sustained_window)
 
+        # Sustained non-repeat tracking — requires N consecutive non-repeats
+        # before clearing total_warnings (prevents alternating bad/good patterns
+        # from gaming the detector).
+        self._consecutive_non_repeats: int = 0
+        self._NON_REPEAT_RESET_THRESHOLD: int = 3
+
     def _tool_call_key(self, tool_name: str, args: dict) -> str:
         """Serialize tool name and arguments into a comparable string key."""
         try:
@@ -193,9 +199,13 @@ class LoopDetector:
         return self.total_warnings + self.entropy_warnings
 
     def _update_escalation_level(self) -> None:
-        """Update escalation level based on total_warnings.
+        """Update escalation level based on effective_warnings.
 
-        New level structure (based on total_warnings, not effective_warnings):
+        Entropy warnings contribute 0.5 each toward escalation thresholds
+        (integer division by 2), per DECISIONS.md §13.6. This means
+        every 2 entropy warnings count as 1 effective warning.
+
+        Level structure (based on effective_warnings = total_warnings + entropy_warnings // 2):
         - Level 0: <3 warnings (no escalation)
         - Level 1: 3-5 warnings (alert)
         - Level 2: 6-8 warnings (simulated self-reflection)
@@ -203,15 +213,16 @@ class LoopDetector:
         - Level 4: 12-14 warnings (forced analysis)
         - Level 5: 15+ warnings (termination)
         """
-        if self.total_warnings >= 15:
+        effective_warnings = self.total_warnings + self.entropy_warnings // 2
+        if effective_warnings >= 15:
             self.escalation_level = 5
-        elif self.total_warnings >= 12:
+        elif effective_warnings >= 12:
             self.escalation_level = 4
-        elif self.total_warnings >= 9:
+        elif effective_warnings >= 9:
             self.escalation_level = 3
-        elif self.total_warnings >= 6:
+        elif effective_warnings >= 6:
             self.escalation_level = 2
-        elif self.total_warnings >= 3:
+        elif effective_warnings >= 3:
             self.escalation_level = 1
         else:
             self.escalation_level = 0
@@ -234,25 +245,23 @@ class LoopDetector:
 
         if key == self.last_tool_call:
             self.consecutive_repeats += 1
+            # Repeat detected — reset non-repeat counter.
+            self._consecutive_non_repeats = 0
         else:
             self.consecutive_repeats = 1
             self.last_tool_call = key
-            # Non-repeat call: reset repeat warnings (loop condition broken).
-            # Also check entropy — if recovered, reset entropy warnings too.
-            self.total_warnings = 0
-            if len(self.tool_call_history) < 10:
-                # Not enough history for entropy — reset everything.
+            # Non-repeat call: increment sustained non-repeat counter.
+            self._consecutive_non_repeats += 1
+            if self._consecutive_non_repeats >= self._NON_REPEAT_RESET_THRESHOLD:
+                # Sustained non-repeat — loop condition broken, reset warnings.
+                self.total_warnings = 0
                 self.entropy_warnings = 0
                 self._entropy_history.clear()
-            else:
-                entropy = self._calculate_entropy()
-                if entropy >= self.sustained_threshold:
-                    # Entropy recovered — reset entropy warnings.
-                    self.entropy_warnings = 0
-                    self._entropy_history.clear()
-                # If entropy still low, keep entropy_warnings and history.
-            # Recalculate escalation from remaining warnings (may be 0 now).
-            self._update_escalation_level()
+                self._update_escalation_level()
+            elif len(self.tool_call_history) < 10:
+                # Not enough history for entropy — reset everything early.
+                self.entropy_warnings = 0
+                self._entropy_history.clear()
 
         if self.consecutive_repeats >= self.repeat_threshold:
             self.total_warnings += 1
@@ -311,6 +320,8 @@ class LoopDetector:
         self.failed_tool_names.clear()
         # Reset sustained entropy tracking
         self._entropy_history.clear()
+        # Reset sustained non-repeat tracking
+        self._consecutive_non_repeats = 0
 
     def record_unknown_tool(self, tool_name: str) -> int:
         """Record an unknown tool call. Returns the cumulative count for this name.

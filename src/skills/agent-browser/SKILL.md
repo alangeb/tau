@@ -1,23 +1,23 @@
 ---
+category: automation
+description: "Open webpage, navigate, scrape, screenshot, fill forms, click browser — headless browser automation, JS evaluation, DOM interaction, page snapshot (also load: web-research, shell_scripting, image)"
+keywords: browser automation, web scraping, webpage navigation, screenshot, form filling, click browser, page interaction, web automation, headless browser, web control
 name: agent-browser
-description: "Browser automation CLI — navigate, scrape, fill forms, click elements, take screenshots. Playwright, headless (also load: image, search-replace, shell_scripting, web-research, dream, swe_bench)"
-category: development
-keywords: browser automation, web scraping, interactive browser, page navigation, click, form fill
 ---
 
 # agent-browser
 
 ## When
-"browser automation", "web scraping", "navigate website", "fill form", "click element"
+"browser automation", "web scraping", "navigate website", "fill form", "click element", "screenshot"
 
 ## Workflow
-1. `open <url>` → 2. `snapshot -i` → 3. interact via `@refs` → 4. re-snapshot after DOM changes
+`open <url>` → `snapshot -i` → interact via `@refs` → re-snapshot after DOM changes
 
 ## Commands
 ```bash
 agent-browser open <url>              # Navigate
 agent-browser close                   # Close
-agent-browser snapshot -i              # Interactive element refs
+agent-browser snapshot -i              # Interactive refs
 agent-browser snapshot -i -C           # + cursor-interactive
 agent-browser snapshot -s "selector"  # Scope to CSS selector
 agent-browser click @e1               # Click
@@ -47,19 +47,16 @@ EVALEOF
 ## Gotchas
 - **Always re-snapshot** after navigation or DOM changes
 - Dismiss cookies/modals before interacting
-- Use `wait --load networkidle` after `open` for slow pages
-- Close browser when done to avoid leaked processes
-- Complex JS: use `eval --stdin` with heredoc to avoid shell quoting
+- `wait --load networkidle` after `open` for slow pages
+- Close browser when done — avoid leaked processes
+- Complex JS: `eval --stdin` with heredoc — avoids shell quoting
 
 ## Helper
-
 ```bash
 source skills/agent-browser/browser_patterns.sh
 ```
+
 ## Related Skills
-- `image` — image loading and vision models
-- `search-replace` — find and replace patterns
+- `image` — image loading, vision models
+- `web-research` — web content extraction
 - `shell_scripting` — automate browser workflows
-- `web-research` — web content extraction (fetch, crawl, search)
-- `dream` — self-improvement loop
-- `swe_bench` — benchmark workflow

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_core import ToolFilter
+from agent_tool_filter import ToolFilter
 
 
 class TestToolFilterDeniedMessage:

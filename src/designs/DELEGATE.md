@@ -1,5 +1,7 @@
 # Delegate Mode
 
+**See also**: [ARCHITECTURE.md](ARCHITECTURE.md) (module inventory), [EOT.md](EOT.md) (end-of-turn contract), [INDEX.md](INDEX.md) (design index)
+
 Delegate mode is an **orchestrator mode** for task delegation. The agent plans and delegates work via `fork` and `subagent` tools, but does NOT do work itself (no file edits, no shell commands, no writes).
 
 ## Usage
@@ -51,9 +53,9 @@ The tool filter is applied at execution time. All tools are still announced to t
 
 ## Bug Fix History
 
-### 2026-09-11: Fixed infinite loop bug
+### 2025-01-15: Fixed infinite loop bug
 
-**Problem:** The old code checked `while agent.force_end_turn is None`. This was WRONG because `force_end_turn` is only set by external intervention (`+stop` steering, loop escalation). It is NOT set by the normal EOT flow.
+**Problem:** The old code checked `while agent.force_end_turn is None`. This was WRONG because `force_end_turn` is only set by external intervention (`+stop` steering, loop escalation). It is NOT set by the normal EOT flow. See **EOT.md** for the full end-of-turn contract.
 
 **Result:** If the LLM ended the turn normally, `force_end_turn` remained `None`, and the loop kept injecting "Continue TASK" forever.
 

@@ -16,7 +16,9 @@ Options:
 """
 
 import argparse
+import atexit
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -38,6 +40,7 @@ STOP_FILE = SCRIPT_DIR / "dream.stop"
 PID_FILE = SCRIPT_DIR / "dream.pid"
 
 TIMEOUT_SECONDS = 6 * 3600  # 6 hours per step
+READ_POLL_SECONDS = 5  # how often to check shutdown flag while reading subprocess output
 
 # ─── Single-instance lock ────────────────────────────────────────────────────
 
@@ -77,17 +80,33 @@ def release_lock():
 # ─── Signal Handling ─────────────────────────────────────────────────────────
 
 class ShutdownControl:
-    """Graceful shutdown: SIGINT finishes current step, SIGTERM force-kills."""
+    """Graceful shutdown: SIGINT finishes current step, SIGTERM force-kills.
+
+    Also tracks SIGHUP (terminal close) and SIGQUIT (Ctrl+\\) for observability.
+    """
 
     def __init__(self):
         self.graceful_requested = False
         self.force_requested = False
+        self.signal_received: str | None = None  # Track which signal triggered shutdown
 
     def handle_sigint(self, signum, frame):
         self.graceful_requested = True
+        self.signal_received = "SIGINT"
 
     def handle_sigterm(self, signum, frame):
         self.force_requested = True
+        self.signal_received = "SIGTERM"
+
+    def handle_sighup(self, signum, frame):
+        """Terminal closed or parent process died."""
+        self.graceful_requested = True
+        self.signal_received = "SIGHUP"
+
+    def handle_sigquit(self, signum, frame):
+        """Ctrl+\\ — treat as force shutdown."""
+        self.force_requested = True
+        self.signal_received = "SIGQUIT"
 
     def check(self):
         """Return True if any shutdown was requested."""
@@ -101,6 +120,13 @@ class ShutdownControl:
             return "graceful"
         return None
 
+    def description(self) -> str:
+        """Return human-readable shutdown reason for logging."""
+        if self.signal_received:
+            kind = "force" if self.force_requested else "graceful"
+            return f"{kind} shutdown via {self.signal_received}"
+        return "unknown shutdown"
+
 
 shutdown = ShutdownControl()
 
@@ -108,6 +134,8 @@ shutdown = ShutdownControl()
 def setup_signals():
     signal.signal(signal.SIGINT, shutdown.handle_sigint)
     signal.signal(signal.SIGTERM, shutdown.handle_sigterm)
+    signal.signal(signal.SIGHUP, shutdown.handle_sighup)
+    signal.signal(signal.SIGQUIT, shutdown.handle_sigquit)
 
 
 # ─── Logger ──────────────────────────────────────────────────────────────────
@@ -220,57 +248,148 @@ class StepResult:
 
 # ─── Tau Runner ──────────────────────────────────────────────────────────────
 
+TAU_RETRY_COUNT = 2  # retries on crash (not timeout)
+TAU_RETRY_DELAY = 30  # seconds between retries
+
+
 def run_tau(
     command: str,
     llm_group: str,
     logger: Logger,
     dry_run: bool,
     timeout: int = TIMEOUT_SECONDS,
+    retry_count: int = TAU_RETRY_COUNT,
+    retry_delay: int = TAU_RETRY_DELAY,
 ) -> subprocess.CompletedProcess:
     """Run tau.py with a command, streaming output to terminal + log.
 
-    Returns CompletedProcess. Raises subprocess.TimeoutError on timeout.
+    Uses select() to poll the output pipe so shutdown signals can be handled
+    during long-running tau invocations. Checks shutdown.check() every
+    READ_POLL_SECONDS.
+
+    On crash (non-zero exit), retries up to retry_count times with retry_delay
+    between attempts. Timeouts are NOT retried (command is stuck).
+
+    Returns CompletedProcess. Raises subprocess.TimeoutExpired on timeout.
     """
     if dry_run:
         logger.log("[DRY-RUN]", f"would run: tau.py --llm {llm_group} {command}")
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="DRY-RUN: skipped", stderr="")
 
     cmd = [str(TAU_BIN), "--llm", llm_group, command]
-    logger.log("[tau]", f"running: {' '.join(cmd)}")
 
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(SRC_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    for attempt in range(retry_count + 1):
+        if attempt > 0:
+            logger.log("[retry]", f"tau.py retry {attempt}/{retry_count} after {retry_delay}s delay (command: {command})")
+            time.sleep(retry_delay)
 
-    # Stream output live
-    output_lines = []
-    try:
-        while True:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            line = line.rstrip("\n")
-            output_lines.append(line)
-            # Print to terminal (prefixed for clarity)
-            print(f"  {line}", flush=True)
-            # Also to log
-            logger._write_log(f"  {line}\n")
+        logger.log("[tau]", f"running (attempt {attempt+1}/{retry_count+1}): {' '.join(cmd)}")
 
-        proc.wait(timeout=timeout)
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=proc.returncode,
-            stdout="\n".join(output_lines),
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(SRC_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        raise
+
+        logger.log("[tau]", f"started tau.py (PID {proc.pid}) — waiting for completion...")
+
+        # Stream output live using select() so we can check for shutdown signals
+        output_lines = []
+        stdout_fd = proc.stdout.fileno()
+        try:
+            while True:
+                # Check shutdown before each poll
+                if shutdown.check():
+                    logger.log("[shutdown]", f"{shutdown.was_requested()} shutdown requested — terminating tau.py (PID {proc.pid})")
+                    _terminate_subprocess(proc, logger)
+                    # Drain any remaining output
+                    remaining = proc.stdout.read()
+                    if remaining:
+                        for line in remaining.rstrip("\n").split("\n"):
+                            line = line.rstrip("\n")
+                            output_lines.append(line)
+                            print(f"  {line}", flush=True)
+                            logger._write_log(f"  {line}\n")
+                    raise subprocess.TimeoutExpired(cmd, 0, "\n".join(output_lines))
+
+                # Use select to wait for output with a timeout
+                try:
+                    ready, _, _ = select.select([stdout_fd], [], [], READ_POLL_SECONDS)
+                except (ValueError, OSError):
+                    # File descriptor was closed (process exited)
+                    break
+
+                if not ready:
+                    # No output for READ_POLL_SECONDS — loop back to check shutdown
+                    continue
+
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                line = line.rstrip("\n")
+                output_lines.append(line)
+                # Print to terminal (prefixed for clarity)
+                print(f"  {line}", flush=True)
+                # Also to log
+                logger._write_log(f"  {line}\n")
+
+            proc.wait(timeout=timeout)
+
+            logger.log("[tau]", f"tau.py (PID {proc.pid}) exited with code {proc.returncode}")
+
+            if proc.returncode == 0:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=proc.returncode,
+                    stdout="\n".join(output_lines),
+                )
+
+            # Non-zero exit — log crash details
+            logger.log("[crash]", f"tau.py exited with code {proc.returncode} (attempt {attempt+1}/{retry_count+1})")
+            # Log last 10 lines of output for debugging
+            for line in output_lines[-10:]:
+                logger.log("[crash-output]", line)
+
+            # Don't retry on last attempt
+            if attempt >= retry_count:
+                logger.log("[crash]", f"tau.py failed after {retry_count+1} attempts — giving up")
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=proc.returncode,
+                    stdout="\n".join(output_lines),
+                )
+
+        except subprocess.TimeoutExpired:
+            raise
+        except Exception:
+            # Ensure process is cleaned up on any unexpected error
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            raise
+
+
+def _terminate_subprocess(proc: subprocess.Popen, logger: Logger):
+    """Gracefully terminate a subprocess: SIGINT first, SIGKILL after 10s."""
+    if proc.poll() is not None:
+        return  # already exited
+    try:
+        proc.terminate()  # SIGTERM
+    except OSError:
+        return
+    # Wait up to 10 seconds for graceful exit
+    for _ in range(100):
+        if proc.poll() is not None:
+            logger.log("[shutdown]", f"tau.py (PID {proc.pid}) terminated gracefully")
+            return
+        time.sleep(0.1)
+    # Force kill if still alive
+    logger.log("[shutdown]", f"tau.py (PID {proc.pid}) did not terminate — sending SIGKILL")
+    proc.kill()
+    proc.wait()
 
 
 def run_tests(logger: Logger, dry_run: bool) -> tuple:
@@ -376,7 +495,7 @@ def step_process_tasks(logger: Logger, git: GitHelper, llm_group: str, dry_run: 
         try:
             proc = run_tau("/_taudotask", llm_group, logger, dry_run)
             tau_ok = (proc.returncode == 0)
-        except subprocess.TimeoutError:
+        except subprocess.TimeoutExpired:
             logger.log("[timeout]", f"{step_name}: tau timed out after {TIMEOUT_SECONDS}s")
             timed_out = True
 
@@ -431,7 +550,7 @@ def step_rearch(logger: Logger, git: GitHelper, llm_group: str, dry_run: bool, n
         try:
             proc = run_tau("/_taurearch", llm_group, logger, dry_run)
             tau_ok = (proc.returncode == 0)
-        except subprocess.TimeoutError:
+        except subprocess.TimeoutExpired:
             logger.log("[timeout]", f"{step_name}: tau timed out after {TIMEOUT_SECONDS}s")
             timed_out = True
             tau_ok = False
@@ -470,7 +589,7 @@ def step_single(logger: Logger, git: GitHelper, llm_group: str, dry_run: bool, c
     try:
         proc = run_tau(command, llm_group, logger, dry_run)
         tau_ok = (proc.returncode == 0)
-    except subprocess.TimeoutError:
+    except subprocess.TimeoutExpired:
         logger.log("[timeout]", f"{step_name}: tau timed out after {TIMEOUT_SECONDS}s")
         timed_out = True
         tau_ok = False
@@ -496,6 +615,184 @@ def step_single(logger: Logger, git: GitHelper, llm_group: str, dry_run: bool, c
 
     logger.step_result(step_name, "PASS" if all_ok else ("TIMEOUT" if timed_out else "FAIL"), time.time() - t0)
     return result
+
+
+# ─── Log Rotation (Deterministic — No LLM) ────────────────────────────────────
+
+def step_log_rotate(logger: Logger, git: GitHelper, dry_run: bool) -> StepResult:
+    """Archive old session files, create symlinks, update registry.
+
+    Deterministic operation — no LLM needed. Preserves --continue compatibility
+    by creating symlinks in original locations.
+    """
+    t0 = time.time()
+    step_name = "log_rotate"
+    logger.header(f"Step: {step_name}")
+
+    if dry_run:
+        logger.log("[DRY-RUN]", "would run log rotation")
+        return StepResult(step_name, True, elapsed=time.time() - t0, detail="dry-run")
+
+    try:
+        # Import here — dream.py runs from project root, src/ is on path
+        import sys
+        sys.path.insert(0, str(SRC_DIR))
+        from agent_session_registry import get_registry, LOG_DIR  # type: ignore
+        import shutil
+
+        registry = get_registry()
+
+        # Read retention config from tau.json
+        max_age_days = 30
+        max_size_mb = 500
+        archive_dir = LOG_DIR / "archive"
+
+        try:
+            tau_json = SRC_DIR / "tau.json"
+            if tau_json.exists():
+                config = __import__("json").loads(tau_json.read_text(encoding="utf-8"))
+                retention = config.get("log_retention", {})
+                max_age_days = retention.get("max_age_days", max_age_days)
+                max_size_mb = retention.get("max_size_mb", max_size_mb)
+                archive_path_str = retention.get("archive_dir", str(archive_dir))
+                archive_dir = Path(archive_path_str)
+                if not archive_dir.is_absolute():
+                    archive_dir = Path.home() / archive_dir.expanduser()
+        except Exception as e:
+            logger.log("[warn]", f"Failed to read retention config: {e}")
+        # Find sessions to archive (older than max_age_days)
+        cutoff = time.time() - (max_age_days * 86400)
+        active_cutoff = time.time() - 300  # 5 minutes — likely active
+
+        sessions = registry.list_sessions(status="active")
+        to_archive = []
+
+        for s in sessions:
+            ctx_path_str = s.get("context")
+            if not ctx_path_str:
+                continue
+            try:
+                mtime = Path(ctx_path_str).stat().st_mtime
+                # Skip active sessions (modified in last 5 minutes)
+                if mtime > active_cutoff:
+                    continue
+                if mtime < cutoff:
+                    to_archive.append(s)
+            except OSError:
+                continue
+
+        # Also check total log directory size
+        if not to_archive:
+            try:
+                total_size = sum(
+                    f.stat().st_size
+                    for f in LOG_DIR.iterdir()
+                    if f.is_file() and not f.name.endswith(".tmp")
+                )
+                if total_size > max_size_mb * 1024 * 1024:
+                    to_archive = sessions[:20]
+            except OSError:
+                pass
+
+        if not to_archive:
+            logger.log(
+                "[info]",
+                f"No sessions to archive (age>{max_age_days}d, size<{max_size_mb}MB)",
+            )
+            return StepResult(
+                step_name, True, elapsed=time.time() - t0, detail="nothing to archive"
+            )
+
+        logger.log("[info]", f"Archiving {len(to_archive)} session(s)...")
+
+        archived = 0
+        errors = 0
+
+        for s in to_archive:
+            prefix = s["prefix"]
+            ctx_path = Path(s.get("context", ""))
+            audit_path = Path(s.get("audit", "")) if s.get("audit") else None
+            plan_path = Path(s.get("plan", "")) if s.get("plan") else None
+
+            # Extract date from prefix ({ppid}_{YYYYMMDDHHMMSS}_{N})
+            archive_date = "unknown"
+            try:
+                parts = prefix.split("_")
+                if len(parts) >= 2 and len(parts[1]) >= 8:
+                    ts = parts[1]
+                    archive_date = f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}"
+            except Exception:
+                pass
+
+            dest_dir = archive_dir / archive_date
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            files_to_move = [
+                ("context", ctx_path),
+                ("audit", audit_path),
+                ("plan", plan_path),
+            ]
+
+            new_paths: dict[str, str] = {}
+            for label, fpath in files_to_move:
+                if not fpath or not fpath.exists():
+                    continue
+
+                # Skip already-archived files (symlinks) — prevents self-referencing loops
+                if fpath.is_symlink():
+                    real_target = fpath.resolve()
+                    if real_target.exists():
+                        logger.log("[skip]", f"{prefix}/{fpath.name} already archived -> {real_target}")
+                    else:
+                        logger.log("[cleanup]", f"{prefix}/{fpath.name} removing dangling symlink")
+                        fpath.unlink()
+                    continue
+
+                dest = dest_dir / fpath.name
+                try:
+                    shutil.move(str(fpath), str(dest))
+                    fpath.symlink_to(dest)
+                    new_paths[label] = str(dest)
+                    logger.log("[archive]", f"{prefix}/{fpath.name} -> archive/{archive_date}/")
+                except Exception as e:
+                    logger.log("[error]", f"Failed to archive {fpath}: {e}")
+                    errors += 1
+                    # Restore from dest if symlink failed
+                    if dest.exists() and not fpath.exists():
+                        try:
+                            shutil.move(str(dest), str(fpath))
+                        except Exception:
+                            pass
+
+            # Update registry
+            if new_paths:
+                registry.archive_session(prefix, new_paths)
+                archived += 1
+
+        logger.log("[summary]", f"Archived {archived} session(s), {errors} error(s)")
+        logger.log("[summary]", f"Archive dir: {archive_dir}")
+
+        # Clean up orphaned registry entries
+        try:
+            orphans = registry.cleanup_orphans()
+            if orphans:
+                logger.log("[cleanup]", f"Removed {orphans} orphaned registry entries")
+        except Exception as e:
+            logger.log("[warn]", f"Failed to cleanup orphans: {e}")
+
+        return StepResult(
+            step_name,
+            errors == 0,
+            elapsed=time.time() - t0,
+            detail=f"archived={archived},errors={errors}",
+        )
+
+    except Exception as e:
+        logger.log("[error]", f"Log rotation failed: {e}")
+        logger.log("[traceback]", traceback.format_exc())
+        return StepResult(
+            step_name, False, elapsed=time.time() - t0, detail=str(e)
+        )
 
 
 def step_test_commands(logger: Logger, git: GitHelper, llm_group: str, dry_run: bool) -> StepResult:
@@ -526,13 +823,18 @@ def step_wiki(logger: Logger, git: GitHelper, llm_group: str, dry_run: bool) -> 
 # ─── Cycle ───────────────────────────────────────────────────────────────────
 
 def run_cycle(cycle_num: int, logger: Logger, git: GitHelper, llm_group: str, dry_run: bool) -> List[StepResult]:
-    """Run one complete cycle of all 8 steps."""
+    """Run one complete cycle of all 9 steps."""
     t0 = time.time()
     logger.header(f"━━━ Cycle {cycle_num} ━━━")
     all_results = []
 
     # 1. Process tasks
     all_results.extend(step_process_tasks(logger, git, llm_group, dry_run))
+    if shutdown.check():
+        return all_results
+
+    # 1.5 Log rotation (deterministic, no LLM)
+    all_results.append(step_log_rotate(logger, git, dry_run))
     if shutdown.check():
         return all_results
 
@@ -562,10 +864,12 @@ def run_cycle(cycle_num: int, logger: Logger, git: GitHelper, llm_group: str, dr
         return all_results
 
     # 7. Log review
-    all_results.append(step_log_review(logger, git, llm_group, dry_run))
+    # TODO: temporarily disabled until fixed
+    #all_results.append(step_log_review(logger, git, llm_group, dry_run))
 
     # 8. Wiki maintenance
-    all_results.append(step_wiki(logger, git, llm_group, dry_run))
+    # TODO: temporarily disabled until fixed
+    #all_results.append(step_wiki(logger, git, llm_group, dry_run))
 
     elapsed = time.time() - t0
     h, rem = divmod(int(elapsed), 3600)
@@ -614,6 +918,26 @@ def main():
     logger.log("[info]", f"src: {SRC_DIR}")
     logger.log("[info]", f"tasks: {TASKS_DIR}")
 
+    # Atexit handler — log ANY exit (normal, signal, exception)
+    _exit_cycle = [0]  # Mutable container for atexit closure
+    def _log_exit():
+        """Log exit reason — called by atexit on any exit path."""
+        try:
+            elapsed = time.time() - logger.start_time
+            h, rem = divmod(int(elapsed), 3600)
+            m, s = divmod(rem, 60)
+            reason = "unknown"
+            if shutdown.signal_received:
+                reason = shutdown.description()
+            elif _exit_cycle[0] > 0 and args.n > 0 and _exit_cycle[0] >= args.n:
+                reason = f"completed {_exit_cycle[0]} cycles"
+            elif STOP_FILE.exists():
+                reason = "stop file detected"
+            logger.log("[exit]", f"dream.py exiting: {reason} (cycles={_exit_cycle[0]}, time={h:02d}:{m:02d}:{s:02d})")
+        except Exception:
+            pass  # atexit must not raise
+    atexit.register(_log_exit)
+
     # Ensure task directories exist
     ensure_tasks_dirs()
 
@@ -638,6 +962,7 @@ def main():
                 break
 
             cycle += 1
+            _exit_cycle[0] = cycle  # Update for atexit handler
             results = run_cycle(cycle, logger, git, args.llm, args.dry_run)
 
             # Summary
@@ -656,8 +981,7 @@ def main():
 
             # Check shutdown
             if shutdown.check():
-                kind = shutdown.was_requested()
-                logger.log("[shutdown]", f"{kind} shutdown requested — exiting")
+                logger.log("[shutdown]", f"{shutdown.description()} — exiting")
                 break
 
             # Brief pause between cycles

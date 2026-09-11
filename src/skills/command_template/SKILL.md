@@ -1,23 +1,19 @@
 ---
-name: command_template
-description: "Create custom commands — markdown prompt templates, Python run() functions. New command, define command (also load: caveman, skill_template, tool_template, dream, reference, shell_scripting)"
 category: development
-keywords: command, create command, slash command, custom command, prompt template, run function
+description: "Create custom commands, command templates, markdown prompt templates, Python run functions (also load: skill_template, tool_template, shell_scripting, reference, skill_tool)"
+keywords: custom prompt templates, markdown prompt format, Python run function, placeholder substitution, prompt aliasing
+name: command_template
 ---
 
-# Command Template
+# command_template
 
 ## When
-"create command", "command format", "new command", "command template", "write command", "slash command"
-
-## Two Types
-- **Markdown (.md)**: Prompt templates with `$1`, `$2`, `$*` placeholders
-- **Python (.py)**: Full agent access via `run(agent, args)`
+"create command" | "new command" | "command template" | "write command" | "write a script" | "bash command" | "write file" | "shell script"
 
 ## Markdown Format
 ```markdown
 ---
-description: "Command description (also load: related_skills)"
+description: "Description (also load: skill_template, tool_template, shell_scripting, reference, skill_tool)"
 ---
 Content with $1, $2, $* placeholders.
 ---
@@ -27,18 +23,19 @@ Second prompt (multi-prompt via ---)
 ### Placeholders
 | Placeholder | Meaning |
 |-------------|---------|
-| `$1` | First argument |
-| `$2` | Second argument |
-| `$*` | All arguments |
+| `$1` | First arg |
+| `$2` | Second arg |
+| `$*` | All args |
 | `$1+` | From $1 to end |
 
-### Chaining
-Content starting with `/` triggers another command: `/fork Critique $1`
+Content starting with `/` chains: `/fork Critique $1`
 
 ## Python Format
 ```python
 name = "command_name"
 description = "Brief description"
+aliases_cmd = ["alias1"]  # Optional
+aliases_arg = {"file": ["f", "path"]}  # Optional
 
 def run(agent, args):
     """Args: agent=TauErgon, args=List[str]"""
@@ -58,25 +55,21 @@ agent.console.warning("Warning")
 agent.console.echo("Text")
 ```
 
-### Optional
-```python
-aliases_cmd = ["alias1"]
-aliases_arg = {"file": ["f", "path"]}
-```
-
-## When to Use Which
+## Choice
 - **Markdown**: Simple prompts, multi-step sequences
 - **Python**: Complex logic, tools, context manipulation, subagents
 
 ## Helper
 ```bash
-python3 skills/command_template/command_gen.py  # command_template helper
+python3 skills/command_template/command_gen.py
 ```
 
 ## Related Skills
-- `caveman` — writing concise commands
-- `skill_template` — creating skills (sibling concept)
-- `tool_template` — creating tools (sibling concept)
-- `dream` — self-improvement loop
-- `reference` — quick reference for common commands
-- `shell_scripting` — shell-based commands
+- `skill_tool` — list and load skills
+- `caveman` — Concise writing
+- `_taudoc` — Documentation structure
+- `readme_template` — README structure
+- `reference` — Tau quick reference
+- `shell_scripting` — Shell-based commands
+- `skill_template` — Creating skills
+- `tool_template` — Creating tools

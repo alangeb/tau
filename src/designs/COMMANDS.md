@@ -1,5 +1,7 @@
 # Commands — Implementation Guide
 
+**See also**: [ARCHITECTURE.md](ARCHITECTURE.md) (module inventory), [INDEX.md](INDEX.md) (design index)
+
 ## Three-Tier Dispatch
 
 Priority: **`.py` → builtin → `.md`**. If both `.py` and `.md` exist for the same name, `.py` wins (warning displayed).
@@ -39,7 +41,7 @@ def run(agent: TauErgon, args: list[str]) -> None:
 
 1. Python commands have **full `TauErgon` access** — manage their own context, call tools, spawn subagents.
 2. **No return value** — commands manage their own context directly.
-3. **Cached discovery** — `CommandRegistry` caches discovered commands; `clear_cache()` available for invalidation.
+3. **Cached discovery** — `CommandRegistry` caches discovered commands; create new instance for invalidation.
 4. **See `command_template` skill** for the full template.
 
 ## Command Implementation Rules
@@ -51,7 +53,7 @@ def run(agent: TauErgon, args: list[str]) -> None:
 | Placeholders | `$1`, `$2` (positional), `$*` (all), `$1+` (from first), `${time}`, `${date}`, `${datetime}` |
 | Dispatch | Three-tier: `.py` → builtin → `.md` (Python wins over markdown) |
 | Location | `commands/` directory |
-| Loading | Cached via `CommandRegistry`; `clear_cache()` for invalidation |
+| Loading | Cached via `CommandRegistry`; create new instance for invalidation |
 
 ## Why This Design?
 

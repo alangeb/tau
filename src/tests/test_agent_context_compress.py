@@ -246,6 +246,75 @@ class TestCompressFullReset:
         assert result == ctx
         assert metadata["status"] == "FAILED_NO_USER"
 
+    def test_full_reset_skipped_when_context_too_large(self):
+        """Full reset should skip if context exceeds safe LLM input size."""
+        # Create a context that's too large for a small max_context_tokens
+        # Each message is ~1KB, so 100 messages = ~100KB
+        # With max_context_tokens=1000, safe_input = 1000 * 1.5 * 0.7 = 1050 bytes
+        large_content = "x" * 1000  # 1KB per message
+        ctx = [
+            {"role": "system", "content": "System prompt"},
+        ] + [
+            {"role": "user", "content": f"Request {i}: {large_content}"}
+            for i in range(50)
+        ] + [
+            {"role": "assistant", "content": f"Response {i}: {large_content}"}
+            for i in range(50)
+        ]
+
+        client = Mock()
+        result, metadata = compress_full_reset(
+            ctx, client, "test-model",
+            target_size_bytes=100,
+            max_context_tokens=1000,  # Small limit to trigger skip
+        )
+
+        # Should skip and return unchanged context
+        assert result == ctx
+        assert metadata["status"] == "SKIPPED_TOO_LARGE"
+        # LLM should NOT have been called
+        assert client.chat.completions.create.call_count == 0
+
+    def test_full_reset_proceeds_when_context_fits(self):
+        """Full reset should proceed normally when context is within safe limits."""
+        ctx = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Original request"},
+            {"role": "assistant", "content": "Processed request"},
+        ]
+
+        def make_mock_response(content_text):
+            return Mock(
+                choices=[
+                    Mock(
+                        message=Mock(
+                            content=content_text,
+                            tool_calls=None,
+                            reasoning_content=None,
+                        )
+                    )
+                ],
+                usage=Mock(
+                    prompt_tokens=10, completion_tokens=5, prompt_tokens_details=None
+                ),
+            )
+
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            make_mock_response("Summary of conversation"),
+            make_mock_response("Next steps to complete the task"),
+        ]
+
+        result, metadata = compress_full_reset(
+            ctx, client, "test-model",
+            target_size_bytes=100,
+            max_context_tokens=128000,  # Large limit, context fits
+        )
+
+        # Should proceed normally
+        assert metadata["status"] == "RESET"
+        assert client.chat.completions.create.call_count == 2  # Two LLM calls
+
 
 class TestCompressRedactBlocks:
     """Test compress_redact_blocks algorithm."""
@@ -1012,12 +1081,12 @@ class TestTokenBudgetWiring:
             })()
             return mock_resp, False
 
-        import agent_context_compress as mcc
-        original = mcc._invoke_llm_with_retry
-        mcc._invoke_llm_with_retry = mock_invoke_llm_with_retry
+        import agent_context_compress.steps.llm as llm_mod
+        original = llm_mod._invoke_llm_with_retry
+        llm_mod._invoke_llm_with_retry = mock_invoke_llm_with_retry
 
         try:
-            mcc._invoke_llm_with_retry_compression(
+            llm_mod._invoke_llm_with_retry_compression(
                 client=None,
                 model_name="test",
                 messages=[{"role": "user", "content": "hello"}],
@@ -1031,7 +1100,7 @@ class TestTokenBudgetWiring:
             assert captured_config.max_context_tokens == 131072
             assert captured_config.max_output_tokens == 8192
         finally:
-            mcc._invoke_llm_with_retry = original
+            llm_mod._invoke_llm_with_retry = original
 
     def test_token_target_with_128k_model(self):
         """Simulate 128K model: verify target is correct for 180K tokens."""
@@ -1149,3 +1218,54 @@ class TestTokenBudgetWiring:
         )
         assert config.max_context_tokens == 131072
         assert config.max_output_tokens == 8192
+
+
+class TestContextCompressionLogging:
+    """Tests for _try_context_compress logging behavior."""
+
+    def test_try_context_compress_returns_none_when_client_none(self):
+        """Verify _try_context_compress returns None when client is None (early return)."""
+        from agent_llm_invoke import _try_context_compress
+
+        result = _try_context_compress(
+            msg_list=[{"role": "user", "content": "test"}],
+            client=None,  # Will return None immediately
+            model_name="test",
+            tools=[],
+            extra_kwargs=None,
+            log_file=None,
+            audit_writer=None,
+        )
+        assert result is None
+
+    def test_try_context_compress_logs_on_exception(self, caplog):
+        """Verify _try_context_compress logs warning with traceback when compress_context raises."""
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        from agent_llm_invoke import _try_context_compress
+
+        def failing_compress(*args, **kwargs):
+            raise RuntimeError("Simulated compression failure")
+
+        # Patch the import inside the function by mocking the module
+        mock_module = MagicMock()
+        mock_module.compress_context = failing_compress
+
+        with patch.dict(
+            "sys.modules", {"agent_context_compress": mock_module}
+        ):
+            with caplog.at_level(logging.WARNING):
+                result = _try_context_compress(
+                    msg_list=[{"role": "user", "content": "test"}],
+                    client=object(),  # Not None, so it will try compression
+                    model_name="test",
+                    tools=[],
+                    extra_kwargs=None,
+                    log_file=None,
+                    audit_writer=None,
+                )
+                assert result is None
+                assert "Context compression failed" in caplog.text
+                assert "Simulated compression failure" in caplog.text
+                assert caplog.records[0].levelno == logging.WARNING

@@ -128,7 +128,7 @@ class TestTerminateEndsLoop:
             run_loop(agent)
 
             # force_end_turn should be set
-            assert agent.force_end_turn == "parent_terminate_graceful"
+            assert agent.force_end_turn == "external_terminate_graceful"
 
 
 class TestMultipleCommandsProcessed:

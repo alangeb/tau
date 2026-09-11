@@ -17,7 +17,9 @@ def test_all_imports_are_in_all():
     """Every imported symbol must be in __all__ (except internal names and submodules)."""
     import agent_console
     # Exclude submodule modules and __future__ imports
-    submodule_names = {"audit", "audit_display", "display", "primitives", "messages"}
+    submodule_names = {"audit", "audit_display", "display_tool", "display_command",
+                        "display_status", "display_context", "display_misc",
+                        "primitives", "templates"}
     imported = {
         name for name in dir(agent_console)
         if not name.startswith('_') and name not in submodule_names and name != "annotations"
@@ -34,8 +36,12 @@ def test_exports_match_submodule_all():
         "agent_console.audit",
         "agent_console.audit_display",
         "agent_console.primitives",
-        "agent_console.messages",
-        "agent_console.display",
+        "agent_console.templates",
+        "agent_console.display_tool",
+        "agent_console.display_command",
+        "agent_console.display_status",
+        "agent_console.display_context",
+        "agent_console.display_misc",
     ]
     submodule_symbols = set()
     for mod_name in submodules:

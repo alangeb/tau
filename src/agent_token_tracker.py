@@ -93,10 +93,3 @@ class TokenTracker:
         self.last_turn_cached_tokens = 0
         self.last_exact_context_tokens = None
         self._cache_tracker.clear()
-
-    def reset_last_turn(self) -> None:
-        """Reset only last-turn counters (preserves session totals)."""
-        self.last_turn_input_tokens = 0
-        self.last_turn_output_tokens = 0
-        self.last_turn_cached_tokens = 0
-        self.last_exact_context_tokens = None

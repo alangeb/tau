@@ -1,14 +1,14 @@
 ---
-name: grep_tool
-description: "grep search patterns — recursive search, regex, context, count, invert. Find text in files, pattern matching, grep flags (also load: ast-grep, file-ops, search-replace, shell_scripting, bug_investigation)"
 category: search
-keywords: grep, search, pattern, regex, recursive, find text, file search, context, count, invert, -r, -n, -i, -E, -v, -c, --include, --exclude
+description: "Search files for patterns — regex grep, recursive search, find function callers, locate callbacks, find text across codebase (also load: ast-grep, file-ops, search-replace, tau_audit, data_processing, security-audit, shell_scripting, web-research, wiki)"
+keywords: grep, text search, regex search, recursive search, pattern search, count matches, context lines, file search, text pattern
+name: grep_tool
 ---
 
 # grep Tool
 
 ## When
-"search files", "find text", "grep pattern", "regex search", "recursive grep", "search code"
+"search files" "find text" "grep pattern" "regex search" "recursive grep" "search code" "grep" "find pattern" "search for text" "search the web"
 
 ## Agent Patterns
 ```bash
@@ -26,31 +26,37 @@ grep -rn -L "pattern" .                                  # Files without match
 ```bash
 # Find callers of a function
 grep -rn "function_name(" . --include="*.py" | grep -v "def function_name"
-
 # Find callback assignments
 grep -rn "= function_name" . --include="*.py" | grep -v "def"
-
 # Find threading targets
 grep -rn "target=function_name" . --include="*.py"
-
 # Search git diff for patterns
 git diff HEAD | grep -E "print\(|breakpoint\(|import pdb"
 ```
 
 ## Gotchas
-- `-P` (Perl regex) not portable — use `-E` (extended)
-- Large repos: ALWAYS `--exclude-dir` for venv, __pycache__, .git, node_modules
-- Binary files: add `-I` or `--binary-files=without-match`
-- Special chars in pattern: quote or escape
-- `grep -rn` vs `rg` (ripgrep): rg faster, not always installed
-- Empty results: verify with `--include` glob matches files
+- Agent's `grep` tool ≠ bash `grep` — use tool for structured search
+- Large repos: ALWAYS `--exclude-dir={venv,__pycache__,.git,node_modules}`
+- Audit logs: `grep -rn "TOOL_ERROR" ~/.local/tau/log/*.audit`
+- Skill cross-refs: `grep -rn "also load" skills/*/SKILL.md`
 
 ## Helper
-No helper needed — grep is shell-native. Use agent's `grep` tool for structured search.
+```bash
+source skills/grep_tool/grep_patterns.sh
+python3 skills/grep_tool/grep_structured.py <pattern> [dir] [--json] [--count] [--context N]  # structured grep
+```
+Agent's `grep` tool — structured search (recursive, regex, context).
 
 ## Related Skills
 - `ast-grep` — AST-based search (structural)
+- `search-replace` — search and replace patterns, bulk edit files
+- `bug_investigation` — trace call sites, execution paths, traceback pattern search
+- `data_processing` — Structured data processing
 - `file-ops` — file operations
+- `refactor` — search/replace during refactoring
 - `search-replace` — find and replace patterns
+- `security-audit` — credential scanning
 - `shell_scripting` — shell patterns
-- `bug_investigation` — trace call sites and execution paths
+- `tau_audit` — audit log grep patterns
+- `web-research` — web content extraction
+- `wiki` — knowledge storage

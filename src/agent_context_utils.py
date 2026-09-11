@@ -20,8 +20,14 @@ from pathlib import Path
 
 from agent_session import LOG_DIR
 
-# Regex matching the context-file naming convention: {ppid}_{YYYYMMDDHHMMSS}_{N}
-_CONTEXT_FILE_RE = re.compile(r"^\d+_\d+_\d+\.context$")
+# Base pattern for context-file naming convention: {ppid}_{YYYYMMDDHHMMSS}_{N}
+# Exported so other modules can derive their own compiled regexes.
+_CONTEXT_FILE_PATTERN = r"\d+_\d+_\d+\.context"
+_CONTEXT_FILE_RE = re.compile(r"^" + _CONTEXT_FILE_PATTERN + "$")
+
+# Pattern with capture group for extracting the PID (first field).
+# Used by agent_a2a.py to parse session PIDs from context filenames.
+_CONTEXT_FILE_CAPTURE_RE = re.compile(r"^(" + r"\d+" + r")_\d+_\d+\.context$")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -44,22 +50,40 @@ def format_age(seconds: float) -> str:
     return f"{int(days)}d ago"
 
 
+def _is_valid_path(path: Path) -> bool:
+    """Check if path exists and is not a broken symlink."""
+    try:
+        if not path.exists():
+            return False
+        if path.is_symlink() and not path.resolve().exists():
+            return False
+        return True
+    except OSError:
+        return False
+
+
 def get_all_context_files() -> list[Path]:
     """Get all context files in LOG_DIR, sorted newest first.
 
     Uses the session registry if available, falling back to scanning
     LOG_DIR directly. The registry enables archived sessions to be
     included and provides a single source of truth for file locations.
+
+    Filters out broken symlinks.
     """
     try:
         from agent_session_registry import get_registry
-        return get_registry().get_context_files(include_archived=True)
+        files = get_registry().get_context_files(include_archived=True)
+        return [f for f in files if _is_valid_path(f)]
     except Exception:
         pass
 
     # Fallback: scan LOG_DIR directly
-    ctx_files = [f for f in LOG_DIR.glob("*.context") if _CONTEXT_FILE_RE.match(f.name)]
-    return sorted(ctx_files, key=lambda f: f.stat().st_mtime, reverse=True)
+    ctx_files = [
+        f for f in LOG_DIR.glob("*.context")
+        if _CONTEXT_FILE_RE.match(f.name) and _is_valid_path(f)
+    ]
+    return sorted(ctx_files, key=lambda f: f.stat().st_mtime if _is_valid_path(f) else 0, reverse=True)
 
 
 # ── Context-file readers ───────────────────────────────────────────────────
@@ -153,6 +177,8 @@ def read_context_metadata_for_a2a(context_file: Path) -> tuple[dict, int]:
 
 
 __all__ = [
+    "_CONTEXT_FILE_PATTERN",
+    "_CONTEXT_FILE_CAPTURE_RE",
     "format_age",
     "get_all_context_files",
     "read_context_metadata",

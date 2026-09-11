@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 
-from agent_audit_bridge import log_console_warning
+from agent_audit_bridge import console_warning
 from agent_console import context_append_warning
 from agent_message_utils import is_synthetic_message
 
@@ -328,7 +328,7 @@ def validate_on_mutation(messages: list[dict]) -> None:
         if errors:
             # Audit: log context state alongside the warning
             last_role = last.get("role", "none") if last else "empty"
-            log_console_warning(
+            console_warning(
                 f"Context validation ({len(messages)} msgs, last={last_role}): "
                 + "; ".join(errors)
             )

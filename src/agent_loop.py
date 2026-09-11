@@ -6,6 +6,8 @@ the loop logic easier to reason about independently.
 
 The run_loop function encapsulates the main agent interaction loop:
 call LLM, execute tool calls, repeat until final response.
+
+EOT (End-of-Turn) protocol is documented in designs/EOT.md.
 """
 from __future__ import annotations
 
@@ -51,10 +53,21 @@ def _resolve_end_turn_message(end_turn_args: dict, agent, held: dict | None) -> 
     """Resolve the final message text from end_turn args and fallback sources.
 
     Priority: end_turn message > held text > last substantive response > default.
+
+    The end_turn message is rejected if it is essentially just the ENDOFTURN
+    sentinel (short message containing the sentinel). This prevents the LLM
+    from overwriting a held substantive response during EOT confirmation by
+    calling end_turn(message="ENDOFTURN").
     """
     message = end_turn_args.get("message", "").strip()
-    if message:
-        return message
+    if message and len(message) >= 2:
+        # Reject messages that are essentially just the ENDOFTURN sentinel.
+        # Allow up to 4 arbitrary extra characters (2 before + 2 after).
+        if not (
+            len(message) <= len(ACCIDENTAL_EOT) + 4
+            and ACCIDENTAL_EOT.upper() in message.upper()
+        ):
+            return message
     if held and held.get("text"):
         return held["text"]
     if agent.last_substantive_response:
@@ -131,18 +144,15 @@ def run_loop(agent: 'TauErgon') -> str:
       - After LLM returns plain text: potential EOT -> confirmation -> accept or rewind
       - After forced end-of-turn: assistant(force_end_turn) -> turn complete
 
-    Accidental EOT protection:
-      When the LLM returns plain text without tool calls, we first check if
-      the response ends with the ENDOFTURN sentinel. If so, the turn ends
-      immediately (self-confirming) — the sentinel is stripped and the
-      preceding content is used as the final response.
-
-      If no sentinel is found, we inject a synthetic user message asking for
-      confirmation. The LLM can end the turn in two ways:
-      1. Reply with the sentinel string (ENDOFTURN) as plain text — do NOT use a
-         tool call or bash echo.
-      2. Call the end_turn tool as the sole tool call (with optional message).
-      If the budget (_ACCIDENTAL_EOT_BUDGET) is exhausted, the turn is force-closed.
+    EOT FLOW (see designs/EOT.md for full contract):
+      1. LLM returns plain text without tool calls
+      2. Check for self-confirming ENDOFTURN sentinel → turn ends immediately
+      3. Check for slash commands → dispatch, stay in turn
+      4. Check for restricted nesting (T/K) → accept, turn ends
+      5. Check budget → if exhausted, force close turn
+      6. Enter confirmation round: inject synthetic user message
+      7. LLM replies: sentinel → accept; tool calls → rewind; text → stack
+      8. end_turn tool call (sole) → resolve message, close turn
 
     This method is safe to call when the context ends with:
       - A user message (normal entry point)
@@ -211,7 +221,7 @@ def run_loop(agent: 'TauErgon') -> str:
                 if agent._session.last_exact_context_tokens is not None and agent._session.last_exact_context_tokens > 0:
                     current_tokens = agent._session.last_exact_context_tokens
                 else:
-                    current_tokens = agent.context.size_bytes()
+                    current_tokens = agent.context.estimate_tokens()
                 if current_tokens / agent.max_context_tokens >= compress_threshold:
                     warning(
                         f"[Pre-LLM compression] Context at {current_tokens/agent.max_context_tokens:.0%} "
@@ -326,7 +336,10 @@ def run_loop(agent: 'TauErgon') -> str:
                 total_tokens = agent.context.estimate_tokens(pending)
             compress_threshold = 0.85
 
-            if total_tokens / agent.max_context_tokens >= compress_threshold:
+            if (
+                agent.max_context_tokens > 0
+                and total_tokens / agent.max_context_tokens >= compress_threshold
+            ):
                 agent.context.compress(0.30, agent, agent.get_all_tools())
 
             # Track substantive response for best-effort fallback.
@@ -463,9 +476,8 @@ def run_loop(agent: 'TauErgon') -> str:
                 if confirmed:
                     # --- Audit: log sentinel response ---
                     sentinel_preview = (response_text or "")[:40].replace("\n", " ")
-                    agent._session.audit_writer._emit(
-                        "EOT_CONFIRM_SENTINEL",
-                        f"response={sentinel_preview!r} stripped={stripped_text is not None}"
+                    agent._session.audit_writer.eot_confirm_sentinel(
+                        sentinel_preview, stripped_text is not None
                     )
                     # Update latest stack entry with stripped text (if any)
                     if stripped_text is not None:
@@ -486,9 +498,8 @@ def run_loop(agent: 'TauErgon') -> str:
             if confirmed:
                 final_text = stripped_text or agent.last_substantive_response or ""
                 sentinel_preview = (response_text or "")[:40].replace("\n", " ")
-                agent._session.audit_writer._emit(
-                    "EOT_SELF_CONFIRMED",
-                    f"response={sentinel_preview!r} stripped={stripped_text is not None}"
+                agent._session.audit_writer.eot_self_confirmed(
+                    sentinel_preview, stripped_text is not None
                 )
                 agent.context.append_assistant(final_text, reasoning=reasoning_content)
                 agent.context.close_turn(final_text)

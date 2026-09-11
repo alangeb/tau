@@ -1,8 +1,8 @@
 ---
-name: skill_template
-description: "Create and modify skills — format, structure, helper. Skill definition, skill file, SKILL.md, skill creation, skill format (also load: tool_template, command_template, caveman, _taudoc, readme_template, documentation)"
 category: development
-keywords: create skill, skill format, skill definition, new skill, skill template, write skill
+description: "Create skill template with YAML frontmatter, markdown body, placement rules, auto-discovery config (also load: caveman, documentation, prompt-crafting, tool_template, command_template, readme_template, skill-discovery, skill_tool, task, tauskillmaintenance)"
+keywords: skill template, YAML frontmatter, skill creation, skill format, skill placement, privacy constraints, skill auto-discovery
+name: skill_template
 ---
 
 # Skill Format
@@ -14,7 +14,7 @@ keywords: create skill, skill format, skill definition, new skill, skill templat
 ```yaml
 ---
 name: skill_name
-description: "Brief description (also load: related_skill1, related_skill2)"
+description: "Brief description (also load: caveman, documentation, prompt-crafting, tool_template, command_template, readme_template, skill-discovery, skill_tool, task, tauskillmaintenance)"
 category: category_name
 keywords: keyword1, keyword2, keyword3
 ---
@@ -34,15 +34,14 @@ Missing header = skill fails to load.
 - Write in caveman style (load `caveman` skill)
 
 ## Autonomy
-**Tau is AUTHORIZED to create skills autonomously.** Repeated pattern, missing capability, or knowledge gap → create skill immediately. Core self-improvement behavior.
+**Tau AUTHORIZED to create skills autonomously.** Repeated pattern, missing capability, or knowledge gap → create skill immediately. Core self-improvement behavior.
 
 ## Privacy
 **NO personal info in skills, source code, or any project file.** Never include:
 - Real timestamps (use `YYYY-MM` or relative dates)
 - User names, email addresses, personal paths
 - Anything identifying outside the project
-
-Use `$HOME` instead of `/home/alangeb`.
+Use `$HOME` instead of `/home/user`.
 
 ## Discovery
 - Auto-discovered on startup. List via `skill`. Search via `skill <keywords>`. Load via `skill <name>`.
@@ -50,13 +49,20 @@ Use `$HOME` instead of `/home/alangeb`.
 
 ## Helper
 ```bash
-python3 skills/skill_template/skill_gen.py <name> <description> <category>  # Generate skill template
+python3 skills/skill_template/skill_gen.py <name> <description> <category>
 ```
 
 ## Related Skills
-- `_taudoc` — documentation structure
-- `caveman` — concise writing style
-- `command_template` — creating commands (sibling concept)
+- `skill_tool` — list and load skills
+- `skill-discovery` — auto-discover relevant skills
+- `_taudoc` — Documentation structure
+- `caveman` — Concise writing style
+- `command_template` — Creating commands (sibling concept)
 - `readme_template` — README structure
-- `tool_template` — creating agent tools (sibling concept)
-- `documentation` — docstring and changelog patterns
+- `tool_template` — Creating agent tools (sibling concept)
+- `documentation` — Docstring and changelog patterns
+- `dream` — Dream orchestrator
+- `reference` — Tau quick reference
+- `task` — Creating tasks for dream execution (redirect: see task)
+- `task` — Task framework, lifecycle, verification
+- `tauskillmaintenance` — Audit and maintain skills

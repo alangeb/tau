@@ -65,6 +65,14 @@ def _is_valid_page(url: str) -> bool:
 _MAX_QUEUE_SIZE = 200  # Cap BFS queue to prevent memory exhaustion
 
 
+def _normalize_url(url: str) -> str:
+    """Normalize URL for deduplication: strip trailing slash (except root)."""
+    parsed = urlparse(url)
+    # Strip trailing slash only if path is not just "/"
+    path = parsed.path.rstrip("/") or "/"
+    return parsed._replace(path=path).geturl()
+
+
 def _crawl(
     seed_url: str, max_pages: int = 5, depth: int = 2,
     same_domain: bool = True, filter_type: str = "fit", timeout: int = 10,
@@ -72,6 +80,9 @@ def _crawl(
     """Crawl a website starting from seed_url. Returns list of {url, title, content, depth} dicts."""
     if not seed_url.startswith(("http://", "https://")):
         seed_url = "https://" + seed_url
+
+    # Normalize URL: strip trailing slash (except for root path)
+    seed_url = _normalize_url(seed_url)
 
     seed_domain = urlparse(seed_url).netloc
     visited: set[str] = set()

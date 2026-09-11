@@ -236,14 +236,6 @@ class ModelHealthMonitor:
                 recovery_attempts=self._status.recovery_attempts,
             )
 
-    def get_backoff_wait(self, attempt: int) -> float:
-        """Calculate exponential backoff wait time for a given attempt."""
-        raw = min(
-            self._config.backoff_base * (self._config.backoff_multiplier ** attempt),
-            self._config.backoff_max,
-        )
-        return max(0.1, raw)
-
     def check_connection(self) -> bool:
         """Perform a lightweight connection check to the model server.
 
@@ -346,18 +338,10 @@ def get_health_monitor(
         return _default_monitor
 
 
-def reset_health_monitor() -> None:
-    """Reset the default health monitor (useful for testing)."""
-    global _default_monitor
-    with _default_lock:
-        _default_monitor = None
-
-
 __all__ = [
     "CircuitState",
     "HealthStatus",
     "HealthMonitorConfig",
     "ModelHealthMonitor",
     "get_health_monitor",
-    "reset_health_monitor",
 ]

@@ -9,6 +9,7 @@ See designs/DECISIONS.md §18 (Context Management) for the architectural rationa
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -23,8 +24,11 @@ from agent_console import (
 from agent_audit_bridge import log_context_add, log_context_remove, log_context_merge, log_context_snapshot
 from agent_llm_models import DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS
 from agent_message_utils import (
+    _make_user_prefix,
+    _merge_content,
     _sanitize_content,
     _sanitize_text,
+    _SYNTHETIC_CATEGORY_TO_TYPE,
     is_synthetic_message,
 )
 from agent_models import Colors
@@ -42,53 +46,8 @@ from agent_context_validation import (
 _PENDING_TOOL_MARKER = "[PENDING: deferred; resolves after fork. Do not assume result.]"
 _FORK_TOOL_MARKER = "[FORK: You are the fork. THIS IS SYNCHRONOUS — you block until complete, then return your result directly. There is NO background execution, NO 'reporting back later'. You are the fork. Task: {task}]"
 
-# User message prefix format: [U:TYPE | N:stack] Content
-# Types: real, meta, confirm, inject, system, fork, subagent, redirect
-_USER_PREFIX_PATTERN = "[U:"
-_USER_PREFIX_FORMAT = "[U:{type} | N:{stack}] "
 
-# Category-to-type mapping for synthetic user messages
-_SYNTHETIC_CATEGORY_TO_TYPE = {
-    "continuation": "meta",
-    "turn_started": "meta",
-    "turn_closed": "meta",
-    "eot_confirmation": "confirm",
-    "parent_inject": "inject",
-    "escalation": "system",
-    "recovery": "system",
-}
-
-
-def _make_user_prefix(user_type: str, nesting_stack: str) -> str:
-    """Create a user message prefix."""
-    return _USER_PREFIX_FORMAT.format(type=user_type, stack=nesting_stack)
-
-
-def _is_synthetic_user_prefix(content: str) -> bool:
-    """Check if content has a synthetic user message prefix."""
-    if not isinstance(content, str):
-        return False
-    return content.startswith(_USER_PREFIX_PATTERN) and content != "[U:real | N:"
-
-
-def _get_user_type_from_prefix(content: str) -> str | None:
-    """Extract user type from prefix, or None if no prefix."""
-    if not isinstance(content, str) or not content.startswith(_USER_PREFIX_PATTERN):
-        return None
-    # Parse [U:TYPE | N:stack]
-    try:
-        end = content.index("]")
-        prefix = content[1:end]  # "U:TYPE | N:stack"
-        type_part = prefix.split(" | ")[0]  # "U:TYPE"
-        return type_part[2:]  # "TYPE"
-    except (ValueError, IndexError):
-        return None
-
-
-__all__ = ["TauContext", "ContextMessage", "TauContextInstance",
-           "is_synthetic_message",
-           "_is_synthetic_user_prefix",
-           "_get_user_type_from_prefix", "_make_user_prefix"]
+__all__ = ["TauContext", "ContextMessage", "TauContextInstance"]
 
 ContextMessage: TypeAlias = dict[str, Any]
 TauContextInstance: TypeAlias = "TauContext"
@@ -97,6 +56,69 @@ TauContextInstance: TypeAlias = "TauContext"
 def _emit_context_validation_warning(*message_lines: str) -> None:
     """Emit a validation warning to the console."""
     context_validation_warning(list(message_lines))
+
+
+# ── Merge helpers for merge_consecutive_assistants ──
+
+
+def _merge_content_field(last: dict, msg: dict) -> None:
+    """Merge the 'content' field from *msg* into *last*.
+
+    Handles string, list, and None values. If both are present,
+    concatenates via ``_merge_content``. If only *msg* has content,
+    copies it. If both are None, leaves *last* unchanged.
+    """
+    last_content = last.get("content")
+    msg_content = msg.get("content")
+    if last_content is not None and msg_content is not None:
+        last["content"] = _merge_content(last_content, msg_content)
+    elif msg_content is not None:
+        last["content"] = msg_content
+
+
+def _merge_string_field(last: dict, msg: dict, field: str) -> None:
+    """Merge a string field (e.g. 'reasoning', 'refusal') from *msg* into *last*.
+
+    If both have the field, concatenates via ``_merge_content``.
+    If only *msg* has it, copies it.
+    """
+    if msg.get(field) is not None:
+        last_val = last.get(field)
+        if last_val is not None:
+            last[field] = _merge_content(last_val, msg[field])
+        else:
+            last[field] = msg[field]
+
+
+def _merge_tool_calls(last: dict, msg: dict) -> None:
+    """Merge tool_calls from *msg* into *last*, deduplicating by ID."""
+    if msg.get("tool_calls"):
+        if "tool_calls" not in last:
+            last["tool_calls"] = []
+        existing_ids = {
+            tc.get("id") for tc in last["tool_calls"] if tc.get("id")
+        }
+        for tc in msg.get("tool_calls", []):
+            tc_id = tc.get("id")
+            if tc_id not in existing_ids:
+                last["tool_calls"].append(tc)
+                if tc_id:
+                    existing_ids.add(tc_id)
+
+
+def _merge_usage_metadata(last: dict, msg: dict) -> None:
+    """Merge usage_metadata from *msg* into *last*, summing numeric values."""
+    if msg.get("usage_metadata") is not None:
+        if "usage_metadata" not in last:
+            last["usage_metadata"] = dict(msg["usage_metadata"])
+        else:
+            for key, value in msg["usage_metadata"].items():
+                if isinstance(value, (int, float)):
+                    last["usage_metadata"][key] = (
+                        last["usage_metadata"].get(key, 0) + value
+                    )
+                else:
+                    last["usage_metadata"][key] = value
 
 
 # ── TauContext ────────────────────────────────────────────────────────────────
@@ -117,6 +139,8 @@ class TauContext:
             "fork_task": None,
         }
         self.nesting_stack: str = nesting_stack
+        self._bytes_cache: int = 0       # Cached bytes_size() result
+        self._bytes_cache_valid: bool = False  # True if _bytes_cache is up-to-date
         self._validate_on_mutation()
 
     # --- List protocol ---
@@ -153,10 +177,23 @@ class TauContext:
         """Validate context after mutation, printing warnings for errors."""
         validate_on_mutation(self._messages)
 
+    # --- Byte size cache ---
+    def _invalidate_bytes(self) -> None:
+        """Invalidate the bytes_size() cache. Call after any mutation."""
+        self._bytes_cache_valid = False
+
+    def bytes_size(self) -> int:
+        """Calculate the size of the serialized context in bytes (cached)."""
+        if not self._bytes_cache_valid:
+            self._bytes_cache = len(json.dumps(self._messages).encode("utf-8"))
+            self._bytes_cache_valid = True
+        return self._bytes_cache
+
     # --- Mutations ---
     def _append(self, msg: dict) -> None:
         """Internal method to append a message to the context."""
         self._messages.append(msg)
+        self._invalidate_bytes()
         log_context_add(1, len(self._messages), self.bytes_size())
 
     def clear(self) -> None:
@@ -170,12 +207,14 @@ class TauContext:
         self._messages.clear()
         if system is not None:
             self._messages.append(system)
+        self._invalidate_bytes()
         log_context_remove(removed, len(self._messages), self.bytes_size())
         self._validate_on_mutation()
 
     def extend(self, msgs: list[dict]) -> None:
         """Extend the context by appending multiple messages at once."""
         self._messages.extend(msgs)
+        self._invalidate_bytes()
         log_context_add(len(msgs), len(self._messages), self.bytes_size())
         self._validate_on_mutation()
 
@@ -216,7 +255,7 @@ class TauContext:
         message (no pending tool calls), the bridge is skipped.
 
         This is the PREFERRED method for injecting synthetic user messages
-        during tool execution. See DECISIONS.md §19.3–19.5.
+        during tool execution. See designs/DECISIONS.md §27.3 (Full bridge requirement).
 
         Args:
             category: The synthetic message category (e.g., 'parent_inject').
@@ -268,6 +307,7 @@ class TauContext:
             return
         removed = len(self._messages) - last_user_idx
         self._messages = self._messages[:last_user_idx]
+        self._invalidate_bytes()
         log_context_remove(removed, len(self._messages), self.bytes_size())
         self._validate_on_mutation()
 
@@ -380,10 +420,6 @@ class TauContext:
         with open(context_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         return True
-
-    def bytes_size(self) -> int:
-        """Calculate the size of the serialized context in bytes."""
-        return len(json.dumps(self._messages).encode("utf-8"))
 
     # --- Typed append methods ---
     def set_system(self, content: str) -> None:
@@ -611,6 +647,7 @@ class TauContext:
         """
         removed = sum(1 for m in self._messages if is_synthetic_message(m))
         self._messages = [m for m in self._messages if not is_synthetic_message(m)]
+        self._invalidate_bytes()
         if removed:
             log_context_remove(removed, len(self._messages), self.bytes_size())
         # Intentionally NO _validate_on_mutation() here.
@@ -652,78 +689,18 @@ class TauContext:
             msg_role = msg.get("role")
 
             if last_role == msg_role and last_role == "assistant":
-                # --- Merge content (string, list, or None) ---
-                last_content = last.get("content")
-                msg_content = msg.get("content")
-                if last_content is not None and msg_content is not None:
-                    last["content"] = self._merge_content(last_content, msg_content)
-                elif msg_content is not None:
-                    last["content"] = msg_content
-                # If both None: leave as-is (assistant with only tool_calls)
-
-                # --- Merge tool_calls (deduplicate by ID) ---
-                if msg.get("tool_calls"):
-                    if "tool_calls" not in last:
-                        last["tool_calls"] = []
-                    existing_ids = {
-                        tc.get("id") for tc in last["tool_calls"] if tc.get("id")
-                    }
-                    for tc in msg.get("tool_calls", []):
-                        tc_id = tc.get("id")
-                        if tc_id not in existing_ids:
-                            last["tool_calls"].append(tc)
-                            if tc_id:
-                                existing_ids.add(tc_id)
-
-                # --- Merge reasoning ---
-                if msg.get("reasoning") is not None:
-                    last_reasoning = last.get("reasoning")
-                    if last_reasoning is not None:
-                        last["reasoning"] = self._merge_content(
-                            last_reasoning, msg["reasoning"]
-                        )
-                    else:
-                        last["reasoning"] = msg["reasoning"]
-
-                # --- Merge refusal ---
-                if msg.get("refusal") is not None:
-                    last_refusal = last.get("refusal")
-                    if last_refusal is not None:
-                        last["refusal"] = self._merge_content(
-                            last_refusal, msg["refusal"]
-                        )
-                    else:
-                        last["refusal"] = msg["refusal"]
-
-                # --- Merge usage_metadata (sum token counts) ---
-                if msg.get("usage_metadata") is not None:
-                    if "usage_metadata" not in last:
-                        last["usage_metadata"] = dict(msg["usage_metadata"])
-                    else:
-                        for key, value in msg["usage_metadata"].items():
-                            if isinstance(value, (int, float)):
-                                last["usage_metadata"][key] = (
-                                    last["usage_metadata"].get(key, 0) + value
-                                )
-                            else:
-                                last["usage_metadata"][key] = value
+                _merge_content_field(last, msg)
+                _merge_tool_calls(last, msg)
+                _merge_string_field(last, msg, "reasoning")
+                _merge_string_field(last, msg, "refusal")
+                _merge_usage_metadata(last, msg)
             elif last_role == msg_role and last_role == "tool":
                 # Consecutive tool messages are VALID (batched tool calls).
                 # Do NOT merge — each has unique tool_call_id/name.
                 merged.append(dict(msg))
             elif last_role == msg_role and last_role == "user":
-                # Consecutive user messages — merge them gracefully instead of
-                # crashing. This can happen when tool results or post-parse
-                # recovery create adjacent user messages. Merge content and log
-                # a warning so the session continues rather than aborting.
-                last_content = last.get("content")
-                msg_content = msg.get("content")
-                if last_content is not None and msg_content is not None:
-                    last["content"] = self._merge_content(last_content, msg_content)
-                elif msg_content is not None:
-                    last["content"] = msg_content
-                # Emit a single-line warning (not an error) so the session
-                # continues.  The caller can surface this however it likes.
+                # Consecutive user messages — merge gracefully.
+                _merge_content_field(last, msg)
                 from agent_console import warning as _w
                 _w(
                     f"merge_consecutive_assistants(): merged consecutive "
@@ -731,14 +708,8 @@ class TauContext:
                     f"Merged {len(merged)} messages so far."
                 )
             elif last_role == msg_role:
-                # Any other consecutive same-role (should not happen in practice).
-                # Merge as a safety net rather than crashing.
-                last_content = last.get("content")
-                msg_content = msg.get("content")
-                if last_content is not None and msg_content is not None:
-                    last["content"] = self._merge_content(last_content, msg_content)
-                elif msg_content is not None:
-                    last["content"] = msg_content
+                # Any other consecutive same-role — merge as safety net.
+                _merge_content_field(last, msg)
                 from agent_console import warning as _w
                 _w(
                     f"merge_consecutive_assistants(): merged consecutive "
@@ -751,19 +722,7 @@ class TauContext:
         if len(merged) < len(self._messages):
             log_context_merge("assistant", "assistant", len(self._messages) - len(merged))
         self._messages = merged
-
-    @staticmethod
-    def _merge_content(a: object, b: object) -> str | list:
-        """Merge two content values.  For multimodal list content, concatenate
-        the content-block lists so image_url blocks are preserved.  Falls back
-        to string concatenation when both sides are plain strings."""
-        if isinstance(a, list) and isinstance(b, list):
-            return a + b
-        if isinstance(a, list):
-            return a + [{"type": "text", "text": str(b)}]
-        if isinstance(b, list):
-            return [{"type": "text", "text": str(a)}] + b
-        return str(a) + "\n" + str(b)
+        self._invalidate_bytes()
 
     def close_turn(self, reason: str) -> None:
         """Close an incomplete turn to ensure the context ends in a valid terminal state.
@@ -793,13 +752,15 @@ class TauContext:
         # Repair: if cleanup removed a synthetic user bridge that was the only separator
         # between system and the first assistant, insert a minimal user message to
         # maintain valid alternation (system → user → assistant).
+        # Use synthetic prefix so cleanup_synthetic() can remove it on next close_turn().
         if (
             len(self._messages) >= 2
             and self._messages[0].get("role") == "system"
             and self._messages[1].get("role") == "assistant"
         ):
+            prefix = _make_user_prefix("meta", self.nesting_stack)
             self._messages.insert(
-                1, {"role": "user", "content": "[context boundary]"}
+                1, {"role": "user", "content": prefix + "[context boundary]"}
             )
         # Validate after merge — cleanup_synthetic() intentionally skips validation
         # because bridge removal creates transient consecutive same-role messages.
@@ -823,6 +784,8 @@ class TauContext:
             self.append_synthetic_user("turn_closed", f"Turn closed: {reason}")
         if self._messages[-1].get("role") in ("user", "tool"):
             self.append_assistant(reason)
+        # Invalidate cache for direct mutations (insert, in-place name assignment)
+        self._invalidate_bytes()
         # Log context snapshot at turn boundary
         log_context_snapshot(len(self._messages), self.bytes_size(), DEFAULT_MAX_CONTEXT_TOKENS)
 
@@ -877,6 +840,7 @@ class TauContext:
     def set_messages(self, msgs: list[dict]) -> None:
         """Replace all messages in the context."""
         self._messages = [self._sanitize_message(m) for m in msgs]
+        self._invalidate_bytes()
         self._validate_on_mutation()
     def _sanitize_message(self, msg: dict) -> dict:
         """Sanitize a single message — strips lone UTF-16 surrogates."""
@@ -888,8 +852,8 @@ class TauContext:
         return sanitized
 
     def copy(self) -> TauContext:
-        """Create a shallow copy of the context (messages only, not fork metadata)."""
-        return TauContext(self._messages.copy())
+        """Create a deep copy of the context (messages only, not fork metadata)."""
+        return TauContext(copy.deepcopy(self._messages))
 
     def get_fork_metadata(self) -> dict:
         """Return a copy of the fork metadata dictionary."""

@@ -218,9 +218,8 @@ class CommandRegistry:
 
     Caching behavior:
         Commands are discovered once per CommandRegistry instance and
-        cached until clear_cache() is called.  For production use where
-        commands are added/removed at runtime, call clear_cache() after
-        filesystem changes, or create a new CommandRegistry instance.
+        cached.  For production use where commands are added/removed at
+        runtime, create a new CommandRegistry instance.
 
     Usage:
         registry = CommandRegistry()
@@ -334,15 +333,6 @@ class CommandRegistry:
             if raw["name"] == name:
                 return tuple(raw.get("subcommands", ()))
         return ()
-
-    def clear_cache(self) -> None:
-        """Clear discovery caches so the next call re-scans the filesystem.
-
-        Call this after adding/removing command files at runtime, or
-        create a new CommandRegistry instance instead.
-        """
-        self._md_cache = None
-        self._py_cache = None
 
 
 # ---------------------------------------------------------------------------

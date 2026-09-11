@@ -1,54 +1,21 @@
 ---
-name: documentation
-description: "Documentation patterns — docstrings, changelog, release notes. Write docs, technical writing (also load: _taudoc, image, readme_template, caveman, code-review-workflow, skill_template, wiki)"
 category: documentation
-keywords: documentation, docstring, changelog, release notes, write docs
+description: "Write docs, create documentation, docstrings, changelog, release notes, readme files (also load: _taudoc, caveman, readme_template, spec, tool_template, release_management, skill_template, wiki)"
+keywords: documentation, docstrings, changelog, release notes, readme, write docs, technical writing, project documentation
+name: documentation
 ---
 
 # Documentation
 
 ## When
-"write docstring", "document code", "changelog", "release notes", "write docs", "docstrings"
+"write docstring" | "document code" | "changelog" | "release notes" | "write docs" | "docstrings" | "documentation" | "doc" | "readme" | "write file" | "write a script"
 
-## Docstring Format (Google style)
-```python
-def function(arg1, arg2):
-    """Brief description.
-
-    Args:
-        arg1: Description
-        arg2: Description
-
-    Returns:
-        Description
-
-    Raises:
-        ExceptionType: When condition
-    """
-```
-
-## Changelog Format
-```markdown
-## [Version] - YYYY-MM-DD
-
-### Added
-- Feature
-
-### Changed
-- Change
-
-### Fixed
-- Bug fix
-
-### Removed
-- Deprecated
-```
-
-## Rules
-- Docstrings on all public functions/classes
-- Brief one-line summary first
-- Args/Returns/Raises for non-trivial functions
-- Changelog: semantic sections only
+## Tau Doc Standards
+- Tool descriptions: one line, markdown, no code blocks
+- Skill descriptions: include "(also load: _taudoc, caveman, readme_template, spec, tool_template, release_management, skill_template, wiki)" refs
+- AGENT.md: NEVER modify except TAU.md reference
+- designs/: ALL design docs live here
+- Use `caveman` skill for concise prose
 
 ## Helper
 ```bash
@@ -62,3 +29,7 @@ python3 skills/documentation/doc_helper.py  # documentation helper
 - `code-review-workflow` — review documentation quality
 - `skill_template` — skill creation format
 - `wiki` — knowledge storage and retrieval
+- `sum` — State summarization
+- `image` — image handling in docs
+- `spec` — spec-driven documentation, ADR, system design
+- `release_management` — Version bumping, changelog, release notes

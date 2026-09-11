@@ -163,6 +163,10 @@ _MARKER_MAP: dict[str, str] = {
     "FORK_END": "[FORK<]",
     "SUBAGENT_START": "[SUBA>",
     "SUBAGENT_END": "[SUBA<]",
+    "EOT_CONFIRM_SENTINEL": "[EOT>]",
+    "EOT_SELF_CONFIRMED": "[EOT✓]",
+    "EOT_CONFIRM_REQUEST": "[EOT?]",
+    "EOT_CONFIRM_ACCEPTED": "[EOT✓]",
 }
 
 _COLOR_MAP: dict[str, str] = {
@@ -182,11 +186,15 @@ _COLOR_MAP: dict[str, str] = {
     "FORK_END": Colors.BLUE,
     "SUBAGENT_START": Colors.BLUE,
     "SUBAGENT_END": Colors.BLUE,
+    "EOT_CONFIRM_SENTINEL": Colors.MAGENTA,
+    "EOT_SELF_CONFIRMED": Colors.GREEN,
+    "EOT_CONFIRM_REQUEST": Colors.YELLOW,
+    "EOT_CONFIRM_ACCEPTED": Colors.GREEN,
 }
 
 def _abbreviated_timestamp(ts: str) -> str:
     """Extract HH:MM:SS from ISO timestamp."""
-    # ts = "2026-09-11T17:20:23+00:00"
+    # ts = "2026-09-11T18:16:39+00:00"
     parts = ts.split("T")
     if len(parts) == 2:
         time_part = parts[1].split(".")[0]

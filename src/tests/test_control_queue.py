@@ -113,7 +113,7 @@ class TestProcessControlQueueTerminate:
             json.dumps({"type": "terminate", "graceful": True})
         )
         agent._process_control_queue()
-        assert agent.force_end_turn == "parent_terminate_graceful"
+        assert agent.force_end_turn == "external_terminate_graceful"
 
     def test_terminate_graceful_appends_summary_request(self, agent):
         """Graceful terminate appends summary request message."""
@@ -130,7 +130,7 @@ class TestProcessControlQueueTerminate:
             json.dumps({"type": "terminate"})
         )
         agent._process_control_queue()
-        assert agent.force_end_turn == "parent_terminate_graceful"
+        assert agent.force_end_turn == "external_terminate_graceful"
 
     def test_terminate_forceful_sets_exit_requested(self, agent):
         """Forceful terminate sets AgentLifecycle exit_requested flag."""
@@ -336,7 +336,7 @@ class TestProcessControlQueueMultiple:
         # Inject added a message
         assert len(agent.context) > 0
         # Terminate set force_end_turn
-        assert agent.force_end_turn == "parent_terminate_graceful"
+        assert agent.force_end_turn == "external_terminate_graceful"
 
     def test_invalid_json_in_middle_does_not_stop_processing(self, agent):
         """Invalid JSON in the middle of the queue doesn't stop processing."""

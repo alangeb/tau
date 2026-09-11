@@ -16,10 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent_commands import CommandManager
-from agent_console import (
-    warning,
-    register_console_messages,
-)
+from agent_console import warning
+from agent_console.templates import register_console_messages
 from agent_eot_protection import EOTProtection
 from agent_heartbeat import HeartbeatManager
 from agent_loop_detect import LoopDetector
@@ -111,7 +109,6 @@ def init_subsystems(
 
     # Command / tool registration
     available_tool_names = list(TOOLS.keys())
-    _register_skill_tools(available_tool_names)
 
     # Check for .py/.md command conflicts at startup
     _check_command_conflicts()
@@ -132,17 +129,6 @@ def init_subsystems(
         heartbeat=heartbeat,
         available_tool_names=available_tool_names,
     )
-
-
-def _register_skill_tools(available_tool_names: list) -> None:
-    """Register skill-related tools in the available tools list.
-
-    Ensures that skill-related tools (currently only "skill") are included
-    in the agent's available_tool_names list if they exist in the TOOLS registry.
-    """
-    if "skill" in TOOLS:
-        if "skill" not in available_tool_names:
-            available_tool_names.append("skill")
 
 
 def _check_command_conflicts() -> None:

@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
 
 from agent_console import (
     error_display,
@@ -20,6 +23,7 @@ from agent_model_health import get_health_monitor
 from agent_llm_models import (
     ALLOWED_MESSAGE_FIELDS,
     _ALLOWED_TOOL_CALL_FIELDS,
+    APIGatewayError,
     APITimeoutError,
     BadRequestError,
     CallStats,
@@ -31,8 +35,9 @@ from agent_llm_models import (
     LLMResponse,
     OPENAI_BODY_PARAMS,
     OVERSIZED_THRESHOLD,
+    RateLimitError,
 )
-from agent_llm_client import _is_context_overflow
+from agent_llm_client import RetryBackoff, _is_context_overflow
 from agent_llm_tool_parse import (
     llm_postparse,
 )
@@ -41,6 +46,8 @@ from agent_llm_validation import (
     _strip_phantoms,
     llm_validate,
 )
+from agent_message_utils import _sanitize_content, _sanitize_text
+from agent_session import log_failed_api_request
 
 if TYPE_CHECKING:
     pass
@@ -101,6 +108,10 @@ def _prepare_messages(messages: Any, preserve_thinking: bool = False) -> list[di
     result: list[dict] = []
     for msg in msg_list:
         new_msg = dict(msg)  # Shallow copy of dict (safe — we only pop string keys)
+        # Deep-copy tool_calls to prevent mutating original context's nested dicts.
+        # tool_calls contains nested `function` dicts — shallow copy is NOT enough.
+        if "tool_calls" in new_msg and new_msg["tool_calls"]:
+            new_msg["tool_calls"] = copy.deepcopy(new_msg["tool_calls"])
 
         if not preserve_thinking:
             # Strip reasoning for this API call (NON-DESTRUCTIVE — original context preserved).
@@ -258,7 +269,12 @@ def _try_context_compress(
             max_output_tokens=max_output_tokens,
         )
         return compressed
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Context compression failed (falling back to next strategy): %s",
+            e,
+            exc_info=True,
+        )
         return None
 
 
@@ -268,9 +284,11 @@ def _extract_token_count_from_error(error_str: str) -> int | None:
     Parses patterns like:
     - "your prompt contains at least 188001 input tokens"
     - "Request too large. Your prompt contains X tokens"
+    - "Prompt has 214856 tokens, but the configured context size is 200000 tokens"
+    Returns the FIRST number followed by 'tokens' (the actual prompt size).
     """
     import re
-    # Match "at least NNNNNN input tokens" or "contains NNNNNN tokens"
+    # Match "at least NNNNNN input tokens", "contains NNNNNN tokens", or "has NNNNNN tokens"
     match = re.search(r"(\d+)\s*(?:input\s*)?tokens?", error_str, re.IGNORECASE)
     if match:
         return int(match.group(1))
@@ -390,6 +408,74 @@ def _strip_image_blocks(msg_list: list[dict]) -> list[dict] | None:
         result.append(msg)
 
     return result if stripped else None
+
+
+# ── Retry backoff helpers ─────────────────────────────────────────────────────
+
+# Backoff config per error type: (base, max_wait, jitter)
+_BACKOFF_CONFIGS = {
+    "timeout": (5, 60, 0.3),
+    "gateway": (30, 120, 0.3),
+    "rate_limit": (15, 120, 0.3),
+    "connection": (5, 120, 0.3),
+}
+
+
+def _build_backoff(error_type: str, sleep_fn=None) -> RetryBackoff:
+    """Return a RetryBackoff instance configured for the given error type.
+
+    Error types:
+    - "timeout": Transient network timeout (short base, moderate max)
+    - "gateway": 5xx server error (long base, long max — infra recovery)
+    - "rate_limit": HTTP 429 (moderate base, long max — server asking to slow down)
+    - "connection": Connection refused/reset (short base, long max)
+
+    Args:
+        error_type: One of "timeout", "gateway", "rate_limit", "connection".
+        sleep_fn: Optional sleep function for testing (pass no-op lambda to skip waits).
+    """
+    base, max_wait, jitter = _BACKOFF_CONFIGS.get(error_type, (5, 60, 0.3))
+    return RetryBackoff(base=base, max_wait=max_wait, jitter=jitter, sleep_fn=sleep_fn)
+
+
+def _log_and_raise(
+    e: Exception,
+    error_type: str,
+    call_kwargs: dict,
+    log_on_failure: bool,
+    log_file: Path | None,
+    chained: bool = True,
+) -> None:
+    """Display error, optionally log to file, then raise.
+
+    This is the common pattern repeated across all exception handlers:
+    1. error_display() to console
+    2. If configured, log_failed_api_request() to disk
+    3. Raise the exception (optionally chained with 'from e')
+
+    Args:
+        e: The exception to raise.
+        error_type: Display label (e.g., "MODEL ERROR", "GATEWAY ERROR").
+        call_kwargs: The API call kwargs for logging.
+        log_on_failure: Whether logging is configured.
+        log_file: Path to log file.
+        chained: If True, use 'raise e from e' to preserve chain.
+    """
+    error_display(error_type, str(e))
+    if log_on_failure:
+        log_failed_api_request(
+            call_kwargs,
+            log_file,
+            error_type=type(e).__name__,
+            error_message=str(e),
+            status_code=getattr(e, "status_code", None),
+        )
+    if chained:
+        raise e from e
+    raise e
+
+
+# ── Main retry loop ───────────────────────────────────────────────────────────
 
 
 def _invoke_llm_with_retry(
@@ -571,19 +657,21 @@ def _invoke_llm_with_retry(
             last_error = e
 
             if attempt >= effective_max_retries:
-                error_display("MODEL ERROR", str(e))
-                if effective_log_on_failure:
-                    from agent_session import log_failed_api_request
-
-                    log_failed_api_request(
-                        call_kwargs, effective_log_file,
-                        error_type=type(e).__name__,
-                        error_message=str(e),
-                        status_code=getattr(e, "status_code", None),
-                    )
-                raise last_error from e
+                _log_and_raise(
+                    e, "MODEL ERROR", call_kwargs,
+                    effective_log_on_failure, effective_log_file,
+                )
 
             llm_timeout_message(attempt, effective_max_retries)
+
+            backoff = _build_backoff("timeout", config.sleep_fn if config else None)
+            wait = backoff.next_wait(attempt)
+            warning(
+                f"  :: LLM attempt {attempt + 1}/{effective_max_retries + 1}: "
+                f"timeout ({type(e).__name__}) — waiting {wait:.0f}s before retry"
+            )
+            backoff.wait(attempt)
+            continue
 
         except BadRequestError as e:
             error_str = str(e)
@@ -632,36 +720,34 @@ def _invoke_llm_with_retry(
                     )
                     continue
                 # No images to strip — fatal error
-                error_display("VISION ERROR", str(e))
-                if effective_log_on_failure:
-                    from agent_session import log_failed_api_request
-                    log_failed_api_request(
-                        call_kwargs, effective_log_file,
-                        error_type=type(e).__name__,
-                        error_message=str(e),
-                        status_code=getattr(e, "status_code", None),
-                    )
-                raise
+                _log_and_raise(
+                    e, "VISION ERROR", call_kwargs,
+                    effective_log_on_failure, effective_log_file,
+                    chained=False,
+                )
             elif _is_text_encode_error(error_str):
                 # TextEncodeInput error — context likely contains lone surrogates.
                 # Sanitize and retry ONCE. Do NOT retry again on second failure.
                 if not text_encode_retry_done:
                     text_encode_retry_done = True
-                    from agent_message_utils import _sanitize_content, _sanitize_text
-
-                    # Sanitize all messages in-place.
-                    target_msgs = (
-                        messages
-                        if isinstance(messages, list)
-                        else messages._messages
-                        if hasattr(messages, "_messages")
-                        else []
-                    )
-                    for msg in target_msgs:
-                        if msg.get("content") is not None:
-                            msg["content"] = _sanitize_content(msg["content"])
-                        if msg.get("reasoning") is not None:
-                            msg["reasoning"] = _sanitize_text(msg["reasoning"])
+                    # Sanitize all messages. Use public API to trigger validation.
+                    if isinstance(messages, list):
+                        for msg in messages:
+                            if msg.get("content") is not None:
+                                msg["content"] = _sanitize_content(msg["content"])
+                            if msg.get("reasoning") is not None:
+                                msg["reasoning"] = _sanitize_text(msg["reasoning"])
+                    elif hasattr(messages, "set_messages"):
+                        # TauContext — use public API to trigger validation
+                        sanitized = []
+                        for msg in messages.to_list():
+                            s = dict(msg)
+                            if msg.get("content") is not None:
+                                s["content"] = _sanitize_content(msg["content"])
+                            if msg.get("reasoning") is not None:
+                                s["reasoning"] = _sanitize_text(msg["reasoning"])
+                            sanitized.append(s)
+                        messages.set_messages(sanitized)
                     warning(
                         "  :: TextEncodeInput error — sanitized context "
                         "(stripped lone surrogates), retrying once"
@@ -678,17 +764,49 @@ def _invoke_llm_with_retry(
 
             else:
                 # Non-overflow, non-vision BadRequestError — no retry
-                error_display("BAD REQUEST", str(e))
-                if effective_log_on_failure:
-                    from agent_session import log_failed_api_request
+                _log_and_raise(
+                    e, "BAD REQUEST", call_kwargs,
+                    effective_log_on_failure, effective_log_file,
+                    chained=False,
+                )
 
-                    log_failed_api_request(
-                        call_kwargs, effective_log_file,
-                        error_type=type(e).__name__,
-                        error_message=str(e),
-                        status_code=getattr(e, "status_code", None),
-                    )
-                raise
+        except APIGatewayError as e:
+            last_error = e
+
+            if attempt >= effective_max_retries:
+                _log_and_raise(
+                    e, "GATEWAY ERROR", call_kwargs,
+                    effective_log_on_failure, effective_log_file,
+                )
+
+            # 5xx errors need longer backoff — infrastructure recovery takes time
+            backoff = _build_backoff("gateway", config.sleep_fn if config else None)
+            wait = backoff.next_wait(attempt)
+            warning(
+                f"  :: LLM attempt {attempt + 1}/{effective_max_retries + 1}: "
+                f"gateway error (HTTP {e.status_code}) — waiting {wait:.0f}s before retry"
+            )
+            backoff.wait(attempt)
+            continue
+
+        except RateLimitError as e:
+            last_error = e
+
+            if attempt >= effective_max_retries:
+                _log_and_raise(
+                    e, "RATE LIMIT", call_kwargs,
+                    effective_log_on_failure, effective_log_file,
+                )
+
+            # Rate limits need moderate backoff — server is asking us to slow down
+            backoff = _build_backoff("rate_limit", config.sleep_fn if config else None)
+            wait = backoff.next_wait(attempt)
+            warning(
+                f"  :: LLM attempt {attempt + 1}/{effective_max_retries + 1}: "
+                f"rate limited (HTTP {e.status_code}) — waiting {wait:.0f}s before retry"
+            )
+            backoff.wait(attempt)
+            continue
 
         except Exception as e:
             last_error = e
@@ -696,21 +814,12 @@ def _invoke_llm_with_retry(
             if isinstance(e, (ConnectionRefusedError, BrokenPipeError, ConnectionResetError)):
                 # Endpoint unreachable — backoff and retry
                 if attempt >= effective_max_retries:
-                    error_display("CONNECTION ERROR", str(e))
-                    if effective_log_on_failure:
-                        from agent_session import log_failed_api_request
+                    _log_and_raise(
+                        e, "CONNECTION ERROR", call_kwargs,
+                        effective_log_on_failure, effective_log_file,
+                    )
 
-                        log_failed_api_request(
-                            call_kwargs, effective_log_file,
-                            error_type=type(e).__name__,
-                            error_message=str(e),
-                            status_code=getattr(e, "status_code", None),
-                        )
-                    raise last_error from e
-
-                from agent_llm_client import RetryBackoff
-
-                backoff = RetryBackoff(base=5, max_wait=120, jitter=0.3)
+                backoff = _build_backoff("connection", config.sleep_fn if config else None)
                 wait = backoff.next_wait(attempt)
                 warning(
                     f"  :: LLM attempt {attempt + 1}/{effective_max_retries + 1}: "
@@ -720,17 +829,11 @@ def _invoke_llm_with_retry(
                 continue
 
             # Unexpected error — no retry
-            error_display("UNEXPECTED ERROR", str(e))
-            if effective_log_on_failure:
-                from agent_session import log_failed_api_request
-
-                log_failed_api_request(
-                    call_kwargs, effective_log_file,
-                    error_type=type(e).__name__,
-                    error_message=str(e),
-                    status_code=getattr(e, "status_code", None),
-                )
-            raise
+            _log_and_raise(
+                e, "UNEXPECTED ERROR", call_kwargs,
+                effective_log_on_failure, effective_log_file,
+                chained=False,
+            )
 
     raise RuntimeError(
         f"_invoke_llm_with_retry exited loop without returning "

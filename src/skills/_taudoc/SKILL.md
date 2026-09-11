@@ -1,8 +1,8 @@
 ---
+description: "Update docs, maintain design docs, TAU.md, AGENT.md, designs/ — verify cross-links, sync docs with code (also load: documentation, caveman, readme_template, skill_tool, task)"
+keywords: tau documentation, design docs, TAU.md, AGENT.md, documentation layout, doc maintenance, architecture docs, doc update, project docs
 name: _taudoc
-description: "Maintain TauErgon docs — designs/, TAU.md, AGENT.md. Documentation maintenance, doc updates, design docs, project documentation (also load: tau_audit, skill_template, documentation, command_template, dream)"
-category: maintenance
-keywords: documentation, doc structure, tau docs, design documents, technical writing
+category: documentation
 ---
 
 # Tau Documentation Layout
@@ -13,14 +13,14 @@ keywords: documentation, doc structure, tau docs, design documents, technical wr
 ## Structure (relative to `src/`)
 ```
 src/
-├── AGENT.md              ← System prompt. Points to TAU.md.
-├── TAU.md                ← Developer index. Points to designs/.
-├── README.md             ← Minimal pointer to TAU.md + designs/
+├── AGENT.md              ← System prompt → TAU.md
+├── TAU.md                ← Dev index → designs/
+├── README.md             ← Minimal pointer
 └── designs/
     ├── INDEX.md          ← Navigation
     ├── ARCHITECTURE.md   ← Request flow, modules, patterns
-    ├── DECISIONS.md      ← Design decisions (166+, 20 categories)
-    ├── CONTEXT.md        ← Context management patterns
+    ├── DECISIONS.md      ← Design decisions (232, 27 categories)
+    ├── CONTEXT.md        ← Context management
     ├── COMMANDS.md       ← Command implementation
     ├── SKILLS.md         ← Skill implementation
     ├── TESTING.md        ← Testing guide
@@ -28,12 +28,12 @@ src/
 ```
 
 ## Rules
-1. **AGENT.md** — System prompt. NEVER modify except TAU.md reference line.
-2. **TAU.md** — Developer index. Points to designs/.
+1. **AGENT.md** — System prompt. NEVER modify except TAU.md reference.
+2. **TAU.md** — Dev index → designs/.
 3. **designs/** — ALL design docs. None outside.
-4. **README.md** — Minimal pointer. No content here.
-5. **commands/_taudoc.md** — ONLY doc maintenance command.
-6. **skills/_taudoc/** — ONLY doc maintenance skill.
+4. **README.md** — Minimal pointer only.
+5. **commands/_taudoc.md** — Doc maintenance command only.
+6. **skills/_taudoc/** — Doc maintenance skill only.
 7. All paths RELATIVE to `src/`.
 8. NEVER create docs outside `designs/` without approval.
 9. NEVER remove `designs/DECISIONS.md` entries — manual only.
@@ -42,11 +42,8 @@ src/
 ## Workflow
 1. Read `TAU.md` + relevant `designs/*.md`
 2. `pyscan` + `pyanalyze` on `src/`
-3. Compare code vs docs
-4. Update docs to match code
-5. Remove overlaps
-6. Verify cross-links
-7. Commit
+3. Code vs docs → update docs → remove overlaps
+4. Verify cross-links → commit
 
 ## Helper
 ```bash
@@ -54,8 +51,9 @@ python3 skills/_taudoc/doc_validator.py <src_path>  # Validate doc structure
 ```
 
 ## Related Skills
-- `command_template` — command creation format
-- `documentation` — docstring and changelog patterns
-- `skill_template` — skill creation format
-- `tau_audit` — analyze agent logs
+- `command_template` — Command creation format
+- `documentation` — Docstring and changelog patterns
+- `skill_template` — Skill creation format
+- `tau_audit` — Analyze agent logs
 - `dream` — Dream orchestrator
+- `task` — Task framework

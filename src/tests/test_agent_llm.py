@@ -154,7 +154,7 @@ class TestLegacyInvokeWithRetry:
 
         result, _ = _invoke_llm_with_retry(
             mock_client, "test-model", [], [], "auto", stream=False,
-            config=LLMCallConfig(max_retries=3),
+            config=LLMCallConfig(max_retries=3, sleep_fn=lambda _: None),
         )
         assert result.text == "Success"
         assert isinstance(result.stats, CallStats)
@@ -186,7 +186,7 @@ class TestLegacyInvokeWithRetry:
 
         result, _ = _invoke_llm_with_retry(
             mock_client, "test-model", [], [], "auto", stream=False,
-            config=LLMCallConfig(max_retries=5),
+            config=LLMCallConfig(max_retries=5, sleep_fn=lambda _: None),
         )
 
         # 1. Verify we actually reached the end
@@ -203,7 +203,7 @@ class TestLegacyInvokeWithRetry:
         with pytest.raises(APITimeoutError):
             _invoke_llm_with_retry(
                 mock_client, "test-model", [], [], "auto", stream=False,
-                config=LLMCallConfig(max_retries=2),
+                config=LLMCallConfig(max_retries=2, sleep_fn=lambda _: None),
             )
 
         # Should have called 3 times (initial + 2 retries)
@@ -248,7 +248,7 @@ class TestRetryThinkingDisable:
             [],
             "auto",
             stream=False,
-            config=LLMCallConfig(max_retries=5 + 2, extra_kwargs=extra_kwargs),
+            config=LLMCallConfig(max_retries=5 + 2, extra_kwargs=extra_kwargs, sleep_fn=lambda _: None),
         )
 
         # Verify thinking WAS disabled in the actual LLM call (functional check)
@@ -284,7 +284,7 @@ class TestRetryThinkingDisable:
             [],
             "auto",
             stream=False,
-            config=LLMCallConfig(max_retries=2, extra_kwargs=extra_kwargs),
+            config=LLMCallConfig(max_retries=2, extra_kwargs=extra_kwargs, sleep_fn=lambda _: None),
         )
 
         # Verify thinking was NOT disabled (threshold not reached)
@@ -309,7 +309,7 @@ class TestRetryThinkingDisable:
             [],
             "auto",
             stream=False,
-            config=LLMCallConfig(max_retries=10, extra_kwargs=None),
+            config=LLMCallConfig(max_retries=10, extra_kwargs=None, sleep_fn=lambda _: None),
         )
 
         # No exception, no mutation to worry about
@@ -332,7 +332,7 @@ class TestRetryThinkingDisable:
             [],
             "auto",
             stream=False,
-            config=LLMCallConfig(max_retries=10, extra_kwargs=extra_kwargs),
+            config=LLMCallConfig(max_retries=10, extra_kwargs=extra_kwargs, sleep_fn=lambda _: None),
         )
 
         # Should be unchanged

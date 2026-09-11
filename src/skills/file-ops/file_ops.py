@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """File operations helper — batch file utilities."""
-import os, sys, glob as glob_mod
+import glob as glob_mod
+import os
+import sys
 
 def find_files(path: str = ".", pattern: str = "*") -> list[str]:
     """Find files matching pattern."""

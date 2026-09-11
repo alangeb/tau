@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Dream task status checker — shows pending/active tasks."""
-import os, sys, glob
+import glob
+import os
+import sys
 
 def main():
     _script_dir = os.path.dirname(os.path.realpath(__file__))

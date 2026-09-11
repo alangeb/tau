@@ -34,8 +34,7 @@ System-wide flags (_interrupted, _exit_requested) for cooperative shutdown. Hear
 
 Example
     from agent_core import TauErgon
-    from agent_audit_bridge import log_console_warning
-from agent_config import Config
+    from agent_config import Config
     config = Config.load()
     agent = TauErgon(config=config, agent_name="my-agent")
     response = agent.invoke_with_tools("What can you help me with?")
@@ -69,7 +68,7 @@ from agent_console import (
     unknown_tool_error,
     warning,
 )
-from agent_command_dispatcher import ContextManager, RestartManager
+from agent_context_manager import ContextManager, RestartManager
 from agent_command_handlers import CommandHandlersMixin
 from agent_commands import CommandManager
 from agent_config import Config
@@ -113,13 +112,11 @@ def _safe_format_template(template: str, **kwargs: str) -> str:
 
 
 __all__ = [
-    "ToolFilter",
     "TauErgon",
 ]
 
 
 class TauErgon(CommandHandlersMixin):
-    MAX_OUTER_RECOVERY = 5  # Max recovery attempts before forced termination
     """Chat agent with tool calling, context management, loop detection, and subagent support.
 
     The TauErgon is the main orchestrator for AI agent interactions, providing:
@@ -261,6 +258,7 @@ class TauErgon(CommandHandlersMixin):
 
         # Assign tool names
         self.available_tool_names = bundle.available_tool_names
+        self._cached_tools: list[dict] | None = None  # Cached get_all_tools() result
 
         # Initialize state variables directly (NOT in the bundle)
         self.nesting_stack: str = ""  # e.g. "SF" = fork in subagent
@@ -428,10 +426,12 @@ class TauErgon(CommandHandlersMixin):
     # ── Control queue ────────────────────────────────────────────────────────
 
     def _process_control_queue(self) -> None:
-        """Process pending control commands from parent supervisor.
+        """Process pending control commands from external controllers.
 
-        To be called at turn boundaries by supervisor integration (TASK_05b).
-        Commands are consumed from the queue and applied to the agent's state.
+        Called at turn boundaries (agent_loop.py). This is an extension point
+        for external control: any process can push commands to `_control_queue`
+        and they will be processed at the next turn boundary. Currently no
+        production code pushes to this queue.
 
         Command types:
         - inject: Append synthetic user message to context
@@ -466,18 +466,18 @@ class TauErgon(CommandHandlersMixin):
                 # Use bridge helper to maintain alternation (tool → assistant → user)
                 self.context.append_synthetic_user_with_bridge("parent_inject", content)
                 from agent_console import status
-                status(f"Parent injected {role} message ({len(content)} chars)")
+                status(f"External controller injected {role} message ({len(content)} chars)")
 
             elif cmd_type == "terminate":
                 graceful = cmd.get("graceful", True)
                 source = cmd.get("source", "parent")  # "parent" or "user"
                 force_kill = cmd.get("force_kill", False)
                 if force_kill:
-                    # Immediate SIGKILL — flush audit first, then die.
-                    # NOTE: SIGKILL is unrecoverable; no cleanup hooks fire.
-                    from agent_audit_bridge import log_console_warning
+                    # Force kill: try SIGTERM first (allows cleanup hooks),
+                    # then SIGKILL as fallback if process doesn't terminate.
+                    from agent_audit_bridge import console_warning
                     _pid = os.getpid()
-                    log_console_warning(
+                    console_warning(
                         f"FORCE_KILL: received from {source}, pid={_pid}"
                     )
                     # Flush stdout/stderr so the audit line is actually written
@@ -485,18 +485,21 @@ class TauErgon(CommandHandlersMixin):
                     import sys as _sys
                     _sys.stdout.flush()
                     _sys.stderr.flush()
-                    os.kill(_pid, _signal.SIGKILL)
+                    # Send SIGTERM to allow cleanup hooks to fire.
+                    # If a custom handler exists, it will handle termination.
+                    # If not, the process exits cleanly with default SIGTERM handler.
+                    os.kill(_pid, _signal.SIGTERM)
                 elif graceful:
-                    self.force_end_turn = "user_stop" if source == "user" else "parent_terminate_graceful"
+                    self.force_end_turn = "user_stop" if source == "user" else "external_terminate_graceful"
                     if source == "parent":
-                        # A2A parent: inject summary request
+                        # External controller: inject summary request
                         self.context.append_synthetic_user_with_bridge(
                             "parent_inject",
-                            "Parent supervisor has terminated this task. "
+                            "External controller has terminated this task. "
                             "Please provide a final summary of your work.",
                         )
                         from agent_console import status
-                        status("Parent requested graceful termination")
+                        status("External controller requested graceful termination")
                     else:
                         # User steering: just end the turn
                         from agent_console import status
@@ -505,7 +508,7 @@ class TauErgon(CommandHandlersMixin):
                     from agent_lifecycle import AgentLifecycle
                     AgentLifecycle.set_exit_requested(True)
                     from agent_console import status
-                    status("Parent requested forceful termination")
+                    status("External controller requested forceful termination")
 
             elif cmd_type == "redirect":
                 new_task = cmd.get("task", "")
@@ -522,12 +525,12 @@ class TauErgon(CommandHandlersMixin):
                 self._current_a2a_request_id = None
                 self._queued_images.clear()
                 from agent_console import status
-                status("Redirected to new task by parent")
+                status("Redirected to new task by external controller")
 
             elif cmd_type == "status":
-                from agent_audit_bridge import log_console_warning
+                from agent_audit_bridge import console_warning
                 stats = self.loop_detector.get_stats()
-                log_console_warning(
+                console_warning(
                     f"STATUS: context={len(self.context)}, "
                     f"loop_warnings={stats.get('total_warnings', 0)}, "
                     f"nesting={self.nesting_count}"
@@ -539,8 +542,8 @@ class TauErgon(CommandHandlersMixin):
             processed += 1
 
         if processed > 0:
-            from agent_audit_bridge import log_console_warning
-            log_console_warning(f"Processed {processed} control commands")
+            from agent_audit_bridge import console_warning
+            console_warning(f"Processed {processed} control commands")
 
     def _get_available_commands(self) -> dict[str, "CommandInfo"]:
         """Discover and return available markdown commands dynamically.
@@ -689,11 +692,15 @@ class TauErgon(CommandHandlersMixin):
         prefix cache stability. The model always sees the same tools; the
         filter only blocks execution, not the API call.
 
+        The result is cached because the tool list is static after init.
+
         Returns:
             list[dict]: List of tool definitions in OpenAI format, each containing:
                 - type: Always "function"
                 - function: Dict with name, description, and parameters schema
         """
+        if self._cached_tools is not None:
+            return self._cached_tools
         all_tools = []
         for name in self.available_tool_names:
             tool_info = TOOLS.get(name)
@@ -711,6 +718,7 @@ class TauErgon(CommandHandlersMixin):
                     },
                 }
             )
+        self._cached_tools = all_tools
         return all_tools
 
     def invoke_with_tools(self, user_input: str) -> str:

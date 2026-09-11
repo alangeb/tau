@@ -1,14 +1,14 @@
 ---
-name: tmux_monitoring
-description: "Monitor tmux sessions — polling intervals, completion detection, anti-patterns (also load: background, test-suite-monitor, tau_testsuite)"
 category: development
-keywords: tmux, monitor, session, polling, background, terminal, completion, detect
+description: "Monitor tmux sessions, watch output, detect completion via keywords and idle timeouts (also load: background, shell_scripting, test-suite-monitor)"
+keywords: tmux monitoring, session monitoring, output watching, keyword detection, idle timeout, completion detection, tmux output
+name: tmux_monitoring
 ---
 
 # Tmux Monitoring
 
 ## When
-"monitor tmux", "poll background", "check session status", "background monitoring", "session polling", "monitor sessions", "terminal"
+"monitor tmux", "poll background", "check session status", "background monitoring", "session polling"
 
 ## Preferred: background_wait
 ALWAYS use `background_wait` over `bash sleep N`. Detects hangs, catches errors, returns results.
@@ -43,7 +43,6 @@ background_capture(session_name="...", lines=30)
 ## Completion Detection
 - Keyword match, idle timeout, hard timeout, or session death
 - "can't find pane" = session ended
-- "Test Suite Completed!" = check keywords
 
 ## Anti-Patterns
 ```python

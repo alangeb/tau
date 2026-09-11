@@ -1,8 +1,8 @@
 ---
-name: tool_template
-description: Create agent tools — dataclass Args, run() function, ToolMetadata. Create tool, tool format, new tool, tool definition, custom tool (also load: command_template, skill_template, caveman)
 category: development
-keywords: tool, create tool, tool format, tool definition, custom tool, dataclass, run function
+description: "Create agent tool template with dataclass Args, run() function, ToolMetadata, aliases, timeouts (also load: skill_template, caveman, documentation, command_template, skill_tool, tauskillmaintenance)"
+keywords: tool template, agent tools, dataclass args, run function, ToolMetadata, tool aliases, tool creation, tool definition
+name: tool_template
 ---
 
 # Tool Template
@@ -20,7 +20,6 @@ keywords: tool, create tool, tool format, tool definition, custom tool, dataclas
 ## Structure
 ```python
 from __future__ import annotations
-
 from tools import ToolContext, ToolMetadata
 from dataclasses import dataclass, field
 
@@ -69,6 +68,8 @@ python3 skills/tool_template/tool_gen.py
 ```
 
 ## Related Skills
+- `skill_tool` — list and load skills
 - `command_template` — creating commands (sibling concept)
 - `skill_template` — creating skills (sibling concept)
 - `caveman` — concise writing style
+- `tauskillmaintenance` — tauskillmaintenance skill

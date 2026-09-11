@@ -19,8 +19,8 @@ import pytest
 from agent_context import TauContext
 from agent_context_compress import (
     _compress_wrapper,
-    _extract_synthetic_category,
 )
+from agent_context_compress.steps.conversation_summary import _extract_synthetic_category
 from agent_message_utils import is_synthetic_message
 
 
@@ -148,7 +148,7 @@ class TestSystemMessagePreservation:
         # Mock impl that returns context without system message
         def impl_no_system(ctx, *args, **kwargs):
             # Return context without system message
-            return [msg for msg in ctx if msg.get("role") != "system"], "LOST_SYSTEM"
+            return [msg for msg in ctx.context if msg.get("role") != "system"], "LOST_SYSTEM"
 
         ctx = [
             {"role": "system", "content": "System prompt"},
@@ -163,7 +163,7 @@ class TestSystemMessagePreservation:
     def test_compression_wrapper_keeps_existing_system_message(self):
         """_compress_wrapper keeps system message if impl preserves it."""
         def impl_keeps_system(ctx, *args, **kwargs):
-            return ctx, "OK"
+            return ctx.context, "OK"
 
         ctx = [
             {"role": "system", "content": "System prompt"},
@@ -178,7 +178,7 @@ class TestSystemMessagePreservation:
     def test_compression_wrapper_no_system_in_original(self):
         """_compress_wrapper doesn't add system message if original lacks one."""
         def impl_no_system(ctx, *args, **kwargs):
-            return ctx, "OK"
+            return ctx.context, "OK"
 
         ctx = [
             {"role": "user", "content": "Task"},

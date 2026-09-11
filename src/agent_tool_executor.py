@@ -744,8 +744,7 @@ def execute_tool_batch(
         _a2a_result = result[:1000]
         if (_a2a_result.startswith("Error invoking tool") or
                 _a2a_result.startswith("Tool '") and "not found" in _a2a_result or
-                _a2a_result.startswith("Tool '") and "Did you mean" in _a2a_result or
-                "is not available" in _a2a_result):
+                _a2a_result.startswith("Tool '") and "Did you mean" in _a2a_result):
             _emit_a2a_chunk(
                 agent, "tool_error",
                 {"tool": tc["name"], "error_message": _a2a_result}

@@ -18,6 +18,7 @@ import os
 import shutil
 import tempfile
 import time
+from collections import deque
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -62,14 +63,6 @@ def _cleanup_fork_isolation(temp_dir: Path) -> None:
             shutil.rmtree(temp_dir, ignore_errors=True)
     except OSError:
         pass
-
-
-def _make_isolated_path(base_path: Path, fork_id: str) -> Path:
-    """Append fork_id to a file path for isolation."""
-    stem = base_path.stem
-    suffix = base_path.suffix
-    parent = base_path.parent
-    return parent / f"{stem}-{fork_id}{suffix}"
 
 
 # ── Subagent creation ────────────────────────────────────────────────────
@@ -163,6 +156,10 @@ def invoke_subagent_sync(
                     "substantive response was produced.]"
                 )
         return result
+    except Exception as e:
+        error_msg = f"[Subagent crash: {type(e).__name__}: {e}]"
+        logger.error("Subagent crashed: %s", error_msg, exc_info=True)
+        return error_msg
     finally:
         duration_s = time.monotonic() - start_time
         parent_agent._session.audit_writer.subagent_end(duration_s)
@@ -203,12 +200,19 @@ def invoke_fork_sync(
     # ── Delegate loop detection (soft reject) ──
     tracker = getattr(parent_agent, "_fork_loop_tracker", None)
     if tracker is None:
-        tracker = {"tasks": [], "warned": set(), "timestamps": []}
+        tracker = {
+            "tasks": deque(maxlen=200),  # Bounded to prevent memory leak
+            "warned": set(),
+            "timestamps": deque(maxlen=FORK_BUDGET + 10),  # Bounded to prevent memory leak
+        }
         parent_agent._fork_loop_tracker = tracker
 
     # ── Fork budget check ──
     now = time.monotonic()
-    tracker["timestamps"] = [t for t in tracker["timestamps"] if now - t < FORK_BUDGET_WINDOW]
+    tracker["timestamps"] = deque(
+        (t for t in tracker["timestamps"] if now - t < FORK_BUDGET_WINDOW),
+        maxlen=FORK_BUDGET + 10,
+    )
     if len(tracker["timestamps"]) >= FORK_BUDGET:
         logger.warning(
             "Fork budget exhausted: %d forks in last %d seconds. "
@@ -224,8 +228,19 @@ def invoke_fork_sync(
     tracker["timestamps"].append(now)
 
     normalized = prompt.strip().lower()[:200]  # Normalize for comparison
-    task_count = sum(1 for t in tracker["tasks"] if t == normalized)
-    tracker["tasks"].append(normalized)
+    # Prune tasks by the same time window so duplicate detection only
+    # considers recent forks (prevents unbounded growth + stale counts).
+    tracker["tasks"] = deque(
+        ((t, n) for (t, n) in tracker["tasks"] if now - t < FORK_BUDGET_WINDOW),
+        maxlen=200,
+    )
+    task_count = sum(1 for (t, n) in tracker["tasks"] if n == normalized)
+
+    # Periodically clean up warned set to prevent unbounded growth
+    if len(tracker["warned"]) > 100:
+        tracker["warned"] = set()
+
+    tracker["tasks"].append((now, normalized))
 
     if task_count >= 1 and normalized not in tracker["warned"]:
         # First duplicate — soft reject with explanation
@@ -254,10 +269,19 @@ def invoke_fork_sync(
         # Fork reads these via os.getenv() during AuditWriter lazy init.
         # We set them briefly and clean up in finally to limit subprocess inheritance window.
         parent_audit_file = str(parent_agent._session.audit_file)
-        os.environ["TAU_PARENT_AUDIT_FILE"] = parent_audit_file
-        os.environ["TAU_FORK_NESTING"] = nesting_stack + nesting_type
+        try:
+            os.environ["TAU_PARENT_AUDIT_FILE"] = parent_audit_file
+            os.environ["TAU_FORK_NESTING"] = nesting_stack + nesting_type
 
-        fork = _create_subagent(parent_agent, config, tool_filter)
+            fork = _create_subagent(parent_agent, config, tool_filter)
+        finally:
+            # Unset env vars immediately after subagent creation.
+            # The AgentSessionManager has already read them during __init__.
+            # This prevents subprocesses spawned by the fork (e.g., bash tool)
+            # from inheriting these internal vars.
+            # Uses finally to ensure cleanup even if _create_subagent() raises.
+            os.environ.pop("TAU_PARENT_AUDIT_FILE", None)
+            os.environ.pop("TAU_FORK_NESTING", None)
         fork.nesting_stack = nesting_stack + nesting_type
         fork.original_task = prompt
 
@@ -300,21 +324,26 @@ def invoke_fork_sync(
         # Track fork lifecycle in audit log.
         parent_agent._session.audit_writer.fork_start(prompt)
         start_time = time.monotonic()
-        result = fork.invoke_with_tools(f"{prompt}")
-        # If the fork was interrupted or exited (run_loop returned None),
-        # surface the last substantive response instead of None, which the
-        # tool executor would stringify to "None".
-        if result is None:
-            if fork.last_substantive_response:
-                result = (
-                    "[Fork interrupted — received exit/interrupt signal while working. "
-                    f"Last substantive response was: {fork.last_substantive_response}]"
-                )
-            else:
-                result = (
-                    "[Fork interrupted — received exit/interrupt signal before any "
-                    "substantive response was produced.]"
-                )
+        try:
+            result = fork.invoke_with_tools(f"{prompt}")
+            # If the fork was interrupted or exited (run_loop returned None),
+            # surface the last substantive response instead of None, which the
+            # tool executor would stringify to "None".
+            if result is None:
+                if fork.last_substantive_response:
+                    result = (
+                        "[Fork interrupted — received exit/interrupt signal while working. "
+                        f"Last substantive response was: {fork.last_substantive_response}]"
+                    )
+                else:
+                    result = (
+                        "[Fork interrupted — received exit/interrupt signal before any "
+                        "substantive response was produced.]"
+                    )
+        except Exception as e:
+            error_msg = f"[Fork crash: {type(e).__name__}: {e}]"
+            logger.error("Fork crashed: %s", error_msg, exc_info=True)
+            return error_msg
         duration_s = time.monotonic() - start_time
         parent_agent._session.audit_writer.fork_end(duration_s)
 

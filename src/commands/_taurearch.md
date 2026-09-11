@@ -16,7 +16,7 @@ Decide on one thing to improve. Be careful not to miss edge cases. You can creat
 
 **MANDATORY: After deciding what to improve, immediately start implementing. Do NOT create elaborate plans. Do NOT analyze further. Implement directly.**
 
-Use your plan tool to create tasks to improve/fix the one most important thing. Do not change functionality. Assume everything is done for a purpose. But do make it more clean.
+Use your manifest tool to create tasks to improve/fix the one most important thing. Do not change functionality. Assume everything is done for a purpose. But do make it more clean.
 
 Then execute on all the changes. Implement the changes.
 

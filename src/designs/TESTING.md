@@ -1,5 +1,7 @@
 # Testing — Guide
 
+**See also**: [ARCHITECTURE.md](ARCHITECTURE.md) (module inventory), [EOT.md](EOT.md) (EOT confirmation tests), [INDEX.md](INDEX.md) (design index)
+
 ## Manual Testing
 
 ```bash
@@ -20,7 +22,21 @@ cd src && pytest          # Full suite
 cd src && pytest test_agent_context.py  # Specific module
 ```
 
-57 test files covering: context, LLM pipeline, tools, delegation, A2A, config, console, loop detection, models, file paths, tool validation, compression, edge cases, phantom detection, EOT recovery, vision recovery, loop escalation.
+70+ test files covering: context, LLM pipeline, tools, delegation, A2A, config, console, loop detection, models, file paths, tool validation, compression, edge cases, phantom detection, EOT confirmation (see [EOT.md](EOT.md)), vision recovery, loop escalation, API retry, fetch security, sandbox cache.
+
+### Notable Test Files (added during 2026-08-09 review)
+
+| Test File | Coverage |
+|-----------|----------|
+| `test_api_gateway_retry.py` | RateLimitError retry, timeout backoff, gateway error handling, backoff config |
+| `test_fetch_crawl4ai_injection.py` | Crawl4AI curl injection prevention, shlex.quote() behavior |
+| `test_fetch_redirect_size_limits.py` | Redirect limit (10), response size limit (50MB), chunked reading |
+| `test_agent_context_compress.py` | Compression logging, full_reset size guard |
+| `test_a2a.py` | UnicodeDecodeError handling, max_timeout, binary data safety |
+| `test_subagent_fork.py` | Fork/subagent crash isolation, error propagation |
+| `test_get_all_tools_cache.py` | Tool schema caching |
+| `test_prepare_messages_deepcopy.py` | tool_calls deep copy, context mutation prevention |
+| `test_sandbox_cache.py` | clear_sandbox_cache(), cache invalidation |
 
 ## End-to-End Tests: sanity.sh (GOLD STANDARD)
 
@@ -87,7 +103,7 @@ See `skills/tau_testsuite/SKILL.md` for full test suite documentation.
 | Rule | Details |
 |------|---------|
 | Gold standard | `sanity.sh` — end-to-end tests requiring LLM endpoint (~100 sec) |
-| Unit tests | `cd src && pytest` — 57 test files covering core modules |
+| Unit tests | `cd src && pytest` — 70+ test files covering core modules |
 | Naming | `tc_<major>.<minor>.<idx>_<name>.sh` (e.g., `tc_1.0.1_basic.sh`) |
 | Structure | SETUP → EXECUTE → VALIDATE → CLEANUP |
 | Helpers | `expect_*()` functions — print PASS/FAIL, return 0/1 — **DO NOT INVERT** |

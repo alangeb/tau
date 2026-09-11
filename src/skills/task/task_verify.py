@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Task verification helper — search for task implementation by content."""
-import os, sys, subprocess, glob
+import glob
+import os
+import subprocess
+import sys
 
 def search_pattern(pattern, paths):
     """Search for pattern in given paths."""

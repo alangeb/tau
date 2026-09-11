@@ -1,22 +1,31 @@
 ---
-name: reference
-description: Tau quick reference — commands, configs, patterns, audit log patterns (also load: command_template, shell_scripting, skill_template)
 category: reference
-keywords: reference, cheat sheet, quick lookup, commands, config, patterns, audit
+description: "Quick reference for tau commands, config paths, directory layout, and audit log grep patterns (also load: command_template, security-audit, shell_scripting, tau_audit, skill-discovery)"
+keywords: tau CLI invocation, tau.json configuration, directory structure layout, audit log grep patterns, skill tool reference
+name: reference
 ---
+
+
 
 # Reference
 
 ## When
-"quick reference", "cheat sheet", "tau commands", "tau config", "tau patterns"
-
-## Tau Commands (user-facing, not agent tools)
+"quick reference"
+"cheat sheet"
+"tau commands"
+"tau config"
+"tau patterns"
+"code review"
+"write a script"
+"shell script"
+"bash command"
+## Commands
 ```
-/fork <task>                          # Spawn fork (full memory) — agent uses `fork` tool
-/subagent <task>                      # Spawn subagent (blank slate) — agent uses `subagent` tool
+/fork <task>                          # Spawn fork (full memory)
+/subagent <task>                      # Spawn subagent (blank slate)
 /background <cmd>                     # Run background task
 /status                               # Agent status
-/plan <action>                        # Plan tool
+/manifests                            # List manifests, show hierarchy
 ```
 
 ## Tau Config
@@ -37,10 +46,13 @@ grep -rh '"skill_name":\s*"[^"]*"' ~/.local/tau/log/*.audit | grep -oP '"skill_n
 
 ## Helper
 ```bash
-python3 skills/reference/ref_helper.py  # Quick reference lookup
+python3 skills/reference/ref_helper.py
 ```
 
 ## Related Skills
-- `command_template` — command creation format
-- `shell_scripting` — shell patterns
-- `skill_template` — skill creation format
+- `skill-discovery` — auto-discover relevant skills
+- `command_template` — Command creation format
+- `shell_scripting` — Shell patterns
+- `skill_template` — Skill creation format
+- `tau_audit` — audit log analysis patterns
+- `security-audit` — security scanning reference

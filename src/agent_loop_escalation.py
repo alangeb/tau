@@ -314,28 +314,32 @@ class LoopEscalationManager:
         # Context may end with tool results or assistant response; bridge helper handles both
         self._context.append_synthetic_user_with_bridge("recovery", synthetic_content)
 
-    def inject_early_reflection(self, question: str | None = None) -> None:
-        """Inject an entry microplan reflection BEFORE the first LLM call.
+    # ── Reflection injection ────────────────────────────────────────────
 
-        Unlike periodic reflection, this runs at loop entry to give the agent
-        a chance to plan before acting. Uses a task-focused prompt.
+    def _inject_think_reflection(
+        self,
+        question: str,
+        id_prefix: str,
+        concise_summary: str,
+        console_label: str,
+        console_desc: str,
+        track_timing: bool = False,
+    ) -> None:
+        """Inject a synthetic think tool call for reflection.
+
+        Shared implementation for inject_early_reflection and inject_reflection.
+
+        Args:
+            question: The reflection question to pass to think tool.
+            id_prefix: Prefix for the synthetic tool_call_id.
+            concise_summary: Summary text for the assistant message.
+            console_label: Label for console display (e.g., "think [early-reflect]").
+            console_desc: Description for console display.
+            track_timing: If True, measure elapsed time and include in error messages.
         """
         from agent_tool_executor import execute_tool_call
 
-        last_real_prompt = get_last_real_user_prompt(self._context.get_messages())
-
-        if question is None:
-            question = (
-                f"(1) What is our goal? "
-                f"(2) What does the user want: {last_real_prompt}? "
-                f"(3) What is the high-level plan to accomplish this? "
-                f"(4) What tools will likely be needed? "
-                "Be concise — 3 to 5 sentences max."
-            )
-
-        tool_call_id = f"early_reflect_{uuid.uuid4().hex[:8]}"
-
-        concise_summary = "Entry reflection completed."
+        tool_call_id = f"{id_prefix}{uuid.uuid4().hex[:8]}"
 
         synthetic_tc = {
             "id": tool_call_id,
@@ -352,9 +356,10 @@ class LoopEscalationManager:
             synthetic=True,
         )
 
-        tool_start("think [early-reflect]", "entry microplan — system-initiated")
+        tool_start(console_label, console_desc)
 
         try:
+            start = time.monotonic() if track_timing else None
             result = execute_tool_call(
                 {"id": tool_call_id, "name": "think", "args_dict": {"question": question}},
                 self._agent,
@@ -362,8 +367,44 @@ class LoopEscalationManager:
                 bypass_filter=True,
             )
         except Exception as e:
-            result = f"[Early reflection failed: {type(e).__name__}: {str(e)[:200]}]"
+            if track_timing and start is not None:
+                elapsed = time.monotonic() - start
+                result = (
+                    f"[Reflection failed after {format_duration_ms(elapsed * 1000)}: "
+                    f"{type(e).__name__}: {str(e)[:200]}]"
+                )
+            else:
+                result = f"[Early reflection failed: {type(e).__name__}: {str(e)[:200]}]"
+        finally:
+            if track_timing:
+                self._reflection_scheduler.mark_reflection_done()
         self._context.append_tool(result, tool_call_id)
+
+    def inject_early_reflection(self, question: str | None = None) -> None:
+        """Inject an entry microplan reflection BEFORE the first LLM call.
+
+        Unlike periodic reflection, this runs at loop entry to give the agent
+        a chance to plan before acting. Uses a task-focused prompt.
+        """
+        last_real_prompt = get_last_real_user_prompt(self._context.get_messages())
+
+        if question is None:
+            question = (
+                f"(1) What is our goal? "
+                f"(2) What does the user want: {last_real_prompt}? "
+                f"(3) What is the high-level plan to accomplish this? "
+                f"(4) What tools will likely be needed? "
+                "Be concise — 3 to 5 sentences max."
+            )
+
+        self._inject_think_reflection(
+            question=question,
+            id_prefix="early_reflect_",
+            concise_summary="Entry reflection completed.",
+            console_label="think [early-reflect]",
+            console_desc="entry microplan — system-initiated",
+            track_timing=False,
+        )
 
     def inject_reflection(self, question: str | None = None) -> None:
         """Inject a periodic reflection into the tool loop.
@@ -376,8 +417,6 @@ class LoopEscalationManager:
             question: Optional custom reflection question. If None, uses default
                 reflection prompt based on the last real user input.
         """
-        from agent_tool_executor import execute_tool_call
-
         # Get the last REAL user prompt (not synthetic escalation messages)
         last_real_prompt = get_last_real_user_prompt(self._context.get_messages())
 
@@ -391,45 +430,11 @@ class LoopEscalationManager:
                 "Be concise — 3 to 5 sentences max."
             )
 
-        tool_call_id = f"reflect_{uuid.uuid4().hex[:8]}"
-
-        # Build the CONCISE assistant message for main context (reduced pollution)
-        concise_summary = "Reflection completed."
-
-        synthetic_tc = {
-            "id": tool_call_id,
-            "type": "function",
-            "function": {
-                "name": "think",
-                "arguments": json.dumps({"question": question}),
-            },
-        }
-
-        self._context.append_assistant(
-            concise_summary,
-            [synthetic_tc],
-            synthetic=True,
+        self._inject_think_reflection(
+            question=question,
+            id_prefix="reflect_",
+            concise_summary="Reflection completed.",
+            console_label="think [auto-reflect]",
+            console_desc="periodic reflection — system-initiated",
+            track_timing=True,
         )
-
-        # Display console message for automatic reflection
-        tool_start("think [auto-reflect]", "periodic reflection — system-initiated")
-
-        # Execute think — bypass tool_filter (system-initiated call, not user-requested).
-        try:
-            start = time.monotonic()
-            result = execute_tool_call(
-                {"id": tool_call_id, "name": "think", "args_dict": {"question": question}},
-                self._agent,
-                system_call=True,
-                bypass_filter=True,
-            )
-        except Exception as e:
-            # Make think never fail — use a safe fallback with debug info
-            elapsed = time.monotonic() - start
-            result = (
-                f"[Reflection failed after {format_duration_ms(elapsed * 1000)}: "
-                f"{type(e).__name__}: {str(e)[:200]}]"
-            )
-        finally:
-            self._reflection_scheduler.mark_reflection_done()
-        self._context.append_tool(result, tool_call_id)

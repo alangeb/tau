@@ -213,7 +213,7 @@
       "api_base": "http://spark:8000/v1",
       "api_key": "",
       "timeout": 1800,
-      "max_context_tokens": 500000,
+      "max_context_tokens": 200000,
       "max_tokens": 8192,
       "temperature": 1.0,
       "top_p": 1.00,
@@ -224,7 +224,7 @@
     }
   },
   "wiki": {
-    "path": "/home/example/.local/tau/wiki"
+    "path": "/home/user/.local/tau/wiki"
   },
   "log_retention": {
     "max_age_days": 30,

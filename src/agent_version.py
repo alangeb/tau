@@ -122,9 +122,3 @@ def get_version_info() -> Dict[str, Any]:
         "version_str": version_str,
     }
     return _version_cache
-
-
-def clear_version_cache() -> None:
-    """Clear the cached version info. Useful for testing."""
-    global _version_cache
-    _version_cache = None

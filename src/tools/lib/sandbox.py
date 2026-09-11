@@ -24,13 +24,33 @@ logger = logging.getLogger(__name__)
 # ── Whitelist helpers ────────────────────────────────────────────────────
 
 # Cache keyed by frozenset of allowed paths to handle different configs.
+# Bounded to prevent unbounded growth with many different configs.
+_MAX_CACHE_SIZE = 50
 _resolve_whitelist_cache: dict[tuple[str, ...], list[Path]] = {}
 
 
+def clear_sandbox_cache() -> None:
+    """Clear the whitelist path cache.
+
+    Call this when the configuration changes (e.g., after tau.json reload)
+    to ensure stale resolved paths are not reused.
+    """
+    _resolve_whitelist_cache.clear()
+    logger.debug("sandbox_whitelist_cache_cleared")
+
+
 def _resolve_whitelist(allowed_paths: list[str]) -> list[Path]:
-    """Resolve and cache whitelist paths, keyed by the input tuple."""
+    """Resolve and cache whitelist paths, keyed by the input tuple.
+
+    Cache is bounded to _MAX_CACHE_SIZE entries (FIFO eviction).
+    """
     key = tuple(allowed_paths)
     if key not in _resolve_whitelist_cache:
+        # Evict oldest entries if cache is full
+        if len(_resolve_whitelist_cache) >= _MAX_CACHE_SIZE:
+            # Remove the first (oldest) entry
+            oldest_key = next(iter(_resolve_whitelist_cache))
+            del _resolve_whitelist_cache[oldest_key]
         _resolve_whitelist_cache[key] = [
             Path(p).expanduser().resolve() for p in allowed_paths
         ]

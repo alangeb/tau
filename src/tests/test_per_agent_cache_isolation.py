@@ -4,9 +4,8 @@ Validates that:
 1. CacheTracker is per-agent (not global)
 2. TokenTracker owns its own CacheTracker
 3. SimpleOpenAIClient handles None cache_tracker gracefully
-4. CommandManager._ensure_handlers_loaded uses double-check locking
-5. _get_skill_list uses double-check locking
-6. fork_tool_call_id filtering logs debug message
+4. _get_skill_list uses double-check locking
+5. fork_tool_call_id filtering logs debug message
 """
 
 import threading
@@ -16,7 +15,6 @@ from unittest.mock import MagicMock, patch, PropertyMock
 from agent_llm_models import CacheTracker, CallStats
 from agent_llm_cache import PrefixCacheTracker
 from agent_token_tracker import TokenTracker
-from agent_commands import CommandManager
 
 
 class TestPerAgentCacheTracker(unittest.TestCase):
@@ -111,40 +109,6 @@ class TestSimpleOpenAIClientNoneTracker(unittest.TestCase):
             cache_tracker=None,
         )
         self.assertIsNone(client._cache_tracker)
-
-
-class TestCommandManagerThreadSafety(unittest.TestCase):
-    """Verify CommandManager._ensure_handlers_loaded uses double-check locking."""
-
-    def test_has_lock(self):
-        """CommandManager should have a _handlers_lock attribute."""
-        self.assertTrue(hasattr(CommandManager, "_handlers_lock"))
-        self.assertIsInstance(CommandManager._handlers_lock, type(threading.Lock()))
-
-    def test_ensure_handlers_loaded_is_thread_safe(self):
-        """_ensure_handlers_loaded should be safe to call from multiple threads."""
-        # Reset state for testing
-        original = CommandManager._handlers_loaded
-        CommandManager._handlers_loaded = False
-
-        errors = []
-        def call_ensure():
-            try:
-                CommandManager._ensure_handlers_loaded()
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=call_ensure) for _ in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        self.assertEqual(len(errors), 0, f"Errors: {errors}")
-        self.assertTrue(CommandManager._handlers_loaded)
-
-        # Restore original state
-        CommandManager._handlers_loaded = original
 
 
 class TestSkillCacheThreadSafety(unittest.TestCase):

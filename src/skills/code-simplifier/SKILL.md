@@ -1,32 +1,20 @@
 ---
 name: code-simplifier
-description: "Simplify code for clarity, consistency, maintainability — preserve functionality. Refactor, clean code (also load: code-review-workflow, review, python_best_practices, caveman)"
-category: coding
-keywords: simplify, refactor, clean code, reduce complexity, improve readability, make clearer, code clarity
+description: "Reduce complexity — simplify nested conditionals, eliminate redundancy, consolidate logic without changing behavior (also load: code-review-workflow, refactor, pyprep, caveman)"
+keywords: cyclomatic complexity reduction, conditional flattening, redundancy elimination, logic consolidation, nested structure simplification
+category: development
 ---
 
-# Code Simplifier
+# code-simplifier
 
 ## When
-"simplify code", "refactor", "clean up code", "improve readability", "make code clearer"
+"simplify code" | "refactor" | "clean up" | "improve readability" | "reduce complexity" | "code review" | "review code"
 
 ## Rules
-- **Preserve functionality** — never change behavior
-- **Apply project standards** — see AGENT.md
+- **Preserve functionality** — behavior unchanged
 - Reduce nesting, eliminate redundancy, consolidate logic
-- No oversimplification that hurts readability
-
-## Avoid
-- Nested ternaries → switch or if/else chains
-- Dense one-liners → clarity over brevity
-- Overly clever solutions
-- Removing helpful abstractions
-
-## Process
-1. Identify target sections
-2. Apply simplifications
-3. Verify functionality unchanged
-4. Document significant changes only
+- Apply project standards (AGENT.md)
+- No oversimplification hurting readability
 
 ## Helper
 ```bash
@@ -34,7 +22,9 @@ python3 skills/code-simplifier/simplify.py <file.py>  # Complexity analysis + su
 ```
 
 ## Related Skills
-- `code-review-workflow` — complete review pipeline
-- `review` — detailed code review process
-- `caveman` — concise writing style
+- `code-review-workflow` — full review pipeline
 - `python_best_practices` — linting/formatting
+- `review` — detailed code review
+- `caveman` — concise writing style
+- `gitcrit` — git commit critique uses simplifier for complexity
+- `refactor` — larger-scale restructuring

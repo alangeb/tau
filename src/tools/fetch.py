@@ -9,12 +9,13 @@ from tools.lib.cache import FileCache
 import gzip
 import json
 import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, URLError as URLErrorBase, build_opener, urlopen
 
 from .lib.html_to_md import extract_main_content, html_to_markdown, strip_noise
 # ── Tool interface ────────────────────────────────────────────────
@@ -50,9 +51,9 @@ def _try_crawl4ai_single(
         payload = json.dumps({"url": url, "f": filter_type, "q": query, "c": "0"})
         cmd = (
             f"curl -s --connect-timeout 1 --max-time 3 "
-            f'"{base_url}/md" '
+            f"{shlex.quote(base_url + '/md')} "
             f'-H "Content-Type: application/json" '
-            f"-d '{payload}'"
+            f"-d {shlex.quote(payload)}"
         )
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5, start_new_session=True)
         if result.returncode != 0 or not result.stdout.strip():
@@ -72,7 +73,7 @@ def _try_crawl4ai_multi(
             f"curl -s --connect-timeout 1 --max-time 5 "
             f'"{base_url}/crawl" '
             f'-H "Content-Type: application/json" '
-            f"-d '{payload}'"
+            f"-d {shlex.quote(payload)}"
         )
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=8, start_new_session=True)
         if result.returncode != 0 or not result.stdout.strip():
@@ -84,6 +85,48 @@ def _try_crawl4ai_multi(
 
 
 # ── HTTP Fetcher ───────────────────────────────────────────────────
+
+_MAX_REDIRECTS = 10          # Maximum number of redirects to follow
+_MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # 50 MB response size limit
+_READ_CHUNK_SIZE = 64 * 1024  # 64 KB read chunks
+
+
+class _LimitedRedirectHandler(HTTPRedirectHandler):
+    """HTTPRedirectHandler that raises after _MAX_REDIRECTS redirects."""
+
+    def __init__(self):
+        self._redirect_count = 0
+
+    def redirect_request(
+        self,
+        req: Request, fp: int, code: int, msg: str, headers: dict, newurl: str,
+    ) -> Request | None:
+        self._redirect_count += 1
+        if self._redirect_count > _MAX_REDIRECTS:
+            raise URLError(
+                f"Too many redirects (exceeded {_MAX_REDIRECTS}). "
+                f"Last redirect: {newurl}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _read_with_limit(resp, max_bytes: int = _MAX_RESPONSE_BYTES) -> bytes:
+    """Read response in chunks, enforcing a size limit."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = resp.read(_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise URLError(
+                f"Response too large ({total} bytes, limit {max_bytes}). "
+                f"Server may be sending malicious data."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -113,10 +156,11 @@ def _fetch_url(url: str, timeout: int = 15) -> tuple[str, dict]:
     t0 = time.time()
     try:
         req = Request(url, headers=headers)
-        with urlopen(req, timeout=timeout) as resp:
+        opener = build_opener(_LimitedRedirectHandler())
+        with opener.open(req, timeout=timeout) as resp:
             meta["status"] = resp.status
             meta["content_type"] = resp.headers.get("Content-Type", "")
-            raw = resp.read()
+            raw = _read_with_limit(resp)
             if resp.headers.get("Content-Encoding", "") == "gzip":
                 raw = gzip.decompress(raw)
             content = raw.decode("utf-8", errors="replace")

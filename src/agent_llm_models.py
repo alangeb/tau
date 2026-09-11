@@ -104,6 +104,15 @@ class APIConnectionError(APIError):
 
     pass
 
+class APIGatewayError(APIError):
+    """Raised for HTTP 5xx gateway/proxy errors (502, 503, 504).
+
+    These are transient infrastructure errors — the upstream model server
+    is temporarily unavailable. Standard retry with backoff is appropriate.
+    """
+
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Invocation data models
@@ -219,8 +228,11 @@ OPENAI_BODY_PARAMS: frozenset[str] = frozenset(
 # Allowed fields in tool_calls dicts sent to the API.
 _ALLOWED_TOOL_CALL_FIELDS: frozenset[str] = frozenset(["id", "type", "function"])
 
-# Context overflow error indicators — substrings matched against any APIError
+# Context overflow error indicators — substrings matched against any APIError.
+# Covers OpenAI, vLLM, Ollama, and local server error formats.
 CONTEXT_OVERFLOW_INDICATORS: tuple[str, ...] = (
+    "context_length_exceeded",  # OpenAI/vLLM: code field
+    "configured context size is",  # OpenAI/vLLM: "Prompt has N tokens, but the configured context size is M tokens"
     "exceed_context_size_error",
     "exceeds the available context size",
     "maximum context length",
@@ -265,6 +277,8 @@ class LLMCallConfig:
     # Token budget for token-aware compression target calculation.
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    # Optional sleep function for retry backoff (for testing: pass lambda: None)
+    sleep_fn: Any = None
 
 @dataclass
 class LLMResponse:
@@ -294,6 +308,7 @@ __all__ = [
     "RateLimitError",
     "UnauthorizedError",
     "APIConnectionError",
+    "APIGatewayError",
     # Invocation models
     "EmptyModelResponse",
     "CallStats",

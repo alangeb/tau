@@ -26,3 +26,5 @@ tau-sanity.py
 data/
 # benchmark runs
 runs/
+.tau/
+.removed_plan/

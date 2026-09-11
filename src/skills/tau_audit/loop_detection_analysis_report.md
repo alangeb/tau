@@ -402,7 +402,7 @@ When `replace_unknown_tools >= 2` (set to 2 in tau.json), repeated calls to non-
 
 ## Appendix: Methodology
 
-- **Data source**: 10,038 audit files from `/home/alangeb/.local/tau/log/`
+- **Data source**: 10,038 audit files from `/home/user/.local/tau/log/`
 - **Analysis period**: May 18 - June 10, 2026
 - **Tools used**: Custom Python analysis scripts, `batch_analyze.py` from `skills/tau_audit/`
 - **Loop definition**: >20 LLM_CALLs or >50 tool calls in a single session

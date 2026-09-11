@@ -9,8 +9,10 @@ class. This module handles:
 - Rewinding confirmation rounds when the LLM returns tool calls
 - Accepting confirmed EOT and closing the turn
 
-The sentinel string is assembled from parts at runtime to prevent the LLM
-from pattern-matching the exact sentinel in its training data.
+The sentinel string ("ENDOFTURN") is defined as a constant to enable
+consistent detection across the agent loop and LLM system prompt.
+
+See designs/EOT.md for the full EOT contract (states, transitions, invariants).
 """
 
 from __future__ import annotations
@@ -24,12 +26,11 @@ if TYPE_CHECKING:
 
 
 # ── Sentinel constants ───────────────────────────────────────────────────────
-# Assembled from parts to prevent LLM pattern learning.
 
 _ACCIDENTAL_EOT_PREFIX = "ENDOFTURN"
 _ACCIDENTAL_EOT_BUDGET = 20  # Max accidental EOT confirmations before forced end
 
-# Single sentinel — assembled at module load time.
+# Single sentinel constant.
 ACCIDENTAL_EOT = _ACCIDENTAL_EOT_PREFIX  # "ENDOFTURN"
 
 __all__ = [
@@ -99,6 +100,14 @@ class EOTProtection:
 
     The class maintains its own state (counter, stack) and operates on
     the provided context and audit writer.
+
+    INVARIANTS (see designs/EOT.md for full contract):
+    - Alternation: context always maintains system → user ↔ assistant ↔ tool order
+    - Reset: EOT state resets at start of each run_loop()
+    - Stack: confirmation stack holds messages across multiple rounds
+    - Pop: pop_all_confirmations() removes all stacked layers (best effort)
+    - Budget: _ACCIDENTAL_EOT_BUDGET = 20; after 20 attempts, turn force-closed
+    - Restricted nesting: T/K types bypass confirmation entirely
     """
 
     def __init__(
@@ -132,16 +141,6 @@ class EOTProtection:
         """Return True if currently in a confirmation round."""
         return bool(self._eot_confirmation_stack)
 
-    @property
-    def counter(self) -> int:
-        """Return the current accidental EOT counter."""
-        return self._accidental_eot_counter
-
-    @property
-    def stack(self) -> list[dict]:
-        """Return a copy of the confirmation stack (for testing and inspection)."""
-        return list(self._eot_confirmation_stack)
-
     def set_latest_text(self, text: str) -> None:
         """Update the text of the latest held message on the stack.
 
@@ -152,9 +151,21 @@ class EOTProtection:
             self._eot_confirmation_stack[-1]["text"] = text
 
     def reset(self) -> None:
-        """Reset EOT state at the start of each turn."""
+        """Reset EOT state at the start of each turn or on error.
+
+        Clears the accidental EOT counter and confirmation stack. Also removes
+        any leftover confirmation messages from the context (best effort).
+
+        This is critical for error recovery: when an LLM call fails after a
+        confirmation was injected, the confirmation messages would otherwise
+        remain in context permanently, causing context bloat.
+        """
         self._accidental_eot_counter = 0
-        self._eot_confirmation_stack = []
+        # Remove any leftover confirmation messages from context (best effort).
+        # This handles the error path where reset() is called after confirmation
+        # was injected but before the LLM could respond.
+        if self._eot_confirmation_stack:
+            self.pop_all_confirmations()
 
     # ── Confirmation checking ────────────────────────────────────────────────
 
@@ -221,6 +232,13 @@ class EOTProtection:
         This also means the LLM can freely edit the response text (e.g., via
         file_edit, thinking tags, tool call tags) without accidentally producing
         a sentinel string — the parts are never adjacent in the model's context.
+
+        Pre-flight size check: Before injecting the confirmation, we estimate
+        whether the resulting context would exceed the LLM's token limit. If the
+        confirmation would push context beyond 85% of max_context_tokens, we skip
+        the confirmation and force end-of-turn instead. This prevents context
+        overflow when the last real user prompt is large (e.g., a compressed
+        conversation history of 200KB+).
         """
         # Import here to avoid circular dependency at module load
         from agent_message_utils import get_last_real_user_prompt
@@ -233,15 +251,10 @@ class EOTProtection:
 
         # --- Audit: log confirmation request ---
         held_preview = (response_text or "")[:80].replace("\n", " ")
-        self._audit_writer._emit(
-            "EOT_CONFIRM_REQUEST",
-            f"stack_depth={len(self._eot_confirmation_stack)} held_preview={held_preview!r}"
+        self._audit_writer.eot_confirm_request(
+            len(self._eot_confirmation_stack), held_preview
         )
         from agent_console import status as _status
-        _status(
-            f"[EOT] Asking LLM to confirm end-of-turn "
-            f"(stack depth: {len(self._eot_confirmation_stack)})"
-        )
 
         # Append the assistant response to context (preserves alternation invariant)
         # This must happen BEFORE the synthetic user message so that
@@ -269,6 +282,38 @@ class EOTProtection:
             f"Your assistant content should be ONLY the sentinel word, nothing else. "
             f"If you confirm, LASTREPLY will be reported back. "
             f"Otherwise just continue to work (with your next tool calls)."
+        )
+
+        # ── Pre-flight size check: skip confirmation if it would overflow ──
+        max_ctx = getattr(self._agent, "max_context_tokens", 0)
+        if max_ctx and max_ctx > 0:
+            current_tokens = self._context.estimate_tokens()
+            # Estimate confirmation token cost: ~3 chars/token + 15 structural overhead
+            confirmation_tokens = len(synthetic_content) // 3 + 15
+            threshold = int(max_ctx * 0.85)  # Leave 15% headroom for LLM response
+
+            if current_tokens + confirmation_tokens > threshold:
+                # Confirmation would overflow — skip it and force end-of-turn
+                _status(
+                    f"[EOT] Skipping confirmation (context {current_tokens}/{max_ctx} tokens, "
+                    f"confirmation would add {confirmation_tokens} tokens) — forcing end-of-turn"
+                )
+                self._audit_writer._emit(
+                    "EOT_CONFIRM_SKIPPED",
+                    f"current_tokens={current_tokens} confirmation_tokens={confirmation_tokens} "
+                    f"threshold={threshold} max_ctx={max_ctx}"
+                )
+                # Close the turn immediately — the held assistant message is already
+                # in context, so we just need to close the turn.
+                # The held text becomes the final response.
+                held_for_close = self._eot_confirmation_stack[-1].get("text", "")
+                self._context.close_turn(held_for_close)
+                self._audit_writer.assistant(held_for_close)
+                return
+
+        _status(
+            f"[EOT] Asking LLM to confirm end-of-turn "
+            f"(stack depth: {len(self._eot_confirmation_stack)})"
         )
 
         self._context.append_synthetic_user("eot_confirmation", synthetic_content)
@@ -409,13 +454,14 @@ class EOTProtection:
         """Accept an EOT confirmation: close turn with best available response.
 
         Response selection priority:
-        1. last_substantive_response (most recent valid plain text response)
-        2. held message from confirmation stack (if not malformed)
+        1. held message from confirmation stack (if not malformed)
+        2. last_substantive_response (fallback, may be stale from previous turn)
         3. Empty string (fallback)
 
-        last_substantive_response is updated on EVERY valid plain text response,
-        so it contains the MOST RECENT substantive response. This allows the LLM
-        to revise/improve its answer across confirmation rounds.
+        held_text is the LLM's substantive response shown to the user in the
+        confirmation prompt (<LASTREPLY>). It is the answer being confirmed and
+        should always be preferred. last_substantive_response is used only as
+        a fallback when held_text is malformed or empty.
 
         Returns:
             The final response text.
@@ -435,27 +481,27 @@ class EOTProtection:
 
         self.pop_all_confirmations()
 
-        # --- Response selection: prefer last_substantive_response (most recent) ---
-        # last_substantive_response is now updated on EVERY valid plain text
-        # response, so it contains the MOST RECENT substantive response.
-        # This allows the LLM to revise/improve its answer across confirmation rounds.
-        substantive = self._agent.last_substantive_response
+        # --- Response selection: prefer held_text (the answer being confirmed) ---
+        # held_text is the LLM's substantive response that was shown to the user
+        # in the confirmation prompt (<LASTREPLY>). It is the MOST RECENT answer.
+        # last_substantive_response may be stale (from a previous turn) if the
+        # current turn's response was held but not yet confirmed.
         held_text = held.get("text", "") if held else ""
+        substantive = self._agent.last_substantive_response
 
-        if substantive:
-            final_text = substantive
-            source = "last_substantive_response"
-        elif held_text and not _looks_like_malformed_tool_call(held_text):
+        if held_text and not _looks_like_malformed_tool_call(held_text):
             final_text = held_text
             source = "held_message"
+        elif substantive:
+            final_text = substantive
+            source = "last_substantive_response"
         else:
             final_text = ""
             source = "empty_fallback"
 
         # --- Audit: log confirmation acceptance ---
-        self._audit_writer._emit(
-            "EOT_CONFIRM_ACCEPTED",
-            f"source={source} stack_depth={stack_depth} final_len={len(final_text)}"
+        self._audit_writer.eot_confirm_accepted(
+            source, stack_depth, len(final_text)
         )
         from agent_console import status as _status
         _status(

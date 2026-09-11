@@ -9,7 +9,6 @@ Model types ``CommandSource`` and ``CommandInfo`` are imported from
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,9 +34,7 @@ if TYPE_CHECKING:
     from agent_core import TauErgon
 
 __all__ = [
-    "CommandInfo",
     "CommandManager",
-    "CommandSource",
     "MAX_MD_COMMAND_RECURSION",
 ]
 
@@ -56,14 +53,6 @@ class CommandManager:
         3. .md commands  — markdown templates
     """
 
-    # ── Handler loading ────────────────────────────────────────────────────
-    # Builtin handlers are registered by @_command decorators at class-body
-    # execution time in agent_command_handlers.  We load lazily on first
-    # command resolution (double-check locking) to avoid importing handlers
-    # when CommandManager is never used.
-    _handlers_loaded: bool = False
-    _handlers_lock: threading.Lock = threading.Lock()
-
     # ── Command registry ───────────────────────────────────────────────────
     # Single shared CommandRegistry instance — avoids repeated filesystem scans
     # and module reloads across calls within the same process.
@@ -76,15 +65,6 @@ class CommandManager:
             cls._registry = CommandRegistry()
         return cls._registry
 
-    @classmethod
-    def _ensure_handlers_loaded(cls) -> None:
-        """Ensure builtin command handlers are loaded into the registry."""
-        if not cls._handlers_loaded:
-            with cls._handlers_lock:
-                if not cls._handlers_loaded:
-                    import agent_command_handlers  # noqa: F401
-                    cls._handlers_loaded = True
-
     # ── Resolve ────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -93,7 +73,6 @@ class CommandManager:
 
         Returns an empty list if no source matches.
         """
-        CommandManager._ensure_handlers_loaded()
         matches: list[CommandInfo] = []
         registry = CommandManager._get_registry()
 

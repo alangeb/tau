@@ -1,14 +1,14 @@
 ---
-name: readme_template
-description: README structure — tool/command/skill documentation patterns. Readme, documentation template, project readme (also load: project-onboard, skill_template, command_template)
 category: documentation
-keywords: readme, documentation, template, project, structure, sections
+description: "Generate README template with standard sections: overview, concepts, architecture, testing, development (also load: _taudoc, caveman, documentation, skill_template)"
+keywords: readme template, README structure, documentation sections, project overview, architecture docs, development docs, readme writing
+name: readme_template
 ---
 
 # README.md Structure
 
 ## When
-"write readme", "readme structure", "document project", "update readme", "readme template"
+"write readme" | "readme structure" | "document project" | "update readme" | "readme template" | "readme" | "documentation" | "doc" | "write file" | "write a script"
 
 ## Tau README Sections (in order)
 1. **Table of Contents** — Links to all major sections
@@ -34,6 +34,9 @@ python3 skills/readme_template/readme_gen.py  # readme_template helper
 ```
 
 ## Related Skills
-- `command_template` — document commands in README
-- `project-onboard` — gather project info for README
-- `skill_template` — document skills in README
+- `command_template` — Document commands in README
+- `project-onboard` — Gather project info for README
+- `skill_template` — Document skills in README
+- `documentation` — docstring and changelog patterns
+- `_taudoc` — Tau documentation structure and style
+- `caveman` — concise writing style for README

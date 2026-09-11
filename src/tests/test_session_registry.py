@@ -53,9 +53,12 @@ class TestRegistryCreation:
     """Test registry creation and file persistence."""
 
     def test_creates_file_on_first_access(self, registry: SessionRegistry):
-        """Registry file should be created when first accessed."""
+        """Registry file should be created when first saved."""
         assert not registry._path.exists()
         registry._load()
+        # _load() creates in-memory data but not the file.
+        # File is created lazily on _save() / _transact().
+        registry._save()
         assert registry._path.exists()
 
     def test_initial_structure(self, registry: SessionRegistry):
@@ -69,15 +72,15 @@ class TestRegistryCreation:
         """Registry should load existing file content."""
         existing = {
             "version": 1,
-            "updated": "2026-09-11T17:20:23+00:00",
+            "updated": "2026-09-11T18:16:39+00:00",
             "sessions": {
                 "test_123_1": {
                     "prefix": "test_123_1",
                     "context": "/path/to/context",
                     "audit": "/path/to/audit",
                     "plan": None,
-                    "created": "2026-09-11T17:20:23+00:00",
-                    "updated": "2026-09-11T17:20:23+00:00",
+                    "created": "2026-09-11T18:16:39+00:00",
+                    "updated": "2026-09-11T18:16:39+00:00",
                     "status": "active",
                     "tags": [],
                     "metadata": {},
@@ -98,7 +101,7 @@ class TestRegistryCreation:
 
     def test_missing_sessions_key(self, registry_path: Path):
         """Registry should handle missing 'sessions' key."""
-        registry_path.write_text('{"version": 1, "updated": "2026-09-11T17:20:23+00:00"}')
+        registry_path.write_text('{"version": 1, "updated": "2026-09-11T18:16:39+00:00"}')
         reg = SessionRegistry(registry_path=registry_path)
         data = reg._load()
         assert data["sessions"] == {}
@@ -633,3 +636,193 @@ class TestSingleton:
 
         r = get_registry()
         assert isinstance(r, SessionRegistry)
+
+
+# ── Cleanup Orphans ──────────────────────────────────────────────────────
+
+
+class TestCleanupOrphans:
+    """Test cleanup_orphans() method."""
+
+    def test_removes_sessions_with_no_files(self, registry: SessionRegistry, tmp_path: Path):
+        """Remove sessions where all files are missing."""
+        # Register session with non-existent files
+        registry.register_session(
+            prefix="1234_20260801120000_1",
+            context=tmp_path / "nonexistent.context",
+            audit=tmp_path / "nonexistent.audit",
+        )
+        registry.register_session(
+            prefix="5678_20260801120000_1",
+            context=tmp_path / "also_nonexistent.context",
+            audit=tmp_path / "also_nonexistent.audit",
+        )
+
+        removed = registry.cleanup_orphans()
+        assert removed == 2
+        assert len(registry.list_sessions()) == 0
+
+    def test_keeps_sessions_with_existing_files(self, registry: SessionRegistry, tmp_path: Path):
+        """Keep sessions where at least one file exists."""
+        ctx = tmp_path / "1234_20260801120000_1.context"
+        ctx.write_text("[]")
+
+        registry.register_session(
+            prefix="1234_20260801120000_1",
+            context=ctx,
+            audit=tmp_path / "nonexistent.audit",
+        )
+
+        removed = registry.cleanup_orphans()
+        assert removed == 0
+        assert len(registry.list_sessions()) == 1
+
+    def test_keeps_sessions_with_audit_only(self, registry: SessionRegistry, tmp_path: Path):
+        """Keep sessions where only audit file exists."""
+        audit = tmp_path / "1234_20260801120000_1.audit"
+        audit.write_text("")
+
+        registry.register_session(
+            prefix="1234_20260801120000_1",
+            context=tmp_path / "nonexistent.context",
+            audit=audit,
+        )
+
+        removed = registry.cleanup_orphans()
+        assert removed == 0
+
+    def test_keeps_sessions_with_plan_only(self, registry: SessionRegistry, tmp_path: Path):
+        """Keep sessions where only plan file exists."""
+        plan = tmp_path / "1234_20260801120000_1.plan"
+        plan.write_text("")
+
+        registry.register_session(
+            prefix="1234_20260801120000_1",
+            context=tmp_path / "nonexistent.context",
+            audit=tmp_path / "nonexistent.audit",
+            plan=plan,
+        )
+
+        removed = registry.cleanup_orphans()
+        assert removed == 0
+
+    def test_mixed_cleanup(self, registry: SessionRegistry, tmp_path: Path):
+        """Clean up orphaned sessions while keeping valid ones."""
+        ctx = tmp_path / "1234_20260801120000_1.context"
+        ctx.write_text("[]")
+
+        registry.register_session(
+            prefix="1234_20260801120000_1",
+            context=ctx,
+            audit=tmp_path / "nonexistent.audit",
+        )
+        registry.register_session(
+            prefix="5678_20260801120000_1",
+            context=tmp_path / "nonexistent2.context",
+            audit=tmp_path / "nonexistent2.audit",
+        )
+
+        removed = registry.cleanup_orphans()
+        assert removed == 1
+        assert len(registry.list_sessions()) == 1
+        assert registry.get_session("1234_20260801120000_1") is not None
+
+
+# ── Broken Symlink Handling ──────────────────────────────────────────────
+
+
+class TestBrokenSymlinks:
+    """Test broken symlink handling in get_context_files()."""
+
+    def test_get_context_files_skips_broken_symlinks(
+        self, registry: SessionRegistry, tmp_path: Path
+    ):
+        """Broken symlinks are excluded from get_context_files()."""
+        ctx = tmp_path / "1234_20260801120000_1.context"
+        ctx.write_text("[]")
+
+        # Create a symlink to a non-existent target
+        broken = tmp_path / "5678_20260801120000_1.context"
+        broken.symlink_to(tmp_path / "nonexistent_target.context")
+
+        registry.register_session(
+            prefix="1234_20260801120000_1",
+            context=ctx,
+            audit=tmp_path / "1234_20260801120000_1.audit",
+        )
+        registry.register_session(
+            prefix="5678_20260801120000_1",
+            context=broken,
+            audit=tmp_path / "5678_20260801120000_1.audit",
+        )
+
+        files = registry.get_context_files()
+        # Only the valid file should be returned
+        assert len(files) == 1
+        assert files[0] == ctx
+
+    def test_get_context_files_includes_valid_symlinks(
+        self, registry: SessionRegistry, tmp_path: Path
+    ):
+        """Valid symlinks are included in get_context_files()."""
+        ctx = tmp_path / "1234_20260801120000_1.context"
+        ctx.write_text("[]")
+
+        # Create a valid symlink
+        link = tmp_path / "5678_20260801120000_1.context"
+        link.symlink_to(ctx)
+
+        registry.register_session(
+            prefix="1234_20260801120000_1",
+            context=ctx,
+            audit=tmp_path / "1234_20260801120000_1.audit",
+        )
+        registry.register_session(
+            prefix="5678_20260801120000_1",
+            context=link,
+            audit=tmp_path / "5678_20260801120000_1.audit",
+        )
+
+        files = registry.get_context_files()
+        # Both files should be returned (original + valid symlink)
+        assert len(files) == 2
+
+
+# ── Integration: agent_context_utils ──────────────────────────────────────
+
+
+class TestContextUtilsIntegration:
+    """Test integration with agent_context_utils."""
+
+    def test_is_valid_path_returns_true_for_regular_file(self, tmp_path: Path):
+        """_is_valid_path returns True for regular files."""
+        from agent_context_utils import _is_valid_path
+
+        f = tmp_path / "test.txt"
+        f.write_text("test")
+        assert _is_valid_path(f) is True
+
+    def test_is_valid_path_returns_true_for_valid_symlink(self, tmp_path: Path):
+        """_is_valid_path returns True for valid symlinks."""
+        from agent_context_utils import _is_valid_path
+
+        target = tmp_path / "target.txt"
+        target.write_text("test")
+        link = tmp_path / "link.txt"
+        link.symlink_to(target)
+        assert _is_valid_path(link) is True
+
+    def test_is_valid_path_returns_false_for_broken_symlink(self, tmp_path: Path):
+        """_is_valid_path returns False for broken symlinks."""
+        from agent_context_utils import _is_valid_path
+
+        link = tmp_path / "link.txt"
+        link.symlink_to(tmp_path / "nonexistent.txt")
+        assert _is_valid_path(link) is False
+
+    def test_is_valid_path_returns_false_for_missing_file(self, tmp_path: Path):
+        """_is_valid_path returns False for missing files."""
+        from agent_context_utils import _is_valid_path
+
+        f = tmp_path / "nonexistent.txt"
+        assert _is_valid_path(f) is False

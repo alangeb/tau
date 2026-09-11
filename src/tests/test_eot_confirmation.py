@@ -41,6 +41,7 @@ def _make_eot():
     agent._session = MagicMock()
     agent._session.audit_writer = MagicMock()
     agent.last_substantive_response = None
+    agent.max_context_tokens = 200000
     return EOTProtection(agent)
 
 
@@ -331,8 +332,33 @@ class TestAcceptEotConfirmation:
         # audit_writer.assistant should have been called
         eot._audit_writer.assistant.assert_called_once()
 
-    def test_prefers_last_substantive_response_over_held(self):
-        """last_substantive_response is preferred when held is malformed.
+    def test_prefers_held_over_stale_substantive(self):
+        """held_text is preferred over last_substantive_response.
+
+        held_text is the answer being confirmed (shown in <LASTREPLY>).
+        last_substantive_response may be stale from a previous turn.
+        """
+        from agent_eot_protection import EOTProtection
+
+        eot = _make_eot_with_context([
+            {"role": "system", "content": "You are helpful"},
+            {"role": "assistant", "content": "First response"},
+            {"role": "user", "content": "[U:confirm | N:0] confirm"},
+        ])
+        # Held message is the current turn's answer
+        eot._eot_confirmation_stack = [
+            {"text": "Current turn comprehensive answer.", "reasoning": None},
+        ]
+        # last_substantive_response is stale from previous turn
+        eot._agent.last_substantive_response = "Previous turn summary."
+
+        result = eot.accept_confirmation()
+
+        # Should return held_text (current answer), NOT stale substantive
+        assert result == "Current turn comprehensive answer."
+
+    def test_falls_to_substantive_when_held_malformed(self):
+        """last_substantive_response is used when held is malformed.
 
         This is the FIX for the bug where a malformed tool-call pattern
         (e.g., `` `glob` `` with pattern="...") overwrites the original
@@ -359,11 +385,10 @@ class TestAcceptEotConfirmation:
         assert "`glob`" not in result
 
     def test_prefers_held_when_not_malformed(self):
-        """last_substantive_response is preferred (most recent valid response).
+        """held_text is preferred (the answer being confirmed).
 
-        last_substantive_response is updated on EVERY valid plain text response,
-        so it contains the MOST RECENT substantive response. This allows the LLM
-        to revise/improve its answer across confirmation rounds.
+        held_text is the LLM's substantive response shown to the user
+        in the confirmation prompt (<LASTREPLY>). It is the MOST RECENT answer.
         """
         from agent_eot_protection import EOTProtection
 
@@ -376,12 +401,12 @@ class TestAcceptEotConfirmation:
         eot._eot_confirmation_stack = [
             {"text": "Here is the improved answer with more details.", "reasoning": None},
         ]
-        # last_substantive_response is the most recent (updated on every valid response)
-        eot._agent.last_substantive_response = "Here is the improved answer with more details."
+        # last_substantive_response may be different (stale from previous turn)
+        eot._agent.last_substantive_response = "Previous turn summary."
 
         result = eot.accept_confirmation()
 
-        # Should return last_substantive_response (most recent)
+        # Should return held_text (current answer), NOT stale substantive
         assert result == "Here is the improved answer with more details."
 
     def test_uses_held_when_no_substantive(self):

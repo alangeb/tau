@@ -1,41 +1,39 @@
 ---
+description: "Detailed code review and quality assessment, inspect and analyze — pyscan pre-scan, catalog elements (also load: code-review-workflow, graphify, python_best_practices, refactor, project-onboard, pyprep)"
+keywords: pyscan pre-scan, element cataloging, correctness assessment, improvement priority ranking, quality score generation
 name: review
-description: Code review process — detailed analysis, inventory, improvement plan (also load: code-review-workflow, git-verify, python_best_practices, ast-grep, code-simplifier, git, project-onboard)
-category: code-quality
-keywords: code review, code analysis, quality assessment, deep review, evaluate code, assess code
+category: development
 ---
 
 # Code Review
 
 ## When
-"code review", "review code quality", "assess code", "evaluate code", "deep review"
+"code review" | "review code quality" | "assess code" | "evaluate code" | "deep review" | "review code" | "python analysis"
 
 ## Rules
-- `file_read` full files every time — even if previously read
-- STRICT sequence — execute steps in exact order, never skip/merge/reorder
+- `file_read` full files — always
+- STRICT sequence — exact order, never skip/merge/reorder
 
 ## Process
-
 ### 0. Pre-Analysis
 - `pyscan(path=".")` — structural inventory
 - `pyanalyze(path=".")` — unused functions/imports
 
 ### 1. Read Files
-- `file_read` ALL files in full — entire content, not partials
+- `file_read` ALL files — entire content
 
 ### 2. Inventory
 - Catalog EVERY element: functions, classes, methods, variables, constants, types, imports
-- Leverage pyscan output from Step 0
 
-### 3. Element Analysis (One at a Time)
-- One-line comment per item — what it does
+### 3. Element Analysis
+- One-line per item — what it does
 - Assess: correctness, clarity, conciseness, documentation, location, usage
 - Evaluate: inline? remove?
 - Use pyanalyze output for unused code candidates
 
 ### 4. Improvement Plan
-- Priority ranking: critical/high/medium/low
-- Specific actionable changes with code examples
+- Priority: critical/high/medium/low
+- Specific changes with code examples
 - Trade-off analysis
 
 ## Output Format
@@ -50,12 +48,11 @@ keywords: code review, code analysis, quality assessment, deep review, evaluate 
 
 ## Notes
 - Never modify reviewed files
-- Can output to file if requested
 - Focus on code quality, not style preferences
 
 ## Helper
 ```bash
-python3 skills/review/review_helper.py  # review helper
+python3 skills/review/review_helper.py
 ```
 
 ## Related Skills
@@ -63,5 +60,10 @@ python3 skills/review/review_helper.py  # review helper
 - `code-review-workflow` — complete automated pipeline
 - `code-simplifier` — code clarity improvements
 - `git` — commit reviewed changes
+- `git-verify` — verify code changes
+- `gitcrit` — git commit critique
 - `project-onboard` — understand new project
 - `python_best_practices` — linting/formatting
+- `pyprep` — Python project preparation
+- `refactor` — restructure code
+- `spec` — code review after implementation

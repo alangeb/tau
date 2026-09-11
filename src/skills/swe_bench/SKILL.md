@@ -1,14 +1,14 @@
 ---
+description: "SWE-bench evaluation and benchmark — prepare container, run agent, extract patch, docker testbed (also load: background, test-suite-monitor, dependency_management)"
+keywords: SWE-bench Lite evaluation, docker container testbed, patch diff extraction, test suite re-run, artifact storage, issue file parsing
 name: swe_bench
-description: SWE-bench workflow — fix agent, eval pipeline, analysis, artifacts (also load: docker, background, bug_investigation, tau_audit, git)
-category: benchmark
-keywords: SWE-bench, SWE-lite, SWE-live, fix agent, eval, patch, benchmark, test case, pipeline
+category: testing
 ---
 
 # SWE-bench Workflow
 
 ## When
-"SWE-bench", "SWE-lite", "SWE-live", "fix agent", "eval pipeline", "patch creation", "benchmark", "test case"
+"SWE-bench", "SWE-lite", "SWE-live", "fix agent", "eval pipeline", "patch creation", "benchmark"
 
 ## Pipeline
 ```
@@ -50,8 +50,13 @@ artifacts/
 - Container startup: seconds, not minutes
 - Agent output: within seconds of start
 - >1min silent = broken
-- Truncation: check patch is complete
+- Truncation: check patch complete
 - Timeout: track separately from failure
+
+## Helper
+```bash
+python3 skills/swe_bench/artifact_check.py  # Show test results summary
+```
 
 ## Related Skills
 - `docker` — container management
@@ -59,8 +64,3 @@ artifacts/
 - `bug_investigation` — analyze failures
 - `tau_audit` — review agent behavior
 - `git` — patch management
-
-## Helper
-```bash
-python3 skills/swe_bench/artifact_check.py  # Show test results summary
-```

@@ -10,7 +10,11 @@ import pytest
 
 MODULES = [
     "agent_console",
-    "agent_console.display",
+    "agent_console.display_tool",
+    "agent_console.display_command",
+    "agent_console.display_status",
+    "agent_console.display_context",
+    "agent_console.display_misc",
 ]
 
 
@@ -107,10 +111,9 @@ def test_console_has_compression_functions():
 
 def test_console_has_context_functions():
     """Verify console modules export context display functions."""
-    from agent_console import context_dump, context_status_bar, context_restored
-    assert callable(context_dump)
+    from agent_console import context_restored, context_validation_warning
     assert callable(context_restored)
-    assert callable(context_status_bar)
+    assert callable(context_validation_warning)
 
 
 def test_console_has_status_functions():

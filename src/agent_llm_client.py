@@ -10,7 +10,7 @@ import os
 import random as _random
 import socket
 import time
-from typing import Any
+from typing import Any, Callable
 
 import urllib.error
 import urllib.request
@@ -20,6 +20,7 @@ from agent_llm_cache import PrefixCacheTracker
 from agent_llm_models import (
     APIConnectionError,
     APIError,
+    APIGatewayError,
     APITimeoutError,
     BadRequestError,
     Choice,
@@ -63,11 +64,13 @@ class RetryBackoff:
         max_wait: float = 300.0,
         jitter: float = 0.3,
         multiplier: float = 2.0,
+        sleep_fn: Callable[[float], None] | None = None,
     ):
         self.base = base
         self.max_wait = max_wait
         self.jitter = jitter
         self.multiplier = multiplier
+        self._sleep = sleep_fn if sleep_fn is not None else time.sleep
 
     def wait(self, attempt: int) -> None:
         """Sleep for the backoff interval, interruptible by SIGINT."""
@@ -80,13 +83,17 @@ class RetryBackoff:
             wait = raw
         wait = max(0.1, wait)  # Floor at 100ms
 
+        # If sleep_fn is a no-op (testing mode), skip the busy-wait loop entirely.
+        if self._sleep is not time.sleep:
+            return
+
         # Interruptible sleep — check for SIGINT every second
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            time.sleep(min(remaining, 1.0))
+            self._sleep(min(remaining, 1.0))
 
     def next_wait(self, attempt: int) -> float:
         """Return the wait time for *attempt* without sleeping."""
@@ -120,6 +127,10 @@ _HTTP_ERROR_MAP = {
     400: BadRequestError,
     401: UnauthorizedError,
     429: RateLimitError,
+    # 5xx gateway errors — transient, retry with backoff
+    502: APIGatewayError,
+    503: APIGatewayError,
+    504: APIGatewayError,
 }
 
 
@@ -176,16 +187,30 @@ class SimpleOpenAIClient:
             prefix = getattr(_sess, "SESSION_PREFIX", None)
             if log_dir and prefix:
                 # (1) Full request body → {prefix}.lr.json (for full reproduction)
+                # Limit to 5MB to prevent disk exhaustion with large contexts
                 lr_file = log_dir / f"{prefix}.lr.json"
                 lr_body = {
                     "url": url,
                     "timeout": self.timeout,
                     "kwargs": kwargs,
                 }
-                lr_file.write_text(
-                    json.dumps(lr_body, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
+                lr_text = json.dumps(lr_body, indent=2, ensure_ascii=False)
+                if len(lr_text.encode("utf-8")) <= 5 * 1024 * 1024:  # 5MB limit (byte-accurate)
+                    lr_file.write_text(lr_text, encoding="utf-8")
+                else:
+                    # Truncate: keep metadata, drop messages
+                    lr_body_truncated = {
+                        "url": url,
+                        "timeout": self.timeout,
+                        "NOTE": "Request body truncated (exceeds 5MB). Messages omitted.",
+                        "model": kwargs.get("model"),
+                        "max_tokens": kwargs.get("max_tokens"),
+                        "message_count": len(kwargs.get("messages", [])),
+                    }
+                    lr_file.write_text(
+                        json.dumps(lr_body_truncated, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
 
                 # (2) Audit one-liner → {prefix}.audit (params only, no context)
                 audit_file = log_dir / f"{prefix}.audit"

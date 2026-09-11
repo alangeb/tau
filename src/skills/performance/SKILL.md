@@ -1,20 +1,19 @@
 ---
+description: "Profile and optimize speed, find slow bottlenecks — cProfile, token consumption, performance optimization (also load: debug, pyprep, shell_scripting, freecad)"
+keywords: performance profiling, cProfile, bottleneck detection, token optimization, tool call latency, context window usage, performance optimization
 name: performance
-description: "Performance optimization — context window, profile bottlenecks, token counting, tool call latency. Make faster (also load: bug_investigation, context_management, code-review-workflow, error-recovery, info, shell_scripting, tau_audit)"
-category: development
-keywords: performance, profile, benchmark, optimize, slow, speed, bottleneck, context, token, latency
+category: python
 ---
 
 # Performance
 
 ## When
-"slow code", "performance issue", "profile", "benchmark", "optimize", "bottleneck", "make it faster"
+"slow code" "performance issue" "profile" "benchmark" "optimize" "bottleneck" "make it faster" "code review" "review code"
 
 ## Tau-Specific Patterns
 
 ### Context Window
-- 200K token limit; >80% — compress/delegate; >90% — critical, delegate immediately
-- Fork = expensive (full context clone); Subagent = cheap (minimal context)
+See AGENT.md — CONTEXT MANAGEMENT section. Fork expensive, subagent cheap.
 
 ### Tool Call Latency
 ```bash
@@ -44,3 +43,8 @@ python3 skills/performance/profile_helper.py  # performance helper
 - `info` — agent status and diagnostics
 - `shell_scripting` — system-level performance monitoring
 - `tau_audit` — session log analysis
+- `delegation` — optimize token usage
+- `freecad` — profile bottlenecks and optimize
+- `health` — server health monitoring
+- `debug` — debug performance issues
+- `error-recovery` — handle errors and recover

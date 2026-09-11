@@ -3,7 +3,7 @@
 Contains:
 - @_command decorator and _COMMAND_REGISTRY (single source of truth for built-in commands)
 - Query functions: get_command_info, get_builtin_cmd_names, get_primary_command_info,
-  get_subcommands, _get_cmd_name_to_method
+  _get_cmd_name_to_method
 - BUILTIN_CMD_NAMES (lazy-initialized frozenset via _LazyFrozenset)
 - CommandHandlersMixin with all /command handler methods
 
@@ -155,15 +155,6 @@ def get_primary_command_info() -> dict[str, tuple[str, tuple[str, ...], str, tup
     return _PRIMARY_CMD_INFO
 
 
-# ── Subcommand lookup ────────────────────────────────────────────────────────
-def get_subcommands(cmd_name: str) -> tuple[str, ...]:
-    """Return subcommands tuple for a command name, or empty tuple if none."""
-    info = get_command_info(cmd_name)
-    if info is None:
-        return ()
-    return info[3]
-
-
 # ── External imports (only needed by handler methods) ────────────────────────
 
 from agent_console import (
@@ -204,7 +195,6 @@ __all__ = [
     "get_builtin_cmd_names",
     "get_command_info",
     "get_primary_command_info",
-    "get_subcommands",
     # Internal registry access
     "_get_cmd_name_to_method",
     # Mixin
@@ -745,3 +735,52 @@ class CommandHandlersMixin:
             self._session.audit_writer.flush()
 
         show_audit(audit_path, mode)
+
+    @_command("push", subcommands=())
+    def _cmd_push(self, cmd_full: str, msg: Optional[InputMessage] = None) -> None:
+        """Handle the /push command to save current context to stack.
+
+        Saves the full current conversation context to a stack for later
+        restoration with /pop. Optional label for identification.
+
+        Usage:
+            /push              Save context with timestamp label
+            /push my label     Save context with custom label
+
+        Displays:
+            - Stack depth after push
+            - Warning if oldest entry was evicted (max depth 20)
+        """
+        label = cmd_full.removeprefix("/push").strip()
+        echo(self._context_manager.push(label))
+
+    @_command("pop", subcommands=())
+    def _cmd_pop(self, cmd_full: str, msg: Optional[InputMessage] = None) -> None:
+        """Handle the /pop command to restore context from stack.
+
+        Restores the most recently pushed context, replacing the current
+        conversation. The popped context file is deleted after restoration.
+
+        Usage:
+            /pop    Restore from top of stack
+
+        Displays:
+            - Restored label and new stack depth
+            - Warning if stack is empty
+        """
+        echo(self._context_manager.pop())
+
+    @_command("stack", subcommands=())
+    def _cmd_stack(self, cmd_full: str, msg: Optional[InputMessage] = None) -> None:
+        """Handle the /stack command to show context stack contents.
+
+        Displays numbered list of saved context snapshots with labels,
+        ages, and file sizes.
+
+        Usage:
+            /stack    Show current stack
+
+        Displays:
+            - Numbered list of stack entries with metadata
+        """
+        echo(self._context_manager.show_stack())

@@ -31,6 +31,12 @@ __all__ = [
     "status",
     "reasoning",
     "verbose",
+    # Display helpers (colorized output)
+    "display_error",
+    "display_warning",
+    "display_success",
+    "display_info",
+    "display_synthetic",
 ]
 
 
@@ -106,3 +112,29 @@ def reasoning(text: str) -> None:
 def verbose(text: str) -> None:
     """Display a verbose message in green."""
     _cw(Colors.GREEN, text)
+
+
+# ── Display helpers (colorized output) ───────────────────────────────────────
+# Factory to create display helpers that write *text* in a fixed color.
+
+
+def _make_displayer(color: str, name: str, doc: str):
+    """Create a display helper that writes *text* in *color*.
+
+    Returns a function named *name* with a docstring of *doc*, so it
+    behaves identically to an explicit ``def`` for introspection and
+    debugging purposes.
+    """
+    def display(text: str) -> None:
+        _cw(color, text)
+    display.__name__ = name
+    display.__qualname__ = name
+    display.__doc__ = doc
+    return display
+
+
+display_error = _make_displayer(Colors.RED, "display_error", "Display an error message in red.")
+display_warning = _make_displayer(Colors.YELLOW, "display_warning", "Display a warning message in yellow.")
+display_success = _make_displayer(Colors.GREEN, "display_success", "Display a success message in green.")
+display_info = _make_displayer(Colors.CYAN, "display_info", "Display an informational message in cyan.")
+display_synthetic = _make_displayer(Colors.WHITE, "display_synthetic", "Display a synthetic/injected message in white.")

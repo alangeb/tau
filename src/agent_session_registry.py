@@ -46,15 +46,15 @@ class SessionRegistry:
 
         {
             "version": 1,
-            "updated": "2026-09-11T17:20:23+00:00",
+            "updated": "2026-09-11T18:16:39+00:00",
             "sessions": {
                 "1234_20260720120000_1": {
                     "prefix": "1234_20260720120000_1",
                     "context": "/home/user/.local/tau/log/1234_20260720120000_1.context",
                     "audit": "/home/user/.local/tau/log/1234_20260720120000_1.audit",
                     "plan": "/home/user/.local/tau/log/1234_20260720120000_1.plan",
-                    "created": "2026-09-11T17:20:23+00:00",
-                    "updated": "2026-09-11T17:20:23+00:00",
+                    "created": "2026-09-11T18:16:39+00:00",
+                    "updated": "2026-09-11T18:16:39+00:00",
                     "status": "active",
                     "tags": [],
                     "metadata": {}
@@ -73,33 +73,27 @@ class SessionRegistry:
     def __init__(self, registry_path: Path | None = None):
         self._path = registry_path or REGISTRY_FILE
         self._data: dict[str, Any] | None = None
+        self._lock = threading.RLock()  # Protects _load() and _save()
 
     # ── Internal ──────────────────────────────────────────────────────────
 
     def _load(self) -> dict[str, Any]:
-        """Load registry from disk, creating if missing."""
-        if self._data is not None:
+        """Load registry from disk, creating if missing. Thread-safe.
+
+        Returns a reference to the in-memory data dict. For mutations,
+        use :meth:`_transact` to ensure atomic read-mutate-write cycles.
+        """
+        with self._lock:
+            if self._data is not None:
+                return self._data
+            self._data = self._load_from_disk()
             return self._data
 
-        if self._path.exists():
-            try:
-                self._data = json.loads(self._path.read_text(encoding="utf-8"))
-                # Handle corrupt content: empty string, null, array, etc.
-                if not isinstance(self._data, dict):
-                    self._data = None
-                elif "sessions" not in self._data:
-                    self._data["sessions"] = {}
-                if self._data is not None:
-                    return self._data
-            except (json.JSONDecodeError, IOError):
-                pass
-
-        self._data = {"version": 1, "updated": self._now(), "sessions": {}}
-        self._save()
-        return self._data
-
     def _save(self) -> None:
-        """Save registry to disk using atomic write (temp file + os.replace)."""
+        """Save registry to disk using atomic write (temp file + os.replace).
+
+        Must be called while holding self._lock (RLock allows reentrant calls).
+        """
         if self._data is None:
             return
         self._data["updated"] = self._now()
@@ -122,6 +116,34 @@ class SessionRegistry:
         """Clear cached data (for testing or after external changes)."""
         self._data = None
 
+    def _transact(self, mutator) -> None:
+        """Execute a read-mutate-write cycle atomically.
+
+        The entire load-mutate-save sequence runs under a single lock
+        acquisition, eliminating TOCTOU races between concurrent callers.
+
+        Parameters
+        ----------
+        mutator : callable
+            Function that receives the data dict and modifies it in-place.
+        """
+        with self._lock:
+            if self._data is None:
+                self._data = self._load_from_disk()
+            mutator(self._data)
+            self._save()
+
+    def _load_from_disk(self) -> dict[str, Any]:
+        """Load registry from disk without lock. Called by _transact."""
+        if self._path.exists():
+            try:
+                data = json.loads(self._path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and "sessions" in data:
+                    return data
+            except (json.JSONDecodeError, IOError):
+                pass
+        return {"version": 1, "updated": self._now(), "sessions": {}}
+
     # ── Session management ────────────────────────────────────────────────
 
     def register_session(
@@ -131,33 +153,21 @@ class SessionRegistry:
         audit: Path,
         plan: Path | None = None,
     ) -> None:
-        """Register a new session in the registry.
-
-        Parameters
-        ----------
-        prefix : str
-            Session prefix (e.g. ``"1234_20260720120000_1"``).
-        context : Path
-            Path to the context file.
-        audit : Path
-            Path to the audit file.
-        plan : Path, optional
-            Path to the plan file.
-        """
-        data = self._load()
+        """Register a new session in the registry."""
         now = self._now()
-        data["sessions"][prefix] = {
-            "prefix": prefix,
-            "context": str(context),
-            "audit": str(audit),
-            "plan": str(plan) if plan else None,
-            "created": now,
-            "updated": now,
-            "status": "active",
-            "tags": [],
-            "metadata": {},
-        }
-        self._save()
+        self._transact(lambda data: data["sessions"].__setitem__(
+            prefix, {
+                "prefix": prefix,
+                "context": str(context),
+                "audit": str(audit),
+                "plan": str(plan) if plan else None,
+                "created": now,
+                "updated": now,
+                "status": "active",
+                "tags": [],
+                "metadata": {},
+            }
+        ))
 
     def get_session(self, prefix: str) -> dict[str, Any] | None:
         """Get session info by prefix.
@@ -259,18 +269,15 @@ class SessionRegistry:
     def update_session(self, prefix: str, **kwargs: Any) -> None:
         """Update session metadata.
 
-        Parameters
-        ----------
-        prefix : str
-            Session prefix to update.
-        **kwargs
-            Fields to update (``status``, ``tags``, ``metadata``, etc.).
-            ``tags`` and ``metadata`` are merged/extended, not replaced.
+        ``tags`` and ``metadata`` are merged/extended, not replaced.
         """
-        data = self._load()
+        self._transact(lambda data: self._update_session_impl(data, prefix, kwargs))
+
+    @staticmethod
+    def _update_session_impl(data, prefix, kwargs):
+        """Helper for update_session mutator (must be static for lambda)."""
         if prefix not in data["sessions"]:
             return
-
         session = data["sessions"][prefix]
         for key, value in kwargs.items():
             if key in ("tags", "metadata"):
@@ -282,36 +289,53 @@ class SessionRegistry:
                     session[key] = value
             else:
                 session[key] = value
-        session["updated"] = self._now()
-        self._save()
+        session["updated"] = SessionRegistry._now()
 
     def archive_session(self, prefix: str, new_paths: dict[str, str]) -> None:
-        """Archive a session, updating file paths.
+        """Archive a session, updating file paths."""
+        self._transact(lambda data: self._archive_session_impl(data, prefix, new_paths))
 
-        Parameters
-        ----------
-        prefix : str
-            Session prefix to archive.
-        new_paths : dict
-            New file paths (keys: ``"context"``, ``"audit"``, ``"plan"``).
-        """
-        data = self._load()
+    @staticmethod
+    def _archive_session_impl(data, prefix, new_paths):
+        """Helper for archive_session mutator."""
         if prefix not in data["sessions"]:
             return
-
         session = data["sessions"][prefix]
         for key, value in new_paths.items():
             if key in ("context", "audit", "plan"):
                 session[key] = value
         session["status"] = "archived"
-        session["updated"] = self._now()
-        self._save()
+        session["updated"] = SessionRegistry._now()
 
     def remove_session(self, prefix: str) -> None:
         """Remove a session from the registry."""
-        data = self._load()
-        data["sessions"].pop(prefix, None)
-        self._save()
+        self._transact(lambda data: data["sessions"].pop(prefix, None))
+
+    def cleanup_orphans(self) -> int:
+        """Remove registry entries for sessions where all files are missing.
+
+        Returns number of entries removed.
+        """
+        result = [0]
+        self._transact(lambda data: self._cleanup_orphans_impl(data, result))
+        return result[0]
+
+    @staticmethod
+    def _cleanup_orphans_impl(data, result):
+        """Helper for cleanup_orphans mutator."""
+        to_remove = []
+        for prefix, session in data["sessions"].items():
+            any_exists = False
+            for key in ("context", "audit", "plan"):
+                path_str = session.get(key)
+                if path_str and Path(path_str).exists():
+                    any_exists = True
+                    break
+            if not any_exists:
+                to_remove.append(prefix)
+        for prefix in to_remove:
+            data["sessions"].pop(prefix, None)
+            result[0] += 1
 
     def search_by_tags(
         self,
@@ -348,42 +372,32 @@ class SessionRegistry:
         return results
 
     def add_tags(self, prefix: str, tags: list[str]) -> None:
-        """Add tags to a session.
+        """Add tags to a session."""
+        self._transact(lambda data: self._add_tags_impl(data, prefix, tags))
 
-        Parameters
-        ----------
-        prefix : str
-            Session prefix to tag.
-        tags : list[str]
-            Tags to add.
-        """
-        data = self._load()
+    @staticmethod
+    def _add_tags_impl(data, prefix, tags):
+        """Helper for add_tags mutator."""
         if prefix not in data["sessions"]:
             return
         session = data["sessions"][prefix]
         for tag in tags:
             if tag not in session["tags"]:
                 session["tags"].append(tag)
-        session["updated"] = self._now()
-        self._save()
+        session["updated"] = SessionRegistry._now()
 
     def remove_tags(self, prefix: str, tags: list[str]) -> None:
-        """Remove tags from a session.
+        """Remove tags from a session."""
+        self._transact(lambda data: self._remove_tags_impl(data, prefix, tags))
 
-        Parameters
-        ----------
-        prefix : str
-            Session prefix to untag.
-        tags : list[str]
-            Tags to remove.
-        """
-        data = self._load()
+    @staticmethod
+    def _remove_tags_impl(data, prefix, tags):
+        """Helper for remove_tags mutator."""
         if prefix not in data["sessions"]:
             return
         session = data["sessions"][prefix]
         session["tags"] = [t for t in session["tags"] if t not in tags]
-        session["updated"] = self._now()
-        self._save()
+        session["updated"] = SessionRegistry._now()
 
     def rebuild(self) -> int:
         """Rebuild registry by scanning LOG_DIR for session files.
@@ -399,27 +413,28 @@ class SessionRegistry:
         data = self._load()
         found = 0
 
-        for ctx_file in LOG_DIR.glob("*.context"):
-            match = _SESSION_RE.match(ctx_file.stem)
-            if match:
-                prefix = match.group(1)
-                if prefix not in data["sessions"]:
-                    audit = ctx_file.with_suffix(".audit")
-                    plan = ctx_file.with_suffix(".plan")
-                    data["sessions"][prefix] = {
-                        "prefix": prefix,
-                        "context": str(ctx_file),
-                        "audit": str(audit) if audit.exists() else None,
-                        "plan": str(plan) if plan.exists() else None,
-                        "created": self._now(),
-                        "updated": self._now(),
-                        "status": "active",
-                        "tags": [],
-                        "metadata": {},
-                    }
-                    found += 1
+        with self._lock:
+            for ctx_file in LOG_DIR.glob("*.context"):
+                match = _SESSION_RE.match(ctx_file.stem)
+                if match:
+                    prefix = match.group(1)
+                    if prefix not in data["sessions"]:
+                        audit = ctx_file.with_suffix(".audit")
+                        plan = ctx_file.with_suffix(".plan")
+                        data["sessions"][prefix] = {
+                            "prefix": prefix,
+                            "context": str(ctx_file),
+                            "audit": str(audit) if audit.exists() else None,
+                            "plan": str(plan) if plan.exists() else None,
+                            "created": self._now(),
+                            "updated": self._now(),
+                            "status": "active",
+                            "tags": [],
+                            "metadata": {},
+                        }
+                        found += 1
 
-        self._save()
+            self._save()
         return found
 
 

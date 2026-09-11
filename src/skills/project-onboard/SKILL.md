@@ -1,21 +1,29 @@
 ---
-name: project-onboard
-description: Understand new project — info, pyscan, pyanalyze, plan, initial reads. Project overview, explore codebase, kickoff (also load: code-review-workflow, review, info, file-ops, shell_scripting)
 category: development
-keywords: project, onboard, new project, explore, codebase, overview, kickoff, understand
+description: "Onboard to new project and codebase — pyscan, pygraph, pyanalyze to map structure, find setup (also load: pyprep, review, quick-setup)"
+keywords: new codebase exploration, pyscan structural scan, README review, dependency discovery, module hierarchy mapping
+name: project-onboard
 ---
+
 
 # Project Onboard
 
 ## When
-"understand project", "new project", "what is this codebase", "project overview", "explore codebase"
-
+"understand project"
+"new project"
+"what is this codebase"
+"project overview"
+"explore codebase"
+"project structure"
+"code review"
+"python analysis"
+"review code"
 ## Sequence
 ```bash
 info
 pyscan(path=".")
 pyanalyze(path=".")
-plan(action="create")
+manifest_create(goal="...", title="...", subtasks="...")
 file_read(path="README.md")
 file_read(path="CLAUDE.md")
 ```
@@ -36,8 +44,13 @@ python3 skills/project-onboard/onboard.py  # project onboard helper
 ```
 
 ## Related Skills
-- `code-review-workflow` — deeper analysis
-- `file-ops` — file read/edit patterns
-- `info` — agent status and diagnostics
-- `review` — detailed review process
-- `shell_scripting` — shell patterns
+- `code-review-workflow` — Deeper analysis
+- `file-ops` — File read/edit patterns
+- `info` — Agent status and diagnostics
+- `review` — Detailed review process
+- `shell_scripting` — Shell patterns
+- `dependency_management` — discover project dependencies
+- `readme_template` — README documentation
+- `idea` — Capture ideas for features
+- `pyprep` — Python project preparation
+- `quick-setup` — Project initialization
