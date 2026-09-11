@@ -46,15 +46,15 @@ class SessionRegistry:
 
         {
             "version": 1,
-            "updated": "2026-08-01T10:28:41+00:00",
+            "updated": "2026-08-01T12:00:00",
             "sessions": {
                 "1234_20260720120000_1": {
                     "prefix": "1234_20260720120000_1",
                     "context": "/home/user/.local/tau/log/1234_20260720120000_1.context",
                     "audit": "/home/user/.local/tau/log/1234_20260720120000_1.audit",
                     "plan": "/home/user/.local/tau/log/1234_20260720120000_1.plan",
-                    "created": "2026-08-01T10:28:41+00:00",
-                    "updated": "2026-08-01T10:28:41+00:00",
+                    "created": "2026-07-20T12:00:00",
+                    "updated": "2026-07-20T12:00:00",
                     "status": "active",
                     "tags": [],
                     "metadata": {}

@@ -69,15 +69,15 @@ class TestRegistryCreation:
         """Registry should load existing file content."""
         existing = {
             "version": 1,
-            "updated": "2026-08-01T10:28:41+00:00",
+            "updated": "2026-08-01T12:00:00",
             "sessions": {
                 "test_123_1": {
                     "prefix": "test_123_1",
                     "context": "/path/to/context",
                     "audit": "/path/to/audit",
                     "plan": None,
-                    "created": "2026-08-01T10:28:41+00:00",
-                    "updated": "2026-08-01T10:28:41+00:00",
+                    "created": "2026-08-01T12:00:00",
+                    "updated": "2026-08-01T12:00:00",
                     "status": "active",
                     "tags": [],
                     "metadata": {},
@@ -98,7 +98,7 @@ class TestRegistryCreation:
 
     def test_missing_sessions_key(self, registry_path: Path):
         """Registry should handle missing 'sessions' key."""
-        registry_path.write_text('{"version": 1, "updated": "2026-08-01T10:28:41+00:00"}')
+        registry_path.write_text('{"version": 1, "updated": "2026-08-01T12:00:00"}')
         reg = SessionRegistry(registry_path=registry_path)
         data = reg._load()
         assert data["sessions"] == {}
